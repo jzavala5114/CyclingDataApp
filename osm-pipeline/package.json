@@ -1,0 +1,15 @@
+{
+  "name": "cyclingdataapp-osm-pipeline",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fetch": "node scripts/fetch_overpass.mjs",
+    "split": "node scripts/split_ways.mjs",
+    "load": "node scripts/load_segments.mjs"
+  },
+  "dependencies": {
+    "@turf/turf": "^7.1.0",
+    "pg": "^8.13.1"
+  }
+}
