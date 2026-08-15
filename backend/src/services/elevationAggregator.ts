@@ -2,7 +2,14 @@ import * as turf from "@turf/turf";
 import type { PoolClient } from "pg";
 import type { MatchedRun, Segment } from "../types/index.js";
 
-export const BUCKET_SIZE_M = 5;
+// Wider buckets mean more raw samples get averaged into each one (see the
+// per-bucket averaging in bucketizeRun below) and slope gets computed over
+// a longer baseline in gradientBuilder.ts, both of which shrink how much a
+// given amount of barometer noise can swing the reported slope. 5m made a
+// single noisy reading swing slope by several percent -- comparable to the
+// color-band thresholds themselves; 15m still resolves block-scale terrain
+// changes without amplifying sensor noise into the result.
+export const BUCKET_SIZE_M = 15;
 
 interface BucketSample {
   distanceM: number;

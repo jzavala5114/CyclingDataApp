@@ -12,9 +12,12 @@ export interface SessionSample {
   accuracyM: number | null;
 }
 
+export type SegmentKind = "road" | "cycleway" | "footway";
+
 export interface Segment {
   id: number;
   osmWayId: number;
+  kind: SegmentKind;
   streetName: string | null;
   startNodeId: number;
   endNodeId: number;

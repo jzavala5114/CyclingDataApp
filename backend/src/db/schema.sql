@@ -8,9 +8,13 @@ create extension if not exists postgis;
 create table segments (
     id              bigserial primary key,
     osm_way_id      bigint not null,
+    kind            text not null check (kind in ('road', 'cycleway', 'footway')),
     street_name     text,
     start_node_id   bigint not null,
     end_node_id     bigint not null,
+    -- Over-long runs get cut into equal pieces that share the same pair of
+    -- OSM end nodes, so the piece index is part of a segment's identity.
+    piece_index     integer not null default 0,
     geom            geometry(LineString, 4326) not null,
     length_m        double precision not null,
     bearing_deg     double precision not null, -- compass bearing of the forward direction
@@ -18,7 +22,8 @@ create table segments (
 );
 
 create index segments_geom_idx on segments using gist (geom);
-create unique index segments_way_start_end_idx on segments (osm_way_id, start_node_id, end_node_id);
+create unique index segments_way_start_end_idx
+    on segments (osm_way_id, start_node_id, end_node_id, piece_index);
 
 -- A tracking session: start button pressed to stop button pressed.
 create table sessions (

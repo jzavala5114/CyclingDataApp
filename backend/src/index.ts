@@ -6,7 +6,11 @@ import { sessionsRouter } from "./routes/sessions.js";
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+// Default express.json() body limit is 100kb -- a multi-minute ride's worth
+// of samples uploaded in one batch (see mobile's uploadSamples) easily
+// exceeds that, causing every upload to fail with a silently-swallowed 413
+// in a release build (no LogBox to surface it).
+app.use(express.json({ limit: "10mb" }));
 
 app.use("/sessions", sessionsRouter);
 app.use("/segments", segmentsRouter);

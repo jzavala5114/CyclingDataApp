@@ -3,6 +3,7 @@ import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { matchSamplesToSegments } from "../services/segmentMatcher.js";
 import { mergeRunIntoElevationModel } from "../services/elevationAggregator.js";
+import { smoothElevations } from "../services/elevationSmoothing.js";
 import type { Segment, SessionSample } from "../types/index.js";
 
 export const sessionsRouter = Router();
@@ -76,7 +77,7 @@ sessionsRouter.post("/:id/end", async (req, res) => {
   const lons = sampleRows.map((s) => s.lon);
   const pad = 0.005; // ~500m
   const { rows: segmentRows } = await pool.query<Segment>(
-    `select id, osm_way_id as "osmWayId", street_name as "streetName",
+    `select id, osm_way_id as "osmWayId", kind, street_name as "streetName",
             start_node_id as "startNodeId", end_node_id as "endNodeId",
             ST_AsGeoJSON(geom)::json as geom, length_m as "lengthM", bearing_deg as "bearingDeg"
        from segments
@@ -84,7 +85,7 @@ sessionsRouter.post("/:id/end", async (req, res) => {
     [Math.min(...lons) - pad, Math.min(...lats) - pad, Math.max(...lons) + pad, Math.max(...lats) + pad],
   );
 
-  const runs = matchSamplesToSegments(sampleRows, segmentRows);
+  const runs = matchSamplesToSegments(smoothElevations(sampleRows), segmentRows);
   const segmentsById = new Map(segmentRows.map((s) => [s.id, s]));
 
   const client = await pool.connect();

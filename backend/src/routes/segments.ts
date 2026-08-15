@@ -19,7 +19,7 @@ segmentsRouter.get("/", async (req, res) => {
   const { minLon, minLat, maxLon, maxLat } = bboxSchema.parse(req.query);
 
   const { rows: segmentRows } = await pool.query<Segment>(
-    `select id, osm_way_id as "osmWayId", street_name as "streetName",
+    `select id, osm_way_id as "osmWayId", kind, street_name as "streetName",
             start_node_id as "startNodeId", end_node_id as "endNodeId",
             ST_AsGeoJSON(geom)::json as geom, length_m as "lengthM", bearing_deg as "bearingDeg"
        from segments

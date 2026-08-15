@@ -9,16 +9,32 @@ const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 
 let inserted = 0;
 for (const feature of geojson.features) {
-  const { osmWayId, streetName, startNodeId, endNodeId, lengthM, bearingDeg } = feature.properties;
+  const { osmWayId, kind, streetName, startNodeId, endNodeId, pieceIndex, lengthM, bearingDeg } =
+    feature.properties;
   await pool.query(
-    `insert into segments (osm_way_id, street_name, start_node_id, end_node_id, geom, length_m, bearing_deg)
-     values ($1, $2, $3, $4, ST_SetSRID(ST_GeomFromGeoJSON($5), 4326), $6, $7)
-     on conflict (osm_way_id, start_node_id, end_node_id) do update set
-       geom = excluded.geom, length_m = excluded.length_m, bearing_deg = excluded.bearing_deg`,
-    [osmWayId, streetName, startNodeId, endNodeId, JSON.stringify(feature.geometry), lengthM, bearingDeg],
+    `insert into segments
+       (osm_way_id, kind, street_name, start_node_id, end_node_id, piece_index, geom, length_m, bearing_deg)
+     values ($1, $2, $3, $4, $5, $6, ST_SetSRID(ST_GeomFromGeoJSON($7), 4326), $8, $9)
+     on conflict (osm_way_id, start_node_id, end_node_id, piece_index) do update set
+       kind = excluded.kind,
+       street_name = excluded.street_name,
+       geom = excluded.geom,
+       length_m = excluded.length_m,
+       bearing_deg = excluded.bearing_deg`,
+    [
+      osmWayId,
+      kind,
+      streetName,
+      startNodeId,
+      endNodeId,
+      pieceIndex ?? 0,
+      JSON.stringify(feature.geometry),
+      lengthM,
+      bearingDeg,
+    ],
   );
   inserted++;
 }
 
-console.log(`loaded ${inserted} segments into ${process.env.DATABASE_URL ? "database" : "(no DATABASE_URL set)"}`);
+console.log(`loaded ${inserted} segments`);
 await pool.end();

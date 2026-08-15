@@ -37,7 +37,11 @@
       [
         "expo-location",
         {
-          "locationWhenInUsePermission": "Used to record your route and match it to street segments while tracking a ride."
+          "locationWhenInUsePermission": "Used to record your route and match it to street segments while tracking a ride.",
+          "locationAlwaysAndWhenInUsePermission": "Used to keep recording your ride when the screen is off, so tracking doesn't stop mid-ride.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true,
+          "isIosBackgroundLocationEnabled": true
         }
       ]
     ]
