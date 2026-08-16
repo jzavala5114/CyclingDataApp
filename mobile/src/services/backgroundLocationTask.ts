@@ -26,20 +26,56 @@ const BASE_OPTIONS = {
   },
 } satisfies Partial<Location.LocationTaskOptions>;
 
+// --- Spatial, not temporal, sampling ---------------------------------------
+//
+// A fix arrives no sooner than `timeInterval` and no closer than
+// `distanceInterval`, so at speed the clock is what binds and the spacing
+// between fixes grows with how fast you are going. Measured over sessions
+// 11-14 against the backend's 15m buckets:
+//
+//   2-4 m/s   7.9m apart    0.5 buckets
+//   4-6 m/s  13.6m apart    0.9 buckets
+//   6-8 m/s  17.6m apart    1.2 buckets  <- buckets start going unmeasured
+//   8-10 m/s 26.4m apart    1.8 buckets
+//   10+ m/s  34.1m apart    2.3 buckets
+//
+// Descents are the fastest part of any ride, so a fixed interval samples them
+// least -- exactly backwards. Deriving the interval from speed holds the
+// spacing roughly constant instead, which is what the bucketing wants.
+//
+// This is close to power-neutral rather than a straight cost: climbing at
+// 3 m/s now gets a *longer* interval than the flat 3s it replaces, which pays
+// for the shorter one on the way back down.
+const TARGET_SPACING_M = 11;
+const MIN_INTERVAL_MS = 1000;
+const MAX_INTERVAL_MS = 4000;
+// Quantised so that ordinary speed wobble doesn't restart the location
+// provider every few seconds chasing a number that barely moved.
+const INTERVAL_STEP_MS = 500;
+
+function intervalForSpeed(speedMps: number | null | undefined): number {
+  // Android reports -1 rather than null when speed is unavailable.
+  if (speedMps == null || !(speedMps > 0)) return MAX_INTERVAL_MS;
+  const ideal = (TARGET_SPACING_M / speedMps) * 1000;
+  const clamped = Math.max(MIN_INTERVAL_MS, Math.min(MAX_INTERVAL_MS, ideal));
+  return Math.round(clamped / INTERVAL_STEP_MS) * INTERVAL_STEP_MS;
+}
+
 // Accuracy.High is ~10m -- still well inside the matcher's tolerance. Anything
 // coarser (Balanced is ~100m) would be too imprecise to tell one street from
-// the next.
+// the next. timeInterval here is only the starting point; it is replaced from
+// speed on every fix.
 export const CRUISE_OPTIONS: Location.LocationTaskOptions = {
   ...BASE_OPTIONS,
   accuracy: Location.Accuracy.High,
-  timeInterval: 3000,
+  timeInterval: MAX_INTERVAL_MS,
   distanceInterval: 10,
 };
 
 export const TURN_OPTIONS: Location.LocationTaskOptions = {
   ...BASE_OPTIONS,
   accuracy: Location.Accuracy.BestForNavigation,
-  timeInterval: 1000,
+  timeInterval: MIN_INTERVAL_MS,
   distanceInterval: 3,
 };
 
@@ -48,6 +84,7 @@ const TURN_COOLDOWN_MS = 5000;
 const MIN_MS_BETWEEN_MODE_SWITCHES = 5000;
 
 let mode: "cruise" | "turn" = "cruise";
+let currentIntervalMs = MAX_INTERVAL_MS;
 let lastHeadingDeg: number | null = null;
 let lastTurnAtMs = 0;
 let lastModeSwitchAtMs = 0;
@@ -82,6 +119,7 @@ export function recordBarometerAltitude(relativeM: number): void {
 
 export function resetTrackingState(): void {
   mode = "cruise";
+  currentIntervalMs = MAX_INTERVAL_MS;
   lastHeadingDeg = null;
   lastTurnAtMs = 0;
   lastModeSwitchAtMs = 0;
@@ -132,10 +170,36 @@ export async function clearBufferedSamples(): Promise<void> {
   await enqueueWrite(() => AsyncStorage.removeItem(SAMPLE_BUFFER_KEY));
 }
 
-// Swaps the running location updates between cruise and turn options. Guarded
-// so a burst of heading changes can't thrash the location provider, and so a
-// failed swap degrades to "keep the current mode" rather than dropping
-// tracking altogether mid-ride.
+// --- Active session --------------------------------------------------------
+//
+// Location updates are registered with the OS and outlive the app: Android
+// can tear down and relaunch the JS context mid-ride, and the task keeps
+// running either way. Recording which session is in flight lets a relaunch
+// pick the ride back up instead of stranding it, and lets startup recognise a
+// task still running with no ride behind it and shut it off rather than leave
+// it draining the battery invisibly.
+const ACTIVE_SESSION_KEY = "cyclingdataapp:active-session";
+
+export interface ActiveSession {
+  sessionId: number;
+  startedAt: string;
+}
+
+export async function setActiveSession(session: ActiveSession | null): Promise<void> {
+  if (session) await AsyncStorage.setItem(ACTIVE_SESSION_KEY, JSON.stringify(session));
+  else await AsyncStorage.removeItem(ACTIVE_SESSION_KEY);
+}
+
+export async function getActiveSession(): Promise<ActiveSession | null> {
+  const raw = await AsyncStorage.getItem(ACTIVE_SESSION_KEY);
+  return raw ? JSON.parse(raw) : null;
+}
+
+// Retunes the running location updates: turn vs cruise accuracy, and the
+// cruise interval that keeps fixes a roughly constant distance apart. Guarded
+// so a burst of heading or speed changes can't thrash the location provider,
+// and so a failed swap degrades to "keep the current settings" rather than
+// dropping tracking altogether mid-ride.
 async function updateModeFor(location: Location.LocationObject): Promise<void> {
   const heading = location.coords.heading;
   const now = Date.now();
@@ -149,18 +213,24 @@ async function updateModeFor(location: Location.LocationObject): Promise<void> {
 
   const wantsTurnMode = now - lastTurnAtMs < TURN_COOLDOWN_MS;
   const nextMode = wantsTurnMode ? "turn" : "cruise";
-  if (nextMode === mode) return;
+  const nextIntervalMs =
+    nextMode === "turn" ? MIN_INTERVAL_MS : intervalForSpeed(location.coords.speed);
+
+  if (nextMode === mode && nextIntervalMs === currentIntervalMs) return;
   if (now - lastModeSwitchAtMs < MIN_MS_BETWEEN_MODE_SWITCHES) return;
 
   try {
     await Location.startLocationUpdatesAsync(
       LOCATION_TASK_NAME,
-      nextMode === "turn" ? TURN_OPTIONS : CRUISE_OPTIONS,
+      nextMode === "turn"
+        ? TURN_OPTIONS
+        : { ...CRUISE_OPTIONS, timeInterval: nextIntervalMs },
     );
     mode = nextMode;
+    currentIntervalMs = nextIntervalMs;
     lastModeSwitchAtMs = now;
   } catch (err) {
-    console.warn("failed to switch GPS mode", err);
+    console.warn("failed to retune GPS", err);
   }
 }
 

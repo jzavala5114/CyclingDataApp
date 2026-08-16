@@ -13,8 +13,13 @@ const bboxSchema = z.object({
   maxLat: z.coerce.number(),
 });
 
-// Returns every segment in the viewport with its two directional gradient
-// lines (empty colorStops if that direction has no data yet).
+// Returns the segments in the viewport that have recorded elevation data,
+// each with its directional gradient lines.
+//
+// Segments with no data render nothing, and the network spans a whole city,
+// so returning all of them would ship tens of thousands of unusable rows per
+// viewport. Filtering here keeps the response proportional to how much has
+// actually been ridden rather than how much map is loaded.
 segmentsRouter.get("/", async (req, res) => {
   const { minLon, minLat, maxLon, maxLat } = bboxSchema.parse(req.query);
 
@@ -22,8 +27,10 @@ segmentsRouter.get("/", async (req, res) => {
     `select id, osm_way_id as "osmWayId", kind, street_name as "streetName",
             start_node_id as "startNodeId", end_node_id as "endNodeId",
             ST_AsGeoJSON(geom)::json as geom, length_m as "lengthM", bearing_deg as "bearingDeg"
-       from segments
-      where geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)`,
+       from segments s
+      where s.geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)
+        and s.canonical_segment_id is null
+        and exists (select 1 from segment_elevation_buckets b where b.segment_id = s.id)`,
     [minLon, minLat, maxLon, maxLat],
   );
 

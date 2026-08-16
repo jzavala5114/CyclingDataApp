@@ -8,3 +8,9 @@ build/
 .env.local
 .DS_Store
 .claude/
+
+# Pipeline artifacts. Regenerate with `npm run fetch && npm run split` in
+# osm-pipeline/. The city-wide extract is ~18MB and the split output ~23MB,
+# which is not worth carrying in git history for files a script rebuilds.
+osm-pipeline/data/extract.json
+osm-pipeline/data/segments.geojson

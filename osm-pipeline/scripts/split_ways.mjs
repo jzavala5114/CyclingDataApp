@@ -132,6 +132,11 @@ for (const { way, kind } of ways) {
         turf.feature(sliced.geometry, {
           osmWayId: way.id,
           kind,
+          // OSM marks pavements alongside a street explicitly, which is a far
+          // sharper signal than "runs near a road and roughly parallel to
+          // it" -- that geometric test also swallowed the stretches where a
+          // real trail happens to run beside a road, chopping trails in half.
+          isSidewalk: way.tags?.footway === "sidewalk",
           streetName: way.tags?.name ?? null,
           startNodeId: chunkNodeIds[0],
           endNodeId: chunkNodeIds[chunkNodeIds.length - 1],

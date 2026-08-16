@@ -6,7 +6,8 @@
   "scripts": {
     "fetch": "node scripts/fetch_overpass.mjs",
     "split": "node scripts/split_ways.mjs",
-    "load": "node scripts/load_segments.mjs"
+    "load": "node scripts/load_segments.mjs",
+    "link": "node scripts/link_canonical.mjs"
   },
   "dependencies": {
     "@turf/turf": "^7.1.0",

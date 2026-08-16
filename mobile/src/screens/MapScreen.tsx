@@ -5,44 +5,81 @@ import {
   type CameraRef,
   GeoJSONSource,
   Layer,
+  type LngLatBounds,
   Map,
   UserLocation,
   useCurrentPosition,
 } from "@maplibre/maplibre-react-native";
-import { endSession, fetchSegments, startSession, uploadSamples } from "../services/api";
+import { type Bbox, endSession, fetchSegments, startSession, uploadSamples } from "../services/api";
 import { buildColoredLineFeatures } from "../services/gradientRendering";
 import { useTrackingSession } from "../hooks/useTrackingSession";
 import { MAP_STYLE_URL } from "../config";
 import type { SegmentWithGradients } from "../types";
 
-// Cascade Ave to Wahsatch Ave, Vermijo Ave to Rio Grande St -- matches the
-// bbox already loaded by osm-pipeline for the reference neighborhood.
-const INITIAL_BBOX = { minLon: -104.8269104, minLat: 38.8206852, maxLon: -104.8129104, maxLat: 38.8326852 };
 const INITIAL_CENTER: [number, number] = [-104.8199104, 38.8266852];
+
+// Fetch a bit beyond the visible bounds so panning doesn't immediately expose
+// blank streets, and don't refetch until the view has actually moved somewhere
+// the last response didn't already cover.
+const VIEWPORT_PAD = 0.2;
+
+function paddedBbox([west, south, east, north]: LngLatBounds): Bbox {
+  const padLon = Math.abs(east - west) * VIEWPORT_PAD;
+  const padLat = Math.abs(north - south) * VIEWPORT_PAD;
+  return {
+    minLon: Math.min(east, west) - padLon,
+    maxLon: Math.max(east, west) + padLon,
+    minLat: Math.min(north, south) - padLat,
+    maxLat: Math.max(north, south) + padLat,
+  };
+}
+
+function covers(outer: Bbox, inner: Bbox): boolean {
+  return (
+    outer.minLon <= inner.minLon &&
+    outer.maxLon >= inner.maxLon &&
+    outer.minLat <= inner.minLat &&
+    outer.maxLat >= inner.maxLat
+  );
+}
 
 export function MapScreen() {
   const [segments, setSegments] = useState<SegmentWithGradients[]>([]);
   const [isFollowing, setIsFollowing] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
-  const sessionId = useRef<number | null>(null);
   const cameraRef = useRef<CameraRef>(null);
-  const { isTracking, samples, start, stop, discardBuffered } = useTrackingSession();
+  const loadedBbox = useRef<Bbox | null>(null);
+  const { isTracking, sessionId, samples, start, stop, discardBuffered } = useTrackingSession();
   const currentPosition = useCurrentPosition();
 
-  const reloadSegments = useCallback(async () => {
-    const { segments } = await fetchSegments(INITIAL_BBOX);
+  const loadSegments = useCallback(async (bbox: Bbox) => {
+    const { segments } = await fetchSegments(bbox);
+    loadedBbox.current = bbox;
     setSegments(segments);
   }, []);
 
-  useEffect(() => {
-    reloadSegments().catch((err) => console.warn("failed to load segments", err));
-  }, [reloadSegments]);
+  // Refetch after the ride is saved, for wherever we're currently looking.
+  const reloadSegments = useCallback(async () => {
+    if (loadedBbox.current) await loadSegments(loadedBbox.current);
+  }, [loadSegments]);
+
+  const handleRegionDidChange = useCallback(
+    (bounds: LngLatBounds, userInteraction: boolean) => {
+      if (userInteraction) setIsFollowing(false);
+      const bbox = paddedBbox(bounds);
+      // The padding means small pans usually stay inside what's already
+      // loaded, so this only hits the network when the view genuinely moves
+      // onto streets we don't have yet.
+      if (loadedBbox.current && covers(loadedBbox.current, bbox)) return;
+      loadSegments(bbox).catch((err) => console.warn("failed to load segments", err));
+    },
+    [loadSegments],
+  );
 
   const handleStart = useCallback(async () => {
     try {
       const session = await startSession();
-      sessionId.current = session.id;
-      await start();
+      await start(session.id);
     } catch (err) {
       Alert.alert("Couldn't start tracking", err instanceof Error ? err.message : String(err));
     }
@@ -52,12 +89,10 @@ export function MapScreen() {
     setIsSaving(true);
     try {
       const finalSamples = await stop();
-      const id = sessionId.current;
-      if (id == null || finalSamples.length === 0) return;
+      if (sessionId == null || finalSamples.length === 0) return;
 
-      await uploadSamples(id, finalSamples);
-      await endSession(id);
-      sessionId.current = null;
+      await uploadSamples(sessionId, finalSamples);
+      await endSession(sessionId);
       await discardBuffered();
       await reloadSegments();
     } catch (err) {
@@ -73,7 +108,7 @@ export function MapScreen() {
     } finally {
       setIsSaving(false);
     }
-  }, [stop, discardBuffered, reloadSegments]);
+  }, [sessionId, stop, discardBuffered, reloadSegments]);
 
   const handleRecenter = useCallback(() => {
     setIsFollowing(true);
@@ -101,9 +136,9 @@ export function MapScreen() {
       <Map
         style={styles.map}
         mapStyle={MAP_STYLE_URL}
-        onRegionDidChange={(event) => {
-          if (event.nativeEvent.userInteraction) setIsFollowing(false);
-        }}
+        onRegionDidChange={(event) =>
+          handleRegionDidChange(event.nativeEvent.bounds, event.nativeEvent.userInteraction)
+        }
       >
         <Camera
           ref={cameraRef}
