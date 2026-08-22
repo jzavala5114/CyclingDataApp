@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from "react-native";
 import {
   Camera,
@@ -6,15 +6,25 @@ import {
   GeoJSONSource,
   Layer,
   type LngLatBounds,
-  Map,
+  // Aliased: the unqualified name shadows the global Map constructor.
+  Map as MapView,
   UserLocation,
   useCurrentPosition,
 } from "@maplibre/maplibre-react-native";
-import { type Bbox, endSession, fetchSegments, startSession, uploadSamples } from "../services/api";
+import {
+  type Bbox,
+  deleteSession,
+  endSession,
+  fetchSegments,
+  startSession,
+  uploadSamplesInChunks,
+} from "../services/api";
+import { MIN_SAVEABLE_EXTENT_M, rideExtentM } from "../services/rideStats";
 import { buildColoredLineFeatures } from "../services/gradientRendering";
 import { useTrackingSession } from "../hooks/useTrackingSession";
+import { dropBufferedSamples, readBufferedSamples } from "../services/backgroundLocationTask";
 import { MAP_STYLE_URL } from "../config";
-import type { SegmentWithGradients } from "../types";
+import type { SegmentWithGradients, TrackedSample } from "../types";
 
 const INITIAL_CENTER: [number, number] = [-104.8199104, 38.8266852];
 
@@ -49,13 +59,41 @@ export function MapScreen() {
   const [isSaving, setIsSaving] = useState(false);
   const cameraRef = useRef<CameraRef>(null);
   const loadedBbox = useRef<Bbox | null>(null);
-  const { isTracking, sessionId, samples, start, stop, discardBuffered } = useTrackingSession();
+  const {
+    isTracking,
+    sessionId,
+    startedAt,
+    samples,
+    unsavedRide,
+    start,
+    stop,
+    adoptSession,
+    discardBuffered,
+  } = useTrackingSession();
   const currentPosition = useCurrentPosition();
 
+  // While the camera follows the rider, region changes fire continuously and
+  // several fetches can be in flight at once. Without ordering, a slower
+  // earlier response lands after a newer one and replaces the lines with a
+  // stale, smaller set -- which is why gradients flickered in and out during a
+  // ride. Only the newest request is allowed to write.
+  const requestSeq = useRef(0);
+
   const loadSegments = useCallback(async (bbox: Bbox) => {
-    const { segments } = await fetchSegments(bbox);
+    const seq = ++requestSeq.current;
+    const { segments: fetched } = await fetchSegments(bbox);
+    if (seq !== requestSeq.current) return;
     loadedBbox.current = bbox;
-    setSegments(segments);
+    // Merge rather than replace. Each response only describes its own bbox, so
+    // replacing wholesale made every line outside the newest one vanish -- and
+    // while the camera follows a rider, region events fire mid-animation with a
+    // viewport that is briefly much tighter than the real one. Keyed by id, so
+    // a re-fetched segment updates in place after a ride is saved.
+    setSegments((previous) => {
+      const merged = new Map(previous.map((s) => [s.id, s]));
+      for (const segment of fetched) merged.set(segment.id, segment);
+      return [...merged.values()];
+    });
   }, []);
 
   // Refetch after the ride is saved, for wherever we're currently looking.
@@ -76,39 +114,159 @@ export function MapScreen() {
     [loadSegments],
   );
 
+  // Starting is now a purely local operation -- permissions, sensors, and the
+  // OS location task, with no server call on the critical path. Anything that
+  // fails here is a real problem with this phone, not with the network.
   const handleStart = useCallback(async () => {
     try {
-      const session = await startSession();
-      await start(session.id);
+      await start();
     } catch (err) {
       Alert.alert("Couldn't start tracking", err instanceof Error ? err.message : String(err));
     }
   }, [start]);
 
-  const handleStop = useCallback(async () => {
-    setIsSaving(true);
-    try {
-      const finalSamples = await stop();
-      if (sessionId == null || finalSamples.length === 0) return;
-
-      await uploadSamples(sessionId, finalSamples);
-      await endSession(sessionId);
+  // Uploads whatever is buffered for `id`, dropping each chunk from the phone
+  // as the server acknowledges it, then matches the ride. Safe to call again
+  // after a failure: what already landed is gone from the buffer, and the
+  // server ignores anything it has seen before.
+  const saveRide = useCallback(
+    async (id: number, rideSamples: TrackedSample[]) => {
+      await uploadSamplesInChunks(id, rideSamples, (uploaded) => dropBufferedSamples(uploaded));
+      await endSession(id);
       await discardBuffered();
       await reloadSegments();
+    },
+    [discardBuffered, reloadSegments],
+  );
+
+  // Gives the ride a server session if it doesn't have one yet, then uploads
+  // and matches it. The id is persisted the instant it is issued, so a retry
+  // after a failure reuses it rather than minting a second session and folding
+  // the same ride into the running means twice.
+  const commitRide = useCallback(
+    async (id: number | null, rideSamples: TrackedSample[]) => {
+      const resolvedId = id ?? (await startSession(startedAt ?? undefined)).id;
+      if (id == null) await adoptSession(resolvedId);
+      await saveRide(resolvedId, rideSamples);
+    },
+    [startedAt, adoptSession, saveRide],
+  );
+
+  const runSave = useCallback(
+    async (id: number | null, rideSamples: TrackedSample[]) => {
+      setIsSaving(true);
+      try {
+        await commitRide(id, rideSamples);
+      } catch (err) {
+        // The buffered samples are deliberately left in place so the ride isn't
+        // lost -- release builds have no LogBox, so this alert is the only way
+        // a failure here becomes visible.
+        Alert.alert(
+          "Couldn't save ride",
+          `Your ride is still stored on this phone, but saving it to the server failed: ${
+            err instanceof Error ? err.message : String(err)
+          }\n\nTap "Finish saving ride" to try again.`,
+        );
+      } finally {
+        setIsSaving(false);
+      }
+    },
+    [commitRide],
+  );
+
+  // Throws the ride away locally, and removes the server session too if one was
+  // ever created. The server refuses with 409 once a ride has been merged into
+  // the elevation model, so this cannot delete a session whose numbers are
+  // already baked into the buckets.
+  const discardRide = useCallback(async () => {
+    if (sessionId != null) {
+      try {
+        await deleteSession(sessionId);
+      } catch (err) {
+        console.warn("failed to delete session on the server", err);
+      }
+    }
+    await discardBuffered();
+  }, [sessionId, discardBuffered]);
+
+  const handleStop = useCallback(async () => {
+    let finalSamples: TrackedSample[];
+    try {
+      finalSamples = await stop();
     } catch (err) {
-      // The buffered samples are deliberately left in place so the ride isn't
-      // lost -- release builds have no LogBox, so this alert is the only way
-      // a failure here becomes visible.
+      Alert.alert("Couldn't stop tracking", err instanceof Error ? err.message : String(err));
+      return;
+    }
+
+    // Nothing was recorded. No session was ever created for this ride, so
+    // there is nothing on the server to tidy up either.
+    if (finalSamples.length === 0) {
+      await discardRide().catch((err) => console.warn("failed to discard", err));
+      return;
+    }
+
+    // A ride that never went anywhere is a mis-tap, or a test of the start
+    // button. Ask rather than decide: this phone holds the only copy, and a
+    // heuristic that silently deletes rides is only ever noticed once it has
+    // thrown away one that mattered.
+    const extentM = rideExtentM(finalSamples);
+    if (extentM < MIN_SAVEABLE_EXTENT_M) {
       Alert.alert(
-        "Couldn't save ride",
-        `Your ride is still stored on this phone, but saving it to the server failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        "Nothing much to save",
+        `This ride never got more than ${Math.round(extentM)} m from where it started, ` +
+          `so it looks like the bike didn't move. Discard it?`,
+        [
+          { text: "Save anyway", onPress: () => void runSave(sessionId, finalSamples) },
+          {
+            text: "Discard",
+            style: "destructive",
+            onPress: () => {
+              discardRide().catch((err) => console.warn("failed to discard", err));
+            },
+          },
+        ],
+      );
+      return;
+    }
+
+    await runSave(sessionId, finalSamples);
+  }, [stop, sessionId, runSave, discardRide]);
+
+  // Retry for a ride that was recorded but never reached the server.
+  const handleResumeSave = useCallback(async () => {
+    if (!unsavedRide) return;
+    setIsSaving(true);
+    try {
+      await commitRide(unsavedRide.sessionId, await readBufferedSamples());
+    } catch (err) {
+      Alert.alert(
+        "Still couldn't save",
+        `The ride is safe on this phone. ${err instanceof Error ? err.message : String(err)}`,
       );
     } finally {
       setIsSaving(false);
     }
-  }, [sessionId, stop, discardBuffered, reloadSegments]);
+  }, [unsavedRide, commitRide]);
+
+  // For a ride already known to be on the server -- a save that timed out after
+  // the server had in fact finished. Without this the phone keeps offering to
+  // upload it and there is no way to say no.
+  const handleDiscardRide = useCallback(() => {
+    Alert.alert(
+      "Discard this ride?",
+      "Only do this if the ride already shows on the map. It will be deleted from this phone and cannot be recovered.",
+      [
+        { text: "Keep", style: "cancel" },
+        {
+          text: "Discard",
+          style: "destructive",
+          onPress: () => {
+            discardRide().catch((err) => console.warn("failed to discard", err));
+          },
+        },
+      ],
+    );
+  }, [discardRide]);
 
   const handleRecenter = useCallback(() => {
     setIsFollowing(true);
@@ -133,7 +291,7 @@ export function MapScreen() {
 
   return (
     <View style={styles.container}>
-      <Map
+      <MapView
         style={styles.map}
         mapStyle={MAP_STYLE_URL}
         onRegionDidChange={(event) =>
@@ -166,7 +324,7 @@ export function MapScreen() {
             />
           </GeoJSONSource>
         )}
-      </Map>
+      </MapView>
 
       {!isFollowing && (
         <Pressable style={styles.recenterButton} onPress={handleRecenter}>
@@ -175,10 +333,22 @@ export function MapScreen() {
       )}
 
       <View style={styles.controls}>
+        {unsavedRide && !isTracking && !isSaving && (
+          <View style={styles.resumeRow}>
+            <Pressable style={styles.resumeButton} onPress={handleResumeSave}>
+              <Text style={styles.resumeButtonText}>
+                Finish saving ride ({unsavedRide.sampleCount} points)
+              </Text>
+            </Pressable>
+            <Pressable style={styles.discardButton} onPress={handleDiscardRide}>
+              <Text style={styles.discardButtonText}>Discard</Text>
+            </Pressable>
+          </View>
+        )}
         <Pressable
           style={[styles.button, isTracking && styles.buttonStop, isSaving && styles.buttonSaving]}
           onPress={isTracking ? handleStop : handleStart}
-          disabled={isSaving}
+          disabled={isSaving || (unsavedRide != null && !isTracking)}
         >
           {isSaving ? (
             <View style={styles.savingRow}>
@@ -228,4 +398,21 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
   },
   recenterButtonText: { color: "#111827", fontSize: 14, fontWeight: "600" },
+  resumeRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 12 },
+  discardButton: {
+    backgroundColor: "rgba(255,255,255,0.95)",
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 999,
+    elevation: 4,
+  },
+  discardButtonText: { color: "#b91c1c", fontSize: 15, fontWeight: "600" },
+  resumeButton: {
+    backgroundColor: "#f97316",
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 999,
+    elevation: 4,
+  },
+  resumeButtonText: { color: "white", fontSize: 15, fontWeight: "600" },
 });

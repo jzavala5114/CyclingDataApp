@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { pool } from "../db/pool.js";
-import { processSession } from "../services/sessionProcessor.js";
+import { processSession, type DiscardedRun } from "../services/sessionProcessor.js";
 
 // Rebuilds segment_elevation_buckets from scratch out of the raw samples.
 //
@@ -60,20 +60,23 @@ if (dryRun) {
 const client = await pool.connect();
 let totalMatched = 0;
 let totalDiscarded = 0;
+const allDiscards: Array<DiscardedRun & { sessionId: number }> = [];
 try {
   await client.query("begin");
   // One transaction, so a failure part way through leaves the existing model
   // untouched rather than a half-rebuilt one.
   await client.query("delete from session_segment_matches");
+  await client.query("delete from segment_coverage");
   await client.query("delete from segment_elevation_buckets");
 
   for (const session of usable) {
-    const { matchedRuns, discardedRuns, demOffsetM, demPoints } = await processSession(
+    const { matchedRuns, discardedRuns, demOffsetM, demPoints, discards } = await processSession(
       client,
       session.id,
     );
     totalMatched += matchedRuns;
     totalDiscarded += discardedRuns;
+    for (const discard of discards) allDiscards.push({ ...discard, sessionId: session.id });
     // demOffsetM is (ours - DEM); the correction applied is its negation.
     const anchor =
       demOffsetM == null
@@ -99,6 +102,96 @@ const { rows: summary } = await pool.query(
      from segment_elevation_buckets`,
   [MIN_PLAUSIBLE_ELEVATION_M],
 );
+
+// --- why runs were discarded -------------------------------------------------
+//
+// A discard count alone cannot distinguish the two causes, which need opposite
+// fixes. A run whose fragments together cover real ground is a traversal the
+// matcher broke apart -- stitching them would recover it, with no change to any
+// threshold. A run that stays short even after stitching genuinely only clipped
+// the segment, and should stay rejected: those are the phantom lines.
+if (allDiscards.length > 0) {
+  const recoverable = allDiscards.filter((d) => d.stitchedWouldQualify);
+  const genuine = allDiscards.filter((d) => !d.stitchedWouldQualify);
+
+  console.log(`\n=== traversal gate: ${allDiscards.length} discarded runs ===`);
+  const byKind = new Map<string, { kind: string; discarded: number; fragments: number; touches: number }>();
+  for (const d of allDiscards) {
+    const row = byKind.get(d.kind) ?? { kind: d.kind, discarded: 0, fragments: 0, touches: 0 };
+    row.discarded += 1;
+    if (d.stitchedWouldQualify) row.fragments += 1;
+    else row.touches += 1;
+    byKind.set(d.kind, row);
+  }
+  console.table([...byKind.values()].sort((a, b) => b.discarded - a.discarded));
+
+  console.log(
+    `recoverable by stitching fragments: ${recoverable.length}` +
+      ` (${Math.round((100 * recoverable.length) / allDiscards.length)}%)`,
+  );
+  console.log(
+    `genuine clips, correctly rejected:  ${genuine.length}` +
+      ` (${Math.round((100 * genuine.length) / allDiscards.length)}%)`,
+  );
+
+  // If touches really are touches their spans should cluster near zero, which
+  // is the evidence the 25m threshold was originally chosen on.
+  const buckets = [0, 2, 5, 10, 15, 25];
+  const histogram = buckets.map((lo, i) => {
+    const hi = buckets[i + 1] ?? Infinity;
+    const inBand = (rows: typeof allDiscards) =>
+      rows.filter((d) => d.spanM >= lo && d.spanM < hi).length;
+    return {
+      span: hi === Infinity ? `${lo}m+` : `${lo}-${hi}m`,
+      fragments: inBand(recoverable),
+      touches: inBand(genuine),
+    };
+  });
+  console.log("\nspan of each discarded run, before stitching:");
+  console.table(histogram);
+
+  // The stitching window has to come from here. Fragments of one traversal are
+  // separated by a dropped fix or two; two separate crossings of the same block
+  // are minutes apart. If those populations separate cleanly, the gap between
+  // them is the window.
+  const gapBands = [0, 5, 10, 20, 45, 90, 300];
+  const gapHistogram = gapBands.map((lo, i) => {
+    const hi = gapBands[i + 1] ?? Infinity;
+    const inBand = (rows: typeof allDiscards) =>
+      rows.filter((d) => d.gapToPreviousRunS != null && d.gapToPreviousRunS >= lo && d.gapToPreviousRunS < hi)
+        .length;
+    return {
+      gap: hi === Infinity ? `${lo}s+` : `${lo}-${hi}s`,
+      fragments: inBand(recoverable),
+      touches: inBand(genuine),
+    };
+  });
+  console.log("\ngap since the previous run on the same segment+direction:");
+  console.table(gapHistogram);
+  console.log(
+    `first run on its segment (no previous, nothing to stitch to): ` +
+      `${allDiscards.filter((d) => d.gapToPreviousRunS == null).length}`,
+  );
+
+  const worst = [...allDiscards]
+    .filter((d) => d.stitchedWouldQualify)
+    .sort((a, b) => b.stitchedSpanM - a.stitchedSpanM)
+    .slice(0, 8)
+    .map((d) => ({
+      session: d.sessionId,
+      street: d.streetName ?? "(unnamed)",
+      kind: d.kind,
+      dir: d.direction,
+      seg_len: Math.round(d.segmentLengthM),
+      this_run: Math.round(d.spanM),
+      stitched: Math.round(d.stitchedSpanM),
+      runs: d.runsOnSameSegment,
+    }));
+  if (worst.length > 0) {
+    console.log("\nlargest traversals lost to fragmentation:");
+    console.table(worst);
+  }
+}
 
 console.log(`\nmerged ${totalMatched} runs, discarded ${totalDiscarded}`);
 console.log(

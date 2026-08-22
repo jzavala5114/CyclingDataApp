@@ -7,7 +7,9 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "rebuild-model": "tsx src/scripts/rebuildModel.ts",
+    "prune-sessions": "tsx src/scripts/pruneEmptySessions.ts"
   },
   "dependencies": {
     "@turf/turf": "^7.1.0",

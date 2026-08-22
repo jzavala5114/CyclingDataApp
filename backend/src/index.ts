@@ -17,6 +17,25 @@ app.use("/segments", segmentsRouter);
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
+// Express 4 does not catch rejections from async handlers, so a throw inside
+// one becomes an unhandled rejection -- which Node treats as fatal. A single
+// bad request therefore killed the whole backend: one duplicate-key error took
+// the process down mid-upload, and Railway restarted into the same fate on the
+// next retry. Handlers pass errors here through asyncRoute() instead.
+app.use(
+  (err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    console.error("request failed", err);
+    if (res.headersSent) return;
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  },
+);
+
+// Last line of defence. Something unhandled has still gone wrong, but staying
+// up to serve the next request beats dropping every in-flight ride upload.
+process.on("unhandledRejection", (reason) => {
+  console.error("unhandled rejection", reason);
+});
+
 const port = Number(process.env.PORT ?? 3000);
 app.listen(port, () => {
   console.log(`backend listening on :${port}`);

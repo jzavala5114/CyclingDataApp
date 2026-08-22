@@ -170,6 +170,17 @@ export async function clearBufferedSamples(): Promise<void> {
   await enqueueWrite(() => AsyncStorage.removeItem(SAMPLE_BUFFER_KEY));
 }
 
+// Drops the oldest `count` samples, keeping anything the task has appended
+// since. Called as each upload chunk is acknowledged, so an upload interrupted
+// half way resumes from where it stopped rather than re-sending the ride.
+export async function dropBufferedSamples(count: number): Promise<void> {
+  await enqueueWrite(async () => {
+    const raw = await AsyncStorage.getItem(SAMPLE_BUFFER_KEY);
+    const existing: TrackedSample[] = raw ? JSON.parse(raw) : [];
+    await AsyncStorage.setItem(SAMPLE_BUFFER_KEY, JSON.stringify(existing.slice(count)));
+  });
+}
+
 // --- Active session --------------------------------------------------------
 //
 // Location updates are registered with the OS and outlive the app: Android
@@ -180,8 +191,11 @@ export async function clearBufferedSamples(): Promise<void> {
 // it draining the battery invisibly.
 const ACTIVE_SESSION_KEY = "cyclingdataapp:active-session";
 
+// `sessionId` is null for a ride that has not been given a server session yet.
+// Rides now start offline and are only registered with the server when there is
+// something worth saving, so for most of a ride's life this is null.
 export interface ActiveSession {
-  sessionId: number;
+  sessionId: number | null;
   startedAt: string;
 }
 

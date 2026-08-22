@@ -39,3 +39,12 @@ export interface ElevationBucket {
   elevationM: number;
   sampleCount: number;
 }
+
+// The stretch of a segment that has been ridden in a given direction, in
+// metres along the direction of travel, unioned across every ride.
+export interface SegmentCoverage {
+  segmentId: number;
+  direction: Direction;
+  coveredFromM: number;
+  coveredToM: number;
+}

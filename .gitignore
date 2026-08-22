@@ -9,6 +9,12 @@ build/
 .DS_Store
 .claude/
 
+# Throwaway diagnostic scripts. These get written constantly while debugging
+# against the live database and are never worth keeping -- anything that turns
+# out to be useful belongs in backend/src/scripts/ with a real name.
+tmp-*.mjs
+*.tmp.mjs
+
 # Pipeline artifacts. Regenerate with `npm run fetch && npm run split` in
 # osm-pipeline/. The city-wide extract is ~18MB and the split output ~23MB,
 # which is not worth carrying in git history for files a script rebuilds.

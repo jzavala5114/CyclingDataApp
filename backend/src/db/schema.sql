@@ -60,7 +60,11 @@ create table session_samples (
     accuracy_m    double precision
 );
 
-create index session_samples_session_idx on session_samples (session_id, recorded_at);
+-- Unique rather than a plain index, so re-uploading a chunk whose response was
+-- lost in transit is a no-op instead of a duplicate. Uploads are retried and
+-- resumed from the phone, and two fixes in one session cannot share a
+-- timestamp -- the location provider is capped at one per second.
+create unique index session_samples_session_idx on session_samples (session_id, recorded_at);
 
 -- Output of segmentMatcher: which contiguous stretch of a session covers
 -- which segment, in which direction. Kept for auditability/debugging.
@@ -98,6 +102,27 @@ create table segment_dem_elevations (
     elevation_m  double precision not null, -- orthometric (NAVD88), unlike GPS
     fetched_at   timestamptz not null default now(),
     primary key (segment_id, direction, distance_m)
+);
+
+-- How much of each segment has actually been ridden, in each direction, as a
+-- distance range measured along the direction of travel.
+--
+-- Kept separately from the buckets because it is a property of the coverage,
+-- not of any one measurement, and it cannot be recovered from the buckets
+-- afterwards: those sit on a 15m grid, so the first one is up to 7.5m inside
+-- where the ride really began. Inferring the extent from them left a fixed
+-- ~7.5m hole at the head of most lines -- an artifact of the grid that no
+-- amount of extra riding would have filled.
+--
+-- The range is the union across every ride, so repeated passes widen it the
+-- same way they refine the elevations.
+create table segment_coverage (
+    segment_id     bigint not null references segments(id) on delete cascade,
+    direction      text not null check (direction in ('forward', 'backward')),
+    covered_from_m double precision not null,
+    covered_to_m   double precision not null,
+    updated_at     timestamptz not null default now(),
+    primary key (segment_id, direction)
 );
 
 -- The refined, crowdsourced elevation model: one row per (segment,

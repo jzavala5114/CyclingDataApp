@@ -5,28 +5,59 @@ Turns a slice of OpenStreetMap into rows in the `segments` table (see
 data straight from the public Overpass API by bounding box, so there's
 nothing to install or download by hand for a small prototype area.
 
-Already run once for the neighborhood in the reference photo — 311 E
-Cimarron St, Colorado Springs, 80903 — the checked-in `data/extract.json`
-and `data/segments.geojson` cover Cascade Ave to Wahsatch Ave, Vermijo Ave
-to Rio Grande St (1,122 ways → 2,791 intersection-to-intersection segments,
-including 36 covering both directions of E/W Cimarron St itself).
+Currently loaded: 38.73/-104.91 to 38.96/-104.75 — central Colorado Springs
+plus the northwest suburbs and Ute Valley Park. 27,775 rideable ways →
+66,424 segments (30,233 road, 32,618 footway, 3,573 cycleway), of which
+46,758 are canonical and the rest are sidewalks folded into a parent road.
 
 ## Steps
+
+All five, in this order. The order is not cosmetic — see below.
 
 ```
 npm install
 
-# 1. Fetch raw roads in a bounding box from Overpass (defaults to the
-#    Cimarron St neighborhood above; pass minLat minLon maxLat maxLon for
-#    a different area)
-npm run fetch
+# 1. Fetch raw ways in a bounding box from Overpass.
+#    Args are minLat minLon maxLat maxLon; omit them for the default box.
+node scripts/fetch_overpass.mjs 38.73 -104.91 38.96 -104.75
 
-# 2. Split every way into segments at intersection nodes
+# 2. Classify, drop unrideable ways, split at intersections, cap at 150 m
 npm run split
 
-# 3. Load segments.geojson into PostGIS
+# 3. Upsert segments.geojson into PostGIS
 DATABASE_URL=postgres://... npm run load
+
+# 4. Delete segments the current extract no longer produces
+DATABASE_URL=postgres://... npm run prune          # shows what would go
+DATABASE_URL=postgres://... npm run prune -- --apply
+
+# 5. Point each sidewalk at the road it runs alongside
+DATABASE_URL=postgres://... npm run link
 ```
+
+Then rebuild the elevation model, since segment ids and boundaries may have
+moved underneath it:
+
+```
+cd ../backend && npm run rebuild-model
+```
+
+## Why the order matters
+
+**`prune` after `load`.** `load` upserts on
+`(osm_way_id, start_node_id, end_node_id, piece_index)`, so it can only add or
+update — it has no way to know a row it wrote last time is now obsolete. That
+bites whenever the bbox grows: a segment boundary is "a node shared by two or
+more kept ways", so a newly imported way touching an existing one turns that
+node into an intersection and re-splits the old way. The new pieces arrive
+under new keys and the old piece stays behind, leaving two overlapping
+geometries for the same tarmac for the matcher to argue over. Growing the box
+to include Ute Valley orphaned 609 segments this way.
+
+**`prune` before `link`.** Deleting a road sets its sidewalks'
+`canonical_segment_id` back to null (`on delete set null`), which would promote
+them to standalone routes drawing their own gradient lines. Linking last
+re-points whatever survives.
 
 ## How splitting works
 

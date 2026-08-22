@@ -142,15 +142,25 @@ export async function ensureDemElevations(
       break;
     }
 
+    // Written in one statement per batch. Individually, a ride over new ground
+    // added hundreds of round trips to an upload the phone was already timing
+    // out on. Keys are unique here because `wanted` deduplicated the positions.
+    const cacheValues: unknown[] = [];
+    const cacheTuples: string[] = [];
     for (let j = 0; j < batch.length; j++) {
       const elevation = elevations[j];
       if (elevation == null || !Number.isFinite(elevation)) continue;
       known.set(demKey(batch[j]), elevation);
+      cacheValues.push(batch[j].segmentId, batch[j].direction, batch[j].distanceM, elevation);
+      const n = (cacheTuples.length) * 4;
+      cacheTuples.push(`($${n + 1}, $${n + 2}, $${n + 3}, $${n + 4})`);
+    }
+    if (cacheTuples.length > 0) {
       await client.query(
         `insert into segment_dem_elevations (segment_id, direction, distance_m, elevation_m)
-         values ($1, $2, $3, $4)
+         values ${cacheTuples.join(", ")}
          on conflict (segment_id, direction, distance_m) do nothing`,
-        [batch[j].segmentId, batch[j].direction, batch[j].distanceM, elevation],
+        cacheValues,
       );
     }
 

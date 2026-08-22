@@ -94,3 +94,59 @@ export function matchSamplesToSegments(
 
   return runs;
 }
+
+// A traversal broken into pieces is still one traversal.
+//
+// matchSamplesToSegments ends a run the moment a fix fails to match: a dropped
+// fix, a burst of multipath, or -- on a switchback -- a heading that swings
+// further than MAX_BEARING_DELTA_DEG from the segment's straight-line bearing.
+// On a street grid that is rare. On mountain singletrack it is constant: one
+// 146m descent of the BeaUTEiful Loop arrived as five runs of 1-15m each, and
+// because every piece was shorter than the traversal gate's minimum, the entire
+// descent was thrown away.
+//
+// Rejoining them needs a test that separates a broken traversal from two
+// genuinely separate crossings of the same block -- which must stay separate,
+// or a rider looping a block would stitch two touches at opposite ends into a
+// full-length phantom. Time is that test. Measured across every ride recorded
+// so far, fragments of one traversal are 0-45s apart (49 of 51 cases) while
+// separate crossings are 90s or more apart, with nothing in between.
+export const STITCH_WINDOW_S = 45;
+
+export function stitchFragmentedRuns(
+  runs: MatchedRun[],
+  windowS: number = STITCH_WINDOW_S,
+): MatchedRun[] {
+  const stitched: MatchedRun[] = [];
+  // The most recent run for each segment+direction, so a later fragment can be
+  // appended to it. Appending advances its end time, which is what lets a
+  // traversal broken into five pieces chain back together rather than only
+  // rejoining pairs.
+  const openByKey = new Map<string, MatchedRun>();
+
+  for (const run of runs) {
+    if (run.samples.length === 0) continue;
+    const key = `${run.segmentId}|${run.direction}`;
+    const open = openByKey.get(key);
+
+    if (open) {
+      const previousEndMs = Date.parse(open.samples[open.samples.length - 1].recordedAt);
+      const thisStartMs = Date.parse(run.samples[0].recordedAt);
+      if ((thisStartMs - previousEndMs) / 1000 <= windowS) {
+        // The samples between the two fragments matched somewhere else, or
+        // nowhere, and are deliberately left out -- only the pieces that were
+        // matched to this segment contribute elevation. The extremes still
+        // bracket the whole traversal, which is what the gate measures.
+        open.samples.push(...run.samples);
+        continue;
+      }
+    }
+
+    // Copied rather than reused, so appending never mutates the caller's runs.
+    const fresh: MatchedRun = { ...run, samples: [...run.samples] };
+    stitched.push(fresh);
+    openByKey.set(key, fresh);
+  }
+
+  return stitched;
+}

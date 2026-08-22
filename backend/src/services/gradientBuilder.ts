@@ -1,19 +1,13 @@
 import * as turf from "@turf/turf";
 import { BUCKET_SIZE_M } from "./elevationAggregator.js";
-import type { Direction, ElevationBucket, Segment } from "../types/index.js";
+import type { Direction, ElevationBucket, Segment, SegmentCoverage } from "../types/index.js";
 
 const OFFSET_M = 4;
 
-// One bucket is an elevation with no slope attached, so the whole segment gets
-// painted a single flat colour. On a short connector that is honest -- the
-// bucket really does span the segment. On a 139m street it is one reading
-// stretched over a block, which is how South Institute Street ended up with a
-// full-length green line off 4.7m of travel.
-//
-// The traversal gate in elevationAggregator stops runs like that reaching the
-// model at all; this is the backstop for anything already stored, and for a
-// segment that only ever collects a lone bucket.
-const SINGLE_BUCKET_MAX_LENGTH_M = 2 * BUCKET_SIZE_M;
+// A bucket is the average of samples within half a bucket either side of its
+// centre, so the ground a set of buckets actually covers runs from half a
+// bucket before the first to half a bucket after the last.
+const HALF_BUCKET_M = BUCKET_SIZE_M / 2;
 
 // Slope (%) -> color stops. Descending goes purple (steepest) -> blue ->
 // green, climbing goes green -> yellow -> orange -> red, matching the
@@ -72,7 +66,10 @@ function slopeAt(sorted: ElevationBucket[], index: number): number {
 
 export interface DirectionalGradientLine {
   direction: Direction;
-  geometry: GeoJSON.LineString; // offset to one side of the street centerline
+  // Offset to one side of the street centreline, and clipped to the stretch
+  // that was actually ridden -- see buildDirectionalGradientLines.
+  geometry: GeoJSON.LineString;
+  // Fractions are along `geometry` as given, not along the whole segment.
   colorStops: Array<{ distanceFraction: number; color: string }>;
 }
 
@@ -82,40 +79,89 @@ export interface DirectionalGradientLine {
 // stops are computed independently from its own elevation buckets -- so
 // reversing direction on the same street naturally swaps which line (and
 // which gradient) applies.
+//
+// Two coordinate systems meet here and they run opposite ways for half the
+// data. Bucket distances are measured *along the direction of travel*, so on a
+// backward run distance 0 sits at the segment's far end, while the geometry is
+// always in forward order. Everything below is computed in travel space and
+// converted to a fraction of the drawn line at the last moment.
 export function buildDirectionalGradientLines(
   segment: Segment,
   bucketsByDirection: Record<Direction, ElevationBucket[]>,
+  coverageByDirection: Partial<Record<Direction, SegmentCoverage>> = {},
 ): DirectionalGradientLine[] {
   const centerline = turf.lineString(segment.geom.coordinates);
 
   return (Object.entries(bucketsByDirection) as Array<[Direction, ElevationBucket[]]>)
-    .filter(
-      ([, buckets]) =>
-        buckets.length >= 2 ||
-        (buckets.length === 1 && segment.lengthM <= SINGLE_BUCKET_MAX_LENGTH_M),
-    )
-    .map(([direction, buckets]) => {
+    .filter(([, buckets]) => buckets.length > 0)
+    .flatMap(([direction, buckets]) => {
       const sorted = [...buckets].sort((a, b) => a.distanceM - b.distanceM);
+
+      // Only draw the ground the ride actually covered. Painting the whole
+      // segment from partial coverage invented road: a rider who clipped 45m
+      // of a 129m footway beside East Fountain Boulevard got the full 129m
+      // drawn, 80m of it heading off into a park they never entered.
+      //
+      // Use the recorded extent where there is one. Falling back to the bucket
+      // positions understates coverage at the head by up to half a bucket,
+      // because a bucket sits at the centre of the ground it averages -- that
+      // left a ~7.5m hole at the start of most lines and read as a dashed
+      // route. The fallback only applies to rides recorded before coverage was
+      // tracked; a rebuild removes it.
+      const coverage = coverageByDirection[direction];
+      const fromTravelM = coverage
+        ? Math.max(0, coverage.coveredFromM)
+        : Math.max(0, sorted[0].distanceM - HALF_BUCKET_M);
+      const toTravelM = coverage
+        ? Math.min(segment.lengthM, coverage.coveredToM)
+        : Math.min(segment.lengthM, sorted[sorted.length - 1].distanceM + HALF_BUCKET_M);
+      const drawnLengthM = toTravelM - fromTravelM;
+      if (drawnLengthM <= 0) return [];
+
       const offsetSide = direction === "forward" ? OFFSET_M : -OFFSET_M;
       const offsetLine = turf.lineOffset(centerline, offsetSide, { units: "meters" });
+      // Offsetting a curve changes its length slightly, so travel distances
+      // are rescaled onto the offset line rather than used directly.
+      const offsetLengthM = turf.length(offsetLine, { units: "meters" });
+      const scale = segment.lengthM > 0 ? offsetLengthM / segment.lengthM : 1;
 
-      // A rider almost never drops a sample exactly on a segment's first
-      // bucket, so the earliest bucket typically sits ~15m in. Anchoring the
-      // first colour stop there left an unpainted stub at the head of every
-      // segment, which read as a dashed line once segments were chained
-      // together. The first stop is pinned to the start of the segment
-      // instead, and the renderer already extends the last stop to the end.
-      const colorStops =
+      const forwardFromM = direction === "forward" ? fromTravelM : segment.lengthM - toTravelM;
+      const forwardToM = direction === "forward" ? toTravelM : segment.lengthM - fromTravelM;
+      const clipped = turf.lineSliceAlong(offsetLine, forwardFromM * scale, forwardToM * scale, {
+        units: "meters",
+      });
+
+      // Position along the *drawn* line. For a backward run the drawn line
+      // still runs forward, so travel distance counts down across it. Bucket
+      // centres are rounded onto a 15m grid and can land just outside the
+      // measured extent, so fractions are clamped rather than trusted.
+      const toFraction = (travelM: number) => {
+        const raw =
+          direction === "forward"
+            ? (travelM - fromTravelM) / drawnLengthM
+            : (toTravelM - travelM) / drawnLengthM;
+        return Math.max(0, Math.min(1, raw));
+      };
+
+      // One colour per gap between buckets, spanning the whole drawn line: the
+      // first runs back to where coverage starts and the last runs on to where
+      // it ends, so there is no unpainted stub at either end.
+      const spans =
         sorted.length === 1
-          ? // A lone bucket on a segment short enough to have survived the
-            // filter above: no slope to derive, so paint it flat rather than
-            // punching a hole in the middle of a route.
-            [{ distanceFraction: 0, color: colorForSlope(0) }]
+          ? [{ startM: fromTravelM, endM: toTravelM, color: colorForSlope(0) }]
           : sorted.slice(0, -1).map((bucket, i) => ({
-              distanceFraction: i === 0 ? 0 : bucket.distanceM / segment.lengthM,
+              startM: i === 0 ? fromTravelM : bucket.distanceM,
+              endM: i === sorted.length - 2 ? toTravelM : sorted[i + 1].distanceM,
               color: colorForSlope(slopeAt(sorted, i)),
             }));
 
-      return { direction, geometry: offsetLine.geometry, colorStops };
+      const colorStops = spans
+        .map(({ startM, endM, color }) => ({
+          distanceFraction: Math.min(toFraction(startM), toFraction(endM)),
+          color,
+        }))
+        .sort((a, b) => a.distanceFraction - b.distanceFraction);
+
+      return [{ direction, geometry: clipped.geometry, colorStops }];
     });
 }

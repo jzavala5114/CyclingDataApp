@@ -7,10 +7,22 @@ import pg from "pg";
 // GiST index makes the proximity search cheap; the equivalent JS pass over
 // 31k segments would be a naive O(n^2) scan.
 //
-// Only ways OSM explicitly tags `footway=sidewalk` are eligible. Proximity
-// alone is not enough: trails such as Shooks Run, Midland and the Pikes Peak
-// Greenway run beside a road for part of their length, and absorbing just
-// those stretches cut them into disconnected pieces on the map.
+// Eligibility is by name, not by geometry alone. Proximity on its own is not
+// enough: trails such as Shooks Run, Midland and the Pikes Peak Greenway run
+// beside a road for part of their length, and absorbing just those stretches
+// cut them into disconnected pieces on the map.
+//
+// Two kinds of path qualify. The clear case is OSM's own `footway=sidewalk`
+// tag. The other is a path nobody named: of the 1,328 paths here that run
+// within 20m of a road and parallel to it, 1,066 are unnamed, and a path that
+// hugs a street for its whole length without earning a name is a pavement or
+// sidepath whatever its tags say. One such 129m footway alongside East
+// Fountain Boulevard was collecting its own gradient line and splitting rides
+// down that street between the road and itself.
+//
+// Every trail lost to the earlier geometric pass was named, so the name test
+// alone is what protects them -- and any named path stays canonical unless the
+// name itself says "sidewalk".
 //
 // Among the eligible sidewalks, one counts as belonging to a road when it is
 // within MAX_OFFSET_M and roughly parallel to it (either heading -- a
@@ -29,7 +41,8 @@ const client = await pool.connect();
 await client.query("set statement_timeout = '10min'");
 
 const { rows: bounds } = await client.query(
-  `select min(id) as lo, max(id) as hi from segments where is_sidewalk`,
+  `select min(id) as lo, max(id) as hi from segments
+    where kind in ('footway', 'cycleway')`,
 );
 const lo = Number(bounds[0].lo);
 const hi = Number(bounds[0].hi);
@@ -55,7 +68,7 @@ for (let start = lo; start <= hi; start += BATCH) {
                   360 - abs(f2.bearing_deg - r.bearing_deg),
                   abs(abs(f2.bearing_deg - r.bearing_deg) - 180)
                 ) < $5
-          where f2.is_sidewalk
+          where f2.kind in ('footway', 'cycleway')
             -- A few stretches of named trail (Midland Trail) are tagged
             -- footway=sidewalk in OSM. If someone bothered to give a path a
             -- name that isn't itself "... sidewalk", treat it as a route in

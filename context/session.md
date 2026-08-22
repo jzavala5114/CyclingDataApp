@@ -52,8 +52,9 @@ context/        This file
    slope → colour stops, ±4m offset per direction) → app slices into short
    coloured pieces → MapLibre draws them.
 
-Four tables do the work: `session_samples` (raw), `segments` (network),
-`segment_dem_elevations` (terrain reference), `segment_elevation_buckets` (the
+Five tables do the work: `session_samples` (raw), `segments` (network),
+`segment_dem_elevations` (terrain reference), `segment_coverage` (how much of
+each segment has been ridden), `segment_elevation_buckets` (the
 model).
 
 `processSession()` lives in `services/sessionProcessor.ts` and is shared with
@@ -75,11 +76,12 @@ the same path as a ride coming off the phone.
 ## Current state
 
 - **Network**: 30,994 segments over ~11 × 9.5 km of central Colorado Springs
-  (38.78–38.88 N, −104.88 to −104.77 W). 20,745 canonical; 10,249 sidewalks
-  folded into parent roads.
-- **Model**: 526 buckets across 80 segments, **0 implausible**. 104 directional
-  lines render, from 106 merged runs (41 of 147 discarded as touches).
-- **Rides**: 14 sessions, 1,527 samples. Sessions 11–14 are good.
+  (38.78–38.88 N, −104.88 to −104.77 W). 19,668 canonical; 11,326 pavements and
+  unnamed sidepaths folded into parent roads. Every road stays canonical.
+- **Model**: 767 buckets across 134 segments, **0 implausible**. 164 directional
+  lines, from 206 merged runs (54 of 260 discarded as touches). Lines are
+  clipped to what was ridden; the average one covers 0.96 of its segment.
+- **Rides**: 15 sessions, 2,104 samples. Sessions 11–15 are good.
   **Sessions 5 and 6 are permanently corrupt** — `rebuildModel.ts` excludes
   them automatically by elevation scale (below).
 - **DB**: 40 MB of Supabase's 500 MB.
@@ -144,22 +146,90 @@ Keep these in mind before "simplifying" anything.
     apiece off 0–8m of travel. A run now has to span 25m **or** 35% of the
     segment. Measured over 147 runs the populations barely overlap: touches
     span a median of 0m, real traversals 60m+. Costs 41 of 147 runs.
-15. **Canonical linking ate trails** — matching sidewalks to roads *by geometry*
+15. **Lines painted ground that was never ridden** — the traversal gate decided
+    *whether* to draw, but the renderer always drew the segment's **full
+    length**. A rider who clipped 45m of a 129m footway beside East Fountain
+    Boulevard got all 129m painted, 80m of it running off into a park. Lines
+    are now clipped to the covered extent.
+16. **Clipping to the bucket grid put a hole at every segment head** — the first
+    fix of the fix. Coverage was inferred from bucket positions, but a bucket
+    sits at the *centre* of the 15m of ground it averages and is rounded onto a
+    grid anchored at the segment start. `min(L, lastBucket + 7.5)` clamped the
+    tail to the segment end; `max(0, firstBucket − 7.5)` had no equivalent, so
+    any line whose first bucket was 15m or more began with a fixed 7.5m hole —
+    head gap median 7.5m against a tail median of 0. Only 10% of lines were
+    painted end to end, and chained together they read as dashes.
+    `profileRun` already computed the true extent (the bracketing fixes clamp
+    exactly to the segment ends on a pass-through) and threw it away; it is now
+    persisted in `segment_coverage`. Head gap median 7.5m → 2.1m, fully painted
+    10% → 38%.
+17. **Backward gradients were drawn mirrored** — bucket distances are measured
+    *along the direction of travel*, so on a backward run distance 0 is the
+    segment's far end. The renderer sliced the offset line in forward geometry
+    order and used those distances as-is, reversing every backward line
+    end-for-end. Both directions now agree: forward slope + backward slope sums
+    to ~0 at every point on a segment, where before they disagreed.
+18. **Short crossings became gaps** — fixes land ~11m apart, so a rider crossing
+    a 10m stretch of trail often gets one fix inside it and scores a span of
+    zero. 23 lines vanished that way in a single ride. The span is now measured
+    across the fixes either side of the run too, which brackets the crossing.
+    A perpendicular touch still scores near zero, because moving along the
+    street you are on barely moves your projection onto the one you cross.
+    Bracketing inflates spans, so `MIN_COVERAGE` went 0.35 → 0.7. That 0.7 is
+    the remaining source of gaps: a 23 m block covered 0.63 is dropped, and it
+    cannot be separated by threshold from a 12 m trail stub clipped at 0.60.
+19. **Canonical linking ate trails** — matching sidewalks to roads *by geometry*
     (within 20 m, parallel) also swallowed the stretches where a real trail runs
     beside a road: Shooks Run lost 57 segments, Midland 35, Pikes Peak Greenway
-    10. Eligibility is now OSM's `footway=sidewalk` tag, plus a guard for named
-    paths unless the name itself contains "sidewalk".
+    10. Eligibility is by **name**: a path qualifies if OSM tags it
+    `footway=sidewalk`, or if nobody named it at all. Of the 1,328 paths here
+    running within 20 m of a road and parallel to it, 1,066 are unnamed — a
+    path that hugs a street for its whole length without earning a name is a
+    pavement whatever its tags say, and one such 129 m footway was splitting
+    rides down East Fountain Boulevard between the road and itself. Every trail
+    lost to the geometric pass was named, so the name test alone protects them.
+    Verified after: Shooks Run 109 canonical, Pikes Peak Greenway 149, Midland
+    57, Bear Creek 35 — none absorbed.
+
+20. **One round trip per row.** `POST /:id/samples` inserted samples one at a
+    time inside a single transaction, and `/end` did the same for every bucket,
+    coverage row and DEM cache entry. At ~150 ms to Supabase that is ~96 s to
+    upload a 600-sample ride and ~150 s to match it. A ride died at the first
+    (the transaction rolled back and left **zero rows** in session 16) and
+    falsely reported failure at the second (session 29 committed a minute after
+    the phone gave up). All three paths are batched now.
+21. **`fetch` has no timeout.** React Native waits forever, so a stalled upload
+    on mobile data hung on "Saving ride…" for 22 minutes with no error and no
+    way out. Now 20 s per upload chunk, 120 s for matching.
+22. **The recovery path threw rides away.** On launch, a stopped-but-unsaved
+    ride hit `setActiveSession(null)`, clearing the pointer while leaving the
+    samples in AsyncStorage — present but unreachable, with no UI to retry.
+    Startup now surfaces them, minting a new session if the pointer is already
+    gone.
+23. **An async throw killed the whole backend.** Express 4 does not catch
+    rejections from async handlers, so one duplicate-key error became an
+    unhandled rejection and exited the process. Every route goes through
+    `asyncRoute()` now, with error middleware returning 500. Worth knowing that
+    this also made deploys *look* broken: restarting containers were being
+    crashed by test traffic before they could pass a health check.
 
 ## Operational gotchas
 
 - **Pipeline order is `fetch → split → load → link`.** `link` depends on
   `is_sidewalk`, which `split` populates — running it against segments from an
   older `split` silently absorbs nothing.
-- **`/end` is not idempotent.** Calling it twice on the same session merges that
-  ride into the model twice, inflating `sample_count` and duplicating rows in
-  `session_segment_matches`. The elevations survive (a running mean re-fed the
-  same value is unchanged) but the weighting is wrong. Fix by rebuilding, which
-  is why `rebuildModel.ts` wipes before it reprocesses.
+- **`/end` re-merges unless guarded.** Buckets are running means, so folding a
+  ride in twice weights it double and cannot be undone. The route now returns
+  early when `ended_at` is set, but a *recovered* ride used to mint a fresh
+  session on every retry and slip past that; the phone now remembers the
+  session it adopted. When in doubt, rebuild — `rebuildModel.ts` wipes first.
+- **Never send traffic to a deploying container.** A crashing request during
+  rollout fails the health check and Railway marks the whole deploy failed.
+  Half an hour was lost to a poll loop that crashed each new container as it
+  came up, looking exactly like a broken build.
+- **Verify deploys by behaviour, not by status.** `/health` answers from the
+  *old* container during a rollout. Time an upload or check a response field
+  that only the new build returns.
 - **Never `POST /sessions/{5,6}/end`.** It re-poisons the model. Rebuilding via
   `npx tsx src/scripts/rebuildModel.ts` is safe — it skips any session whose
   elevations are not absolute, so the rule is enforced in code, not memory.
@@ -221,11 +291,9 @@ best-covered lines):
   leaves the 3.52 m of drift across a ride untouched. A linear drift term fit
   against the DEM would take most of it, at the risk of absorbing real terrain
   on a ride that is genuinely uphill throughout.
-- **Paths that parallel a road but aren't tagged `footway=sidewalk`** stay
-  canonical and draw their own line beside the street — an unnamed 129m footway
-  along East Fountain Boulevard was one. Harmless here (the gate removed it for
-  lack of data), but it will reappear on a path that *is* ridden. The
-  `is_sidewalk` tag test is deliberately conservative; see #15.
+- **A *named* path running beside a road still draws its own line.** That is
+  deliberate — it is what keeps Shooks Run and the Greenway intact — but it
+  means a named sidepath would double up on its street. None do so far.
 - **`segment_dem_elevations` is populated lazily** by `/end`, one bounded burst
   of API calls per ride against OpenTopoData's public instance (~1000 calls/day,
   a ride costs ~4). Only OSM centreline coordinates are sent, never ride traces.
