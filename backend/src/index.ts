@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { readFileSync } from "node:fs";
 import cors from "cors";
 import express from "express";
 import { segmentsRouter } from "./routes/segments.js";
@@ -15,7 +16,21 @@ app.use(express.json({ limit: "10mb" }));
 app.use("/sessions", sessionsRouter);
 app.use("/segments", segmentsRouter);
 
-app.get("/health", (_req, res) => res.json({ ok: true }));
+// Written by `npm run build` into dist/. This is the only cheap way to tell
+// which build is actually answering: during a Railway rollout the service
+// reports Online and /health returns ok while the *old* container is still
+// serving every request, so neither is evidence that a deploy landed. A
+// timestamp that changes with the image is.
+const BUILT_AT = (() => {
+  try {
+    const raw = readFileSync(new URL("./buildInfo.json", import.meta.url), "utf8");
+    return JSON.parse(raw).builtAt as string;
+  } catch {
+    return "unknown";
+  }
+})();
+
+app.get("/health", (_req, res) => res.json({ ok: true, builtAt: BUILT_AT }));
 
 // Express 4 does not catch rejections from async handlers, so a throw inside
 // one becomes an unhandled rejection -- which Node treats as fatal. A single

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node -e \"require('fs').writeFileSync('dist/buildInfo.json', JSON.stringify({builtAt: new Date().toISOString()}))\"",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "rebuild-model": "tsx src/scripts/rebuildModel.ts",
