@@ -75,16 +75,23 @@ the same path as a ride coming off the phone.
 
 ## Current state
 
-- **Network**: 30,994 segments over ~11 × 9.5 km of central Colorado Springs
-  (38.78–38.88 N, −104.88 to −104.77 W). 19,668 canonical; 11,326 pavements and
-  unnamed sidepaths folded into parent roads. Every road stays canonical.
-- **Model**: 767 buckets across 134 segments, **0 implausible**. 164 directional
-  lines, from 206 merged runs (54 of 260 discarded as touches). Lines are
-  clipped to what was ridden; the average one covers 0.96 of its segment.
-- **Rides**: 15 sessions, 2,104 samples. Sessions 11–15 are good.
+*(as of 2026-08-22)*
+
+- **Network**: 66,424 segments over 38.71–38.97 N, −104.90 to −104.75 W —
+  central Colorado Springs plus the northwest suburbs and Ute Valley Park.
+  46,758 canonical; 19,666 pavements and unnamed sidepaths folded into parent
+  roads. Every road stays canonical.
+- **Model**: 1,523 buckets across 242 segments, **0 implausible**, from 431
+  merged runs (94 of 525 discarded). Lines are clipped to what was ridden.
+- **Ute Valley Park**: 236 buckets over 34 trail segments — BeaUTEiful Loop,
+  Triple Treat, Winding Woods Loop, Nacho's Trail, Ute Valley Park Trail, Scrub
+  Oak Connector, plus unnamed paths. Only 4 buckets have a second pass, against
+  320 downtown, so trail data is still thin.
+- **Rides**: 13 sessions with samples, 4,417 samples; 11 usable.
   **Sessions 5 and 6 are permanently corrupt** — `rebuildModel.ts` excludes
   them automatically by elevation scale (below).
-- **DB**: 40 MB of Supabase's 500 MB.
+- **DB**: was 40 MB of Supabase's 500 MB before the re-import roughly doubled
+  the segment count. Not re-measured since.
 - **Cost headroom**: ~55 KB/ride; ~9,200 rides before the storage cap (decades
   solo). Egress (5 GB/mo) binds first and only with real users (~40–50).
 
@@ -143,9 +150,17 @@ Keep these in mind before "simplifying" anything.
     painted the *entire* segment from it — and since one bucket carries no
     slope, flat green. That gave 77m of Sahwatch Street, 139m of South
     Institute Street and 143m of South Wahsatch Avenue a full-length line
-    apiece off 0–8m of travel. A run now has to span 25m **or** 35% of the
-    segment. Measured over 147 runs the populations barely overlap: touches
-    span a median of 0m, real traversals 60m+. Costs 41 of 147 runs.
+    apiece off 0–8m of travel. A run now has to span 25m **or** 70% of the
+    segment (raised from 35% when bracketing fixes were added, since they
+    inflate every span).
+
+    **Do not repeat the old justification for this.** It used to read "the
+    populations barely overlap — touches span a median of 0m, real traversals
+    60m+". That was measured *before* bracketing. Re-measured on 2026-08-22
+    across 169 discards, span no longer separates them at all: in the 15–25m
+    band it is 21 fragments against 21 touches, an exact coin flip. What does
+    separate them is whether the run's *stitched* extent covers ground — see
+    #26.
 15. **Lines painted ground that was never ridden** — the traversal gate decided
     *whether* to draw, but the renderer always drew the segment's **full
     length**. A rider who clipped 45m of a 129m footway beside East Fountain
@@ -212,12 +227,54 @@ Keep these in mind before "simplifying" anything.
     `asyncRoute()` now, with error middleware returning 500. Worth knowing that
     this also made deploys *look* broken: restarting containers were being
     crashed by test traffic before they could pass a health check.
+24. **Timeouts were reported as cancellations.** Expo SDK 57 installs its own
+    native `fetch`; its rejection is a plain `Error` whose `name` stays
+    `"Error"`, so the usual `err.name === "AbortError"` test never matched and
+    every timeout surfaced as the raw `fetch failed: Fetch request has been
+    canceled`. Check `controller.signal.aborted` — state we own — not the error
+    we were handed.
+25. **Start required the network.** A round trip stood between the button and
+    recording, demanded exactly where signal is worst. Worse, a timed-out retry
+    cannot tell "the server never got it" from "the server got it and the reply
+    was lost", so each retry left an orphan session. Rides now begin entirely
+    on the phone and register at save time, reusing the orphan-recovery path.
+26. **The matcher tore traversals into unusable fragments.** A run ends whenever
+    a fix fails to match, which on singletrack happens at every switchback: one
+    146m descent of the BeaUTEiful Loop arrived as *five* runs of 1–15m, each
+    too short to clear the gate, so the whole descent was lost.
+    `stitchFragmentedRuns()` rejoins runs on the same segment+direction within
+    `STITCH_WINDOW_S = 45`. **The window is measured, not chosen**: fragments
+    cluster at 0–45 s (49 of 51) and separate crossings of the same block at
+    90 s+, with nothing between — that gap is the whole basis for the number,
+    so re-measure before changing it. Discards 169 → 94, fragments 75 → 2,
+    while genuine clips held at 94 → 92, which is the proof that no phantom
+    lines came back. No threshold moved.
+27. **A wider bbox orphans existing segments.** `load` upserts on
+    `(osm_way_id, start_node_id, end_node_id, piece_index)`, so it can only add
+    or update. But a segment boundary is "a node shared by two or more kept
+    ways", so newly imported ways re-split existing ones: the new pieces arrive
+    under new keys and the old piece stays behind, leaving two geometries over
+    the same tarmac for the matcher to argue over. Extending to Ute Valley
+    orphaned 609. `prune_orphans.mjs` deletes them, and must run **after `load`
+    and before `link`** — deleting a road nulls its sidewalks'
+    `canonical_segment_id`, promoting them to standalone lines.
+28. **A deploy could not be verified from outside.** Three separate releases
+    needed a bespoke probe, and one internal-only change had no observable
+    difference at all short of uploading a synthetic ride. `npm run build` now
+    writes a timestamp into `dist/buildInfo.json` and `/health` returns it as
+    `builtAt`. One request confirms which build is answering.
 
 ## Operational gotchas
 
-- **Pipeline order is `fetch → split → load → link`.** `link` depends on
-  `is_sidewalk`, which `split` populates — running it against segments from an
-  older `split` silently absorbs nothing.
+- **Pipeline order is `fetch → split → load → prune → link`**, then
+  `rebuild-model` in `backend/`. `link` depends on `is_sidewalk`, which `split`
+  populates — running it against segments from an older `split` silently
+  absorbs nothing. `prune` must sit between `load` and `link`; see #27.
+- **Verify a deploy by `builtAt`, never by status.** During a rollout Railway
+  reports the service Online *and* `/health` answers 200 — both from the old
+  container. One rollout sat like that for five minutes. Compare
+  `curl /health | builtAt` against the value from before the deploy, and send
+  no application traffic to a container that is still deploying (#23).
 - **`/end` re-merges unless guarded.** Buckets are running means, so folding a
   ride in twice weights it double and cannot be undone. The route now returns
   early when `ended_at` is set, but a *recovered* ride used to mint a fresh
@@ -298,8 +355,40 @@ best-covered lines):
   of API calls per ride against OpenTopoData's public instance (~1000 calls/day,
   a ride costs ~4). Only OSM centreline coordinates are sent, never ride traces.
   If it ever needs to scale, download the 3DEP tile and sample locally.
-- **Uncommitted**: DEM anchoring, speed-derived GPS interval, the traversal
-  gate, `sessionProcessor.ts`/`rebuildModel.ts`,
-  canonical linking (`link_canonical.mjs`, `is_sidewalk`), rendering fixes,
-  regression slope, plus last session's crash fix, resume/orphan-task logic,
-  viewport fetching, batched loader and Overpass fix.
+- **Singletrack still discards ~33% of runs** (streets: 16%), after stitching
+  brought it down from 57%. Two causes left, both structural rather than bugs.
+  The bearing test compares your heading against the segment's *straight-line*
+  chord bearing, which on a switchback describes no part of the trail — using
+  the local tangent at the projected point would be strictly more correct, and
+  is not a loosening. And ~31% of session 43's fixes were more than 25m from
+  any mapped way, which is an OpenStreetMap coverage problem, not ours.
+- **Stitched runs can have a hole in the middle.** Rejoined fragments contribute
+  only their own samples; whatever was between them matched elsewhere or
+  nowhere. Endpoints and coverage are right, but interior buckets may be
+  missing, which renders as one long colour span. Pulling the intervening
+  samples in would mean re-running the match, so it was left alone.
+- **No position smoothing.** The EMA only touches elevation. A lateral multipath
+  spike downtown (seen clearly on South Weber) passes straight through if it is
+  inside the 30m accuracy filter. A jump filter rejecting physically impossible
+  sideways movement would clip these cheaply.
+- **Coverage gaps at block ends.** Coverage starts where the first fix landed,
+  which on segment 12555 is 8.9m in — an honest 8.9m of unpainted road. 30% of
+  canonical segments are under 30m and 3,883 are artificial 150m-cap slices, so
+  there are many block ends and therefore many small gaps. Two fixes: clamp
+  coverage to the full segment when a run has bookend fixes on *both* sides
+  (it passed through), and bridge a gap under ~10m at draw time.
+
+## Committed / deployed
+
+Everything above is committed as of 2026-08-22 — `2217ed4` → `abf26ac`
+("Record rides offline and reassemble split traversals") → `ebcf4b3`
+("Make /health say which build is answering"). All three are **unpushed**;
+`origin/main` is 3 behind and this machine holds the only copy.
+
+Backend deployed and verified (`builtAt` 2026-08-22T23:52:21.729Z). The APK on
+the phone was built 2026-08-18 20:58, which is *after* every file under
+`mobile/` was last touched — the app is current with the mobile source; the
+work since then has all been backend and pipeline.
+
+`context/architecture.html` is a full walkthrough of the system, published as an
+Artifact. It predates stitching and still needs the #14 correction folded in.
