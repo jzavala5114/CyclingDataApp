@@ -1110,9 +1110,17 @@
       </p>
 
       <p>
-        Instead, each piece's slope is a <strong>best-fit line through five buckets</strong>
-        &mdash; the two either side plus the piece's own, spanning about 60 metres. That averages
-        out individual bad readings. The result is then capped at &plusmn;25%, since no rideable
+        Instead, each piece's slope is a <strong>least-squares best-fit line through five buckets</strong>:
+        the one at the start of the gap, the one at the end, plus the two on either side of each.
+        That spans about 60 metres and averages out one barometer reading's noise. The fit finds
+        the single slope that best matches all five heights at once, rather than just the difference
+        between two.
+      </p>
+
+      <p>
+        Example: gap from bucket 30m to 45m. You'd fit a line through buckets at 15, 30, 45, 60, 75m,
+        finding the slope that sits closest to all five. A single noisy point can't swing it much because
+        four others are holding it steady. The final result is capped at &plusmn;25%, since no rideable
         street here is steeper than that.
       </p>
 
@@ -1306,8 +1314,9 @@
           spreadsheet macro, not like a website.
         </p>
         <p>
-          You've run it perhaps four times total, when the covered area or the splitting rules
-          changed. The other two programs run constantly; this one doesn't.
+          <strong>All four are manual.</strong> You run them when you need to &mdash; which happens rarely, only when
+          the map area grows or the splitting rules change. Nothing runs them for you. Each one reads its input,
+          does its work, and stops.
         </p>
       </div>
 
@@ -1386,25 +1395,35 @@
       <div class="define">
         <span class="word">Distance along</span>
         <p>
-          For any GPS fix, "distance along" a street means: <strong>step sideways from the fix
-          onto the street's centreline, then measure how far that landing spot is from the
-          street's start.</strong>
+          For any GPS fix, "distance along" a street means: <strong>imagine dropping a perpendicular line from the GPS fix
+          straight down to the street's centreline. Measure where that perpendicular meets the line. That meeting point's distance
+          from the street's start is the "distance along."</strong>
         </p>
         <p>
-          A fix 3 m to the left of the road, 40 m down the block, has a distance-along of 40.
+          <strong>Example:</strong> You're riding South Wahsatch Avenue southbound. A GPS fix lands 3 metres to the left of the
+          centreline, but you've already travelled 40 metres down the block. If you stepped sideways from that fix onto the road,
+          you'd land 40 metres from the north end. So distance-along = 40 m.
+        </p>
+        <p>
+          The key insight: GPS position and distance-along the street are <em>independent</em>. You could be 3 m off the road or 20 m
+          off the road, but the perpendicular always lands somewhere along the centreline, and that's what matters for the gate.
         </p>
       </div>
 
       <div class="define">
         <span class="word">Span</span>
         <p>
-          <strong>The biggest distance-along in the run, minus the smallest.</strong> In other
-          words: how much of the street's length the run stretched across.
+          <strong>The maximum distance-along in the run, minus the minimum distance-along.</strong> It measures how far down
+          the street the run stretched.
         </p>
         <p>
-          Ride the whole block and your span is ~104 m. Clip the corner and your span is 3 m.
-          Sit at a red light and your span is near zero &mdash; you have lots of fixes, but they
-          are all at the same place along the street.
+          <strong>Ride the whole block:</strong> fixes land at 0, 20, 40, 60, 80, 104 m. Span = 104 − 0 = 104 m.<br/>
+          <strong>Clip the corner:</strong> fixes land at 102, 104 m. Span = 104 − 102 = 2 m.<br/>
+          <strong>Sit at a red light:</strong> fixes land at 50.1, 50.2, 50.3, 50.1 m (scattered by GPS noise). Span ≈ 0 m.
+        </p>
+        <p>
+          The span is the entire range, not the distance travelled. Even if GPS noise scatters you around one point,
+          your max and min are nearly the same, so span stays near zero.
         </p>
       </div>
 
@@ -1432,21 +1451,27 @@
       <div class="define">
         <span class="word">Bracketing fix</span>
         <p>
-          <strong>The fix immediately before the run started, and the one immediately after it
-          ended</strong> &mdash; the two that "bracket" it, like bookends.
+          <strong>The fix immediately before a run starts, and the one immediately after it ends.</strong>
+          These are the "bookends" around it.
         </p>
         <p>
-          These fixes were recorded somewhere else, so their <em>heights</em> are ignored
-          entirely. Only their positions are used, purely to measure how far the run reached.
+          A run happens when the matcher finds fixes landing on the same segment going the same way. The fix just before it
+          matched something else (or nothing), and the fix just after it also matched something else (or nothing). Both are
+          "recorded somewhere else" in the sense that they're not part of the run's own data stream.
+        </p>
+        <p>
+          <strong>How they're used:</strong> Their <em>positions</em> are included in the span calculation, but their
+          <em>heights</em> are ignored completely. The bookends give you a wider bracket to measure across, without adding
+          their elevation readings to the mix (since they weren't on this segment).
         </p>
       </div>
 
       <p>
-        Including the bookends fixes the short-crossing case, because they sit on either side of
-        the stub and their distance-along values land at opposite ends of it. And crucially it
-        does <em>not</em> resurrect the phantoms: when you ride past a cross street, your
-        bookend fixes are further along the street you're on, but stepping sideways onto the
-        cross street puts them at almost the same place. Barely any span.
+        This fixes two problems. <strong>Short crossings:</strong> A 10-metre trail stub produces one or zero fixes on it. The
+        bookends sit on either side of the stub. One bookend's perpendicular lands at 0 m, the other's at 10 m. Span = 10 m.
+        Kept. <strong>Phantom lines:</strong> When you ride past a cross street, the bookends are on the main street you're riding,
+        but if you drop a perpendicular onto the cross street, both land at nearly the same distance-along point. Span ≈ 0.
+        Rejected. The bookends don't resurrect phantoms, because they're on the wrong segment the whole time.
       </p>
 
       <figure>
@@ -1541,32 +1566,36 @@
         <li>
           <h4>Throw out untrustworthy fixes</h4>
           <p>
-            No heading recorded, or the phone's own accuracy estimate is worse than 30 m
-            &mdash; skip it. A fix that loose can't tell one parallel street from another.
+            <strong>No heading recorded:</strong> the phone's compass sometimes fails. Skip this fix entirely.<br/>
+            <strong>Accuracy worse than 30 m:</strong> the phone says "I think I'm here, but I could be off by 30 metres."
+            That's inside the spacing between parallel streets. One bad fix can't tell a street from its sidewalk.
           </p>
         </li>
         <li>
           <h4>Find nearby candidates</h4>
-          <p>Every segment whose centreline passes within 25 m.</p>
+          <p>
+            Check every segment in the database. If its centreline comes within 25 metres of this GPS fix, it's a candidate.
+            This is purely a distance filter — you could be on this street, or you could be on another one nearby.
+          </p>
         </li>
         <li>
           <h4>Check you were pointing the right way</h4>
           <p>
-            Compare your heading to the segment's bearing. Within 45° &rarr; forward. Within 45°
-            of the opposite &rarr; backward. Neither &rarr; discard this candidate; you were
-            crossing it, not riding it.
+            <strong>Your heading</strong> is the direction your phone thought you were facing. <strong>The segment's bearing</strong> is
+            a single compass direction for the whole piece, measured from its first point to its last.
+            If the two match within 45°, you were riding forward down it. If they're 180° apart (opposite), you were riding backward.
+            If neither, you were crossing it (perpendicular), so drop this candidate.
           </p>
         </li>
         <li>
           <h4>Prefer to stay where you already are</h4>
           <p>
-            Pick the nearest &mdash; <em>unless</em> you are already on a run. Then the rival
-            has to be more than 8 m closer to win.
-          </p>
-          <p>
-            This matters because a street and its sidewalk sit 5&ndash;10 m apart, well inside
-            GPS error. Choosing the nearest independently for every fix made a single ride flip
-            back and forth between them, scattering one pass across several parallel lines.
+            <strong>The problem:</strong> a street and its sidewalk sit 5–10 metres apart. With GPS error this big, every fix
+            has multiple candidates. Picking the closest one for every fix independently made a single ride flip back and forth
+            between the street and its sidewalk, scattering one pass across several parallel lines.<br/>
+            <strong>The fix:</strong> if you're already on a run (riding a particular segment), a rival segment has to be
+            <em>more than 8 metres closer</em> to steal you. Only a genuine turn onto a different street wins. Staying put costs
+            less than switching, so hysteresis keeps you on the line you're on.
           </p>
         </li>
       </ol>
@@ -1580,6 +1609,55 @@
           the answer is a proper map-matcher rather than more thresholds.
         </p>
       </div>
+    </section>
+
+    <section id="stitching">
+      <h2 class="sec">Fragment stitching on mountain trails</h2>
+      <p class="sec-note">Heuristic 2b · mountain-specific, merged with the gate</p>
+
+      <h3>The problem: switchbacks break runs into pieces</h3>
+
+      <p>
+        On a street grid, the heuristic works fine &mdash; your heading stays within 45° of a
+        street's bearing the whole way. On a switchback trail with tight turns, it breaks down.
+      </p>
+
+      <p>
+        You climb a trail northbound. Hairpin. You climb southbound. To the database, the trail is
+        stored as one straight arrow pointing east (net direction across the hillside). But your
+        heading was north, then south &mdash; both 90° away from east. Both failed the 45° test.
+        One continuous 146-metre descent arrived as five separate runs, each 1&ndash;15 metres.
+      </p>
+
+      <p>
+        The traversal gate then looked at each piece individually. A 9-metre span on a 146-metre
+        trail: rejected. Repeat five times. The entire descent disappeared from the map.
+      </p>
+
+      <h3>The fix: rejoin fragments within a time window</h3>
+
+      <p>
+        Two fragments of the same descent are separated in time by the length of time you spent
+        matching nowhere. Measured across every ride recorded so far:
+      </p>
+
+      <ul>
+        <li><strong>Same traversal:</strong> fragments are 0–45 seconds apart (49 of 51 cases)</li>
+        <li><strong>Separate crossings of the same trail:</strong> at least 90 seconds apart, never in between</li>
+      </ul>
+
+      <p>
+        <code>stitchFragmentedRuns()</code> runs before the gate. It rejoins same-segment,
+        same-direction fragments within <code>STITCH_WINDOW_S = 45</code> seconds, producing one
+        run per traversal. The gate then judges the whole descent at once and keeps it.
+      </p>
+
+      <p>
+        <strong>Streets were never touched.</strong> Genuine intersection touches stayed dead (94 → 92
+        clips kept). Fragments dropped from 75 → 2. The 92-clip number is the crucial one: it proves no
+        phantom lines were re-created by loosening the rule for trails. The two remaining fragments are
+        individual corner clips, correctly rejected because they are not traversals.
+      </p>
     </section>
 
     <section id="anchor">
@@ -1635,16 +1713,23 @@
       <h3>The fix: use each source for what it's good at</h3>
 
       <p>
-        Take the barometer's <em>shape</em> and the DEM's <em>level</em>. Concretely, after
-        measuring a ride but before storing any of it:
+        Take the barometer's <em>shape</em> &mdash; the hill it traced out, perfect except for a constant offset &mdash;
+        and the DEM's <em>level</em> &mdash; the official "this is how high the ground really is" number. Concretely,
+        after measuring a ride but before storing any of it:
       </p>
 
       <ol>
-        <li>Look up the official terrain height at every spot the ride touched.</li>
-        <li>For each spot, compute how far off the ride was.</li>
-        <li>Take the <strong>middle value</strong> of all those differences &mdash; one number for the whole ride.</li>
-        <li>Subtract that one number from every height in the ride, then store it.</li>
+        <li><strong>Look up the terrain.</strong> For every GPS coordinate the ride touched, ask the DEM "how high is the ground here?"</li>
+        <li><strong>Measure the gap.</strong> For each spot, subtract the official height from what the ride thought it was. This gives you a list of offsets.</li>
+        <li><strong>Find the middle offset.</strong> Take the <em>median</em> (the number in the middle when sorted) of all those differences. One number for the whole ride. Not the average — a bridge, tunnel, or a few bad fixes can skew that. The median ignores outliers.</li>
+        <li><strong>Shift everything.</strong> Subtract that one median offset from every single height in the ride. Now store it.</li>
       </ol>
+
+      <p>
+        <strong>Concrete example:</strong> a ride measures itself as 1814, 1815, 1817, 1816, 1815 m. The terrain says
+        those spots are actually 1800, 1801, 1803, 1802, 1801 m. The offsets are +14, +14, +14, +14, +14 m.
+        The median is +14. Subtract 14 from every height: 1800, 1801, 1803, 1802, 1801. Now it's correct.
+      </p>
 
       <figure>
         <div class="fig-frame">
@@ -1685,10 +1770,26 @@
       <p>Four guards keep it honest:</p>
 
       <ul>
-        <li><strong>One number per ride, never per street.</strong> Fitting per street would absorb real hills along with the error.</li>
-        <li><strong>The middle value, not the average.</strong> A bridge, a tunnel, or a few bad fixes can't drag it.</li>
-        <li><strong>Fewer than 10 overlapping points &rarr; don't bother.</strong> The fit would be to noise.</li>
-        <li><strong>More than 60 m off &rarr; refuse.</strong> That's not drift, that's a broken ride; hiding it would be worse.</li>
+        <li>
+          <strong>One number per ride, never per street.</strong> If you tried to fit one offset for all rides on
+          South Wahsatch Avenue southbound, you'd be assuming the road is flat. The fit would swallow the real
+          2.3-metre climb that genuinely exists, plus the barometer drift. Fitting per ride leaves the real shape alone.
+        </li>
+        <li>
+          <strong>The middle value, not the average.</strong> If one fix was taken inside a tunnel (a few metres off),
+          or a bridge misreported height, one bad outlier would drag an average way off. The median ignores it entirely &mdash;
+          it only cares about the middle value when all offsets are sorted.
+        </li>
+        <li>
+          <strong>Fewer than 10 overlapping points &rarr; don't bother.</strong> If the ride only touched 8 spots in the DEM
+          database, you'd be fitting to noise. So short rides get no anchor and stay on their GPS altitude. Better an untrusted
+          absolute height than a confident fit to nothing.
+        </li>
+        <li>
+          <strong>More than 60 m off &rarr; refuse.</strong> If the median offset is 60 metres or worse, something is very wrong:
+          a GPS fix in a tunnel, a misaligned ride, or the ride happened somewhere the DEM doesn't cover. That's not drift, that's
+          a broken ride. Hiding it with a wrong anchor is worse than leaving it broken.
+        </li>
       </ul>
 
       <div class="callout warn">
@@ -1731,9 +1832,9 @@
           <thead><tr><th class="mono">Command</th><th>Does</th><th>Notable</th></tr></thead>
           <tbody>
             <tr><td class="mono">npm run fetch</td><td>Downloads every street in a map box from Overpass</td><td>Query must be form-encoded, or you get a 406</td></tr>
-            <tr><td class="mono">npm run split</td><td>Classifies, drops unrideable ways, cuts at intersections, caps at 150 m</td><td>Dropping driveways cut 2,795 segments to ~950 with no real loss</td></tr>
-            <tr><td class="mono">npm run load</td><td>Inserts into <code>segments</code>, 500 rows at a time</td><td>Safe to re-run &mdash; it updates rather than duplicates</td></tr>
-            <tr><td class="mono">npm run link</td><td>Points each sidewalk at its parent road</td><td>Eligibility is by <em>name</em>, not shape &mdash; see below</td></tr>
+            <tr><td class="mono">npm run split</td><td>Sorts ways by type, removes driveways/parking/unusable. Cuts at junctions (where roads cross). Breaks long ways into 8–150 m pieces.</td><td>Driveways cut 2,795 raw ways down to ~950 kept pieces, with no loss to riders</td></tr>
+            <tr><td class="mono">npm run load</td><td>Inserts the pieces into the <code>segments</code> table, 500 at a time</td><td>Safe to re-run — if a way hasn't changed, it updates existing rows instead of making duplicates</td></tr>
+            <tr><td class="mono">npm run link</td><td>Identifies sidewalks, curb cuts, and service roads and points them to their parent street</td><td>A path qualifies if it's <em>unnamed or its name contains "sidewalk"</em>, not by geometry. Named trails are protected.</td></tr>
           </tbody>
         </table>
       </div>
@@ -1810,8 +1911,8 @@
       <ol class="steps">
         <li><h4>The phone decides whether to ask</h4><p>Requests a box 20% wider than the screen; if the last one already covered it, no request is made.</p></li>
         <li><h4>The server finds what has data</h4><p>Canonical segments in the box that have at least one bucket. Segments with no data are skipped &mdash; the network covers a city.</p></li>
-        <li><h4>The server builds the lines</h4><p>Clip to coverage, offset 4 m, compute slopes, emit colour stops.</p></li>
-        <li><h4>The phone cuts them into pieces</h4><p>One short single-colour piece per stop, because gradient-along-a-line isn't reliable yet in the map library.</p></li>
+        <li><h4>The server builds the lines</h4><p>Clip to coverage, offset 4 m, compute slopes, emit colour stops. A "stop" is a point where the slope crosses a band boundary (e.g., from green "easy down" to yellow "easy up").</p></li>
+        <li><h4>The phone cuts them into pieces</h4><p>Between each pair of adjacent stops, the colour is constant. Draw one short line segment in that one colour. The reason: map libraries can draw a line and colour it all one way, but they can't colour one line with a gradient (smooth colour change). So we work around it by drawing many short segments, each one solid colour.</p></li>
         <li><h4>Merge, never replace</h4><p>New responses are merged into what's already drawn, and a counter discards any response that arrives after a newer one. Both were added because lines visibly flickered during rides.</p></li>
       </ol>
     </section>
@@ -1958,6 +2059,6 @@ adb install -r app/build/outputs/apk/release/app-release.apk</code></pre>
 
 <footer>
   CyclingDataApp architecture reference, 2nd edition · worked example: segment 12555,
-  South Wahsatch Avenue, 104.4 m, ridden 4 times · model as of 18 August 2026:
-  1,073 buckets across 175 segments, 0 implausible.
+  South Wahsatch Avenue, 104.4 m, ridden 4 times · model as of 22 August 2026:
+  1,523 buckets across 242 segments, 0 implausible. Fragment stitching and Ute Valley added.
 </footer>
