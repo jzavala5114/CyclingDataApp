@@ -217,6 +217,16 @@
   .steps h4 { margin: 0 0 4px; font-size: 1rem; color: var(--ink); }
   .steps p { margin-bottom: 8px; }
 
+  .calc {
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 2px;
+    padding: 14px 18px; margin: 0 0 22px; max-width: var(--measure);
+    display: flex; flex-direction: column; gap: 9px;
+  }
+  .calc div { display: flex; flex-wrap: wrap; gap: 4px 18px; align-items: baseline; }
+  .calc span { font-family: var(--f-display); font-size: 11.5px; color: var(--ink-3); min-width: 21ch; }
+  .calc b { font-family: var(--f-mono); font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .calc b em { font-style: normal; color: var(--accent); font-weight: 600; }
+
   .ramp { display: flex; flex-wrap: wrap; margin: 0 0 10px; max-width: var(--measure); }
   .ramp div { flex: 1 1 0; min-width: 78px; padding: 9px 8px 8px; font-family: var(--f-mono); font-size: 11px; color: #fff; text-align: center; line-height: 1.35; }
   .ramp span { display: block; font-size: 10px; opacity: 0.85; }
@@ -314,6 +324,7 @@
       <li><a href="#anchor">The DEM anchor</a></li>
 
       <li class="part">Part 6 · Reference</li>
+      <li><a href="#overview">The whole thing in one pass</a></li>
       <li><a href="#flows">The four flows</a></li>
       <li><a href="#numbers">Every number</a></li>
       <li><a href="#failures">Failure modes</a></li>
@@ -859,6 +870,108 @@
         could find it. It has no width on the map and nothing is drawn at it &mdash; it is a
         filing position, like a shelf label.
       </p>
+
+      <h3>Is it one grid laid over the whole map?</h3>
+
+      <p>
+        <strong>No.</strong> There is no city-wide grid, and nothing is measured from a common origin. The 15 m
+        spacing is one-dimensional and it belongs to a single segment: each segment carries its own ruler that
+        starts at zero at its own end and counts along its own centreline. Two segments meeting at an intersection
+        each have their own zero, a few metres apart, pointing different ways.
+      </p>
+
+      <p>
+        So bucket 30 on South Wahsatch and bucket 30 on East Fountain are not related, not aligned, and not near each
+        other. The number is only meaningful once you say <em>which segment</em> &mdash; which is why a bucket row is
+        keyed by <em>(segment, direction, distance)</em> and never by distance alone.
+      </p>
+
+      <figure>
+        <div class="fig-frame">
+          <svg viewBox="0 0 880 480" role="img" aria-label="Two panels. The first shows two streets crossing, each with its own ruler of 15-metre marks starting at its own end; bucket 30 is circled on both and they sit at completely unrelated places. The second shows one street with two rulers running in opposite directions: the forward ruler counts from the west end and the backward ruler counts from the east end, so forward bucket 30 and backward bucket 30 are 30 metres apart on the ground and stored as separate rows.">
+            <defs>
+              <marker id="bg-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+              </marker>
+            </defs>
+
+            <text x="0" y="16" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65" letter-spacing="0.9">EACH SEGMENT CARRIES ITS OWN RULER</text>
+
+            <!-- street B, vertical -->
+            <line x1="324" y1="36" x2="324" y2="266" stroke="currentColor" stroke-width="3"/>
+            <g stroke="currentColor" stroke-width="1.4" opacity="0.7">
+              <line x1="316" y1="36" x2="332" y2="36"/><line x1="316" y1="114" x2="332" y2="114"/><line x1="316" y1="192" x2="332" y2="192"/>
+            </g>
+            <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.6" text-anchor="end">
+              <text x="310" y="40">0</text><text x="310" y="118">15</text><text x="310" y="196">30</text>
+            </g>
+            <text x="336" y="32" font-family="Archivo, sans-serif" font-size="10.5" font-weight="600" fill="currentColor">segment B starts here</text>
+
+            <!-- street A, horizontal -->
+            <line x1="90" y1="136" x2="558" y2="136" stroke="currentColor" stroke-width="3"/>
+            <g stroke="currentColor" stroke-width="1.4" opacity="0.7">
+              <line x1="90" y1="128" x2="90" y2="144"/><line x1="168" y1="128" x2="168" y2="144"/><line x1="246" y1="128" x2="246" y2="144"/>
+              <line x1="402" y1="128" x2="402" y2="144"/><line x1="480" y1="128" x2="480" y2="144"/><line x1="558" y1="128" x2="558" y2="144"/>
+            </g>
+            <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.6" text-anchor="middle">
+              <text x="90" y="160">0</text><text x="168" y="160">15</text><text x="246" y="160">30</text>
+              <text x="402" y="160">60</text><text x="480" y="160">75</text><text x="558" y="160">90</text>
+            </g>
+            <text x="90" y="116" font-family="Archivo, sans-serif" font-size="10.5" font-weight="600" fill="currentColor">segment A starts here</text>
+
+            <!-- the two bucket 30s -->
+            <circle cx="246" cy="136" r="8" fill="none" stroke="var(--accent)" stroke-width="2.5"/>
+            <circle cx="246" cy="136" r="3.5" fill="var(--accent)"/>
+            <circle cx="324" cy="192" r="8" fill="none" stroke="var(--accent)" stroke-width="2.5"/>
+            <circle cx="324" cy="192" r="3.5" fill="var(--accent)"/>
+
+            <path d="M 600 200 L 262 148" fill="none" stroke="var(--accent)" stroke-width="1" opacity="0.7" marker-end="url(#bg-a)"/>
+            <path d="M 600 212 L 340 200" fill="none" stroke="var(--accent)" stroke-width="1" opacity="0.7" marker-end="url(#bg-a)"/>
+            <text x="608" y="198" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="var(--accent)">both are "bucket 30"</text>
+            <text x="608" y="216" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">two unrelated places —</text>
+            <text x="608" y="232" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">the number means nothing</text>
+            <text x="608" y="248" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">until you name the segment</text>
+
+            <text x="90" y="296" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.7">the two rulers do not line up at the intersection, and neither of them knows the other exists</text>
+
+            <!-- ============ panel 2 ============ -->
+            <text x="0" y="336" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65" letter-spacing="0.9">AND EACH DIRECTION CARRIES ITS OWN RULER TOO</text>
+
+            <line x1="90" y1="356" x2="196" y2="356" stroke="currentColor" stroke-width="1.2" opacity="0.7" marker-end="url(#bg-a)"/>
+            <text x="206" y="360" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">forward — this ruler counts from the west end</text>
+            <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.6" text-anchor="middle">
+              <text x="90" y="380">0</text><text x="168" y="380">15</text><text x="246" y="380">30</text><text x="324" y="380">45</text>
+              <text x="402" y="380">60</text><text x="480" y="380">75</text><text x="558" y="380">90</text>
+            </g>
+
+            <line x1="90" y1="396" x2="558" y2="396" stroke="currentColor" stroke-width="3"/>
+            <g stroke="currentColor" stroke-width="1.4" opacity="0.7">
+              <line x1="90" y1="388" x2="90" y2="404"/><line x1="168" y1="388" x2="168" y2="404"/><line x1="246" y1="388" x2="246" y2="404"/>
+              <line x1="324" y1="388" x2="324" y2="404"/><line x1="402" y1="388" x2="402" y2="404"/>
+              <line x1="480" y1="388" x2="480" y2="404"/><line x1="558" y1="388" x2="558" y2="404"/>
+            </g>
+
+            <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.6" text-anchor="middle">
+              <text x="90" y="420">90</text><text x="168" y="420">75</text><text x="246" y="420">60</text><text x="324" y="420">45</text>
+              <text x="402" y="420">30</text><text x="480" y="420">15</text><text x="558" y="420">0</text>
+            </g>
+            <line x1="558" y1="440" x2="452" y2="440" stroke="currentColor" stroke-width="1.2" opacity="0.7" marker-end="url(#bg-a)"/>
+            <text x="442" y="444" text-anchor="end" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">backward — this ruler counts from the east end</text>
+
+            <circle cx="246" cy="396" r="8" fill="none" stroke="var(--accent)" stroke-width="2.5"/>
+            <circle cx="246" cy="396" r="3.5" fill="var(--accent)"/>
+            <circle cx="402" cy="396" r="8" fill="none" stroke="var(--accent)" stroke-width="2.5"/>
+            <circle cx="402" cy="396" r="3.5" fill="var(--accent)"/>
+            <text x="608" y="400" font-family="Archivo, sans-serif" font-size="10.5" fill="var(--accent)">forward-30 and backward-30:</text>
+            <text x="608" y="416" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">30 m apart, two separate rows</text>
+          </svg>
+        </div>
+        <figcaption>
+          <b>The ruler is per segment, per direction &mdash; never global.</b> Distance is measured along the direction
+          of travel, so a backward run's zero sits at the segment's far end. Riding a street northbound therefore never
+          touches a single southbound number.
+        </figcaption>
+      </figure>
     </section>
 
     <section id="mean">
@@ -1109,19 +1222,229 @@
         which is why a flat street once came out speckled purple and red.
       </p>
 
+      <h4>Two words first: gap, and window</h4>
+
       <p>
-        Instead, each piece's slope is a <strong>least-squares best-fit line through five buckets</strong>:
-        the one at the start of the gap, the one at the end, plus the two on either side of each.
-        That spans about 60 metres and averages out one barometer reading's noise. The fit finds
-        the single slope that best matches all five heights at once, rather than just the difference
-        between two.
+        <strong>A gap is the stretch of street between two neighbouring buckets.</strong> Buckets sit
+        every 15 m, so a block with buckets at 15, 30, 45, 60, 75, 90 and 105 has six gaps between
+        them. A gap is a piece of ground, 15 m long &mdash; and it is exactly the piece that gets
+        painted one solid colour. That is what a coloured piece <em>is</em>, and it is the same "six
+        pieces from seven buckets" the picture just above was making.
       </p>
 
       <p>
-        Example: gap from bucket 30m to 45m. You'd fit a line through buckets at 15, 30, 45, 60, 75m,
-        finding the slope that sits closest to all five. A single noisy point can't swing it much because
-        four others are holding it steady. The final result is capped at &plusmn;25%, since no rideable
-        street here is steeper than that.
+        <strong>Every gap gets its own colour.</strong> Nothing is left out; the whole ridden stretch
+        of street is covered by gaps laid end to end. So when I say "colouring the gap from 45 m to
+        60 m", that is one turn of a loop that runs over all six. It has to be described one gap at a
+        time only because each one is decided independently of the others.
+      </p>
+
+      <p>
+        <strong>A window is the set of buckets consulted to decide one gap's colour.</strong> It is
+        not a piece of ground and nothing is ever drawn at its width &mdash; it is purely "which
+        stored heights do I read in order to work out how steep this 15 m piece is". The window is
+        deliberately wider than the gap it decides, and the rest of this section is about why.
+      </p>
+
+      <h4>What a best-fit line is</h4>
+
+      <p>
+        Picture the buckets on a chart: their positions along the bottom, their stored heights up
+        the side. Six dots. There are infinitely many straight lines you could draw across them,
+        and <em>none</em> of them will pass through all six &mdash; the heights are measurements,
+        and measurements wobble.
+      </p>
+
+      <p>
+        A <strong>best-fit line</strong> is the single line that comes closest to all six at once.
+        "Closest" needs a definition, and the usual one is called <strong>least squares</strong>:
+        for each dot, measure the vertical distance from the dot up or down to the line &mdash; call
+        that the <em>miss</em> &mdash; square it, and add up all six. The best-fit line is the one
+        where that total comes out smallest. Hence the name: <em>least</em> total of the
+        <em>squares</em>.
+      </p>
+
+      <p>
+        Squaring does two jobs. It stops a miss above the line from cancelling out a miss below it,
+        and it makes one large miss cost far more than several small ones &mdash; so the line gets
+        pulled toward the crowd rather than toward any single odd reading. The slope of that line is
+        the number we colour by.
+      </p>
+
+      <h4>Why six dots instead of two</h4>
+
+      <figure>
+        <div class="fig-frame">
+          <svg viewBox="0 0 880 336" role="img" aria-label="The same six real buckets from South Wahsatch plotted twice. On the left, slope taken from just the two buckets either side of each gap: the bucket at 60 metres reads 0.9 metres too high, so the gap before it comes out at plus 6.1 percent and is painted red, and the gap after it at minus 10.3 percent and is painted purple, on a street that only descends gently. On the right, a least-squares line fitted through all six buckets comes out at minus 2.6 percent and is painted green; dashed ticks show how far each bucket misses that line, and the bad bucket misses by a lot but is outvoted by the other five.">
+            <defs>
+              <marker id="ls-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+              </marker>
+            </defs>
+
+            <text x="0" y="18" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65" letter-spacing="0.8">A · SLOPE FROM THE TWO BUCKETS EITHER SIDE</text>
+            <text x="470" y="18" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65" letter-spacing="0.8">B · SLOPE FROM A BEST-FIT LINE THROUGH SIX</text>
+
+            <!-- shared height gridlines -->
+            <g stroke="currentColor" stroke-width="1" opacity="0.16">
+              <line x1="80" y1="101" x2="400" y2="101"/><line x1="80" y1="212" x2="400" y2="212"/>
+              <line x1="490" y1="101" x2="810" y2="101"/><line x1="490" y1="212" x2="810" y2="212"/>
+            </g>
+            <g font-family="IBM Plex Mono, monospace" font-size="9.5" fill="currentColor" opacity="0.5" text-anchor="end">
+              <text x="72" y="104">1826 m</text><text x="72" y="215">1824 m</text>
+            </g>
+
+            <!-- ===== LEFT ===== -->
+            <line x1="210" y1="174" x2="270" y2="123" stroke="#dc2626" stroke-width="3"/>
+            <line x1="270" y1="123" x2="330" y2="208" stroke="#7c3aed" stroke-width="3"/>
+
+            <g fill="currentColor" opacity="0.3">
+              <circle cx="90" cy="101" r="5"/><circle cx="150" cy="158" r="5"/><circle cx="390" cy="231" r="5"/>
+            </g>
+            <g fill="currentColor">
+              <circle cx="210" cy="174" r="5"/><circle cx="330" cy="208" r="5"/>
+            </g>
+            <circle cx="270" cy="123" r="6.5" fill="#dc2626"/>
+
+            <path d="M 268 68 L 268 112" fill="none" stroke="currentColor" stroke-width="1" opacity="0.7" marker-end="url(#ls-a)"/>
+            <text x="232" y="60" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.85">this bucket reads 0.9 m high</text>
+
+            <line x1="80" y1="250" x2="400" y2="250" stroke="currentColor" stroke-width="1.2" opacity="0.45"/>
+            <rect x="210" y="258" width="60" height="9" fill="#dc2626"/>
+            <rect x="270" y="258" width="60" height="9" fill="#7c3aed"/>
+            <g font-family="IBM Plex Mono, monospace" font-size="10.5" text-anchor="middle">
+              <text x="240" y="282" fill="#dc2626">+6.1%</text>
+              <text x="300" y="282" fill="#7c3aed">−10.3%</text>
+            </g>
+            <g font-family="IBM Plex Mono, monospace" font-size="9.5" fill="currentColor" opacity="0.5" text-anchor="middle">
+              <text x="90" y="302">15</text><text x="150" y="302">30</text><text x="210" y="302">45</text>
+              <text x="270" y="302">60</text><text x="330" y="302">75</text><text x="390" y="302">90</text>
+            </g>
+
+            <line x1="440" y1="30" x2="440" y2="310" stroke="currentColor" stroke-width="1" stroke-dasharray="3 5" opacity="0.25"/>
+
+            <!-- ===== RIGHT ===== -->
+            <g stroke="currentColor" stroke-width="1" stroke-dasharray="2 3" opacity="0.65">
+              <line x1="500" y1="101" x2="500" y2="112"/><line x1="560" y1="158" x2="560" y2="133"/>
+              <line x1="620" y1="174" x2="620" y2="155"/><line x1="680" y1="123" x2="680" y2="176"/>
+              <line x1="740" y1="208" x2="740" y2="198"/><line x1="800" y1="231" x2="800" y2="219"/>
+            </g>
+            <line x1="500" y1="112" x2="800" y2="219" stroke="var(--accent)" stroke-width="3"/>
+
+            <g fill="currentColor">
+              <circle cx="500" cy="101" r="5"/><circle cx="560" cy="158" r="5"/><circle cx="620" cy="174" r="5"/>
+              <circle cx="740" cy="208" r="5"/><circle cx="800" cy="231" r="5"/>
+            </g>
+            <circle cx="680" cy="123" r="6.5" fill="#dc2626"/>
+
+            <path d="M 700 68 L 682 112" fill="none" stroke="currentColor" stroke-width="1" opacity="0.7" marker-end="url(#ls-a)"/>
+            <text x="596" y="60" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.85">same bad bucket, outvoted five to one</text>
+
+            <line x1="490" y1="250" x2="810" y2="250" stroke="currentColor" stroke-width="1.2" opacity="0.45"/>
+            <text x="490" y="240" font-family="Archivo, sans-serif" font-size="10.5" font-weight="600" fill="var(--accent)">the best-fit line</text>
+            <rect x="620" y="258" width="60" height="9" fill="#22c55e"/>
+            <text x="650" y="282" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="#22c55e">−2.6%</text>
+            <g font-family="IBM Plex Mono, monospace" font-size="9.5" fill="currentColor" opacity="0.5" text-anchor="middle">
+              <text x="500" y="302">15</text><text x="560" y="302">30</text><text x="620" y="302">45</text>
+              <text x="680" y="302">60</text><text x="740" y="302">75</text><text x="800" y="302">90</text>
+            </g>
+
+            <text x="440" y="326" text-anchor="middle" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.7">metres along the block · dashed ticks on the right are the misses least squares is minimising</text>
+          </svg>
+        </div>
+        <figcaption>
+          <b>These are the real stored heights for South Wahsatch, including the real bad one.</b>
+          The bucket at 60 m sits 0.9 m above where the street actually is. Taking two points at a
+          time, that one reading swings the answer by more than eight percentage points and paints
+          two pieces of a gently-descending street red and purple. In the fit, it moves the answer
+          by about 0.2 of a point.
+        </figcaption>
+      </figure>
+
+      <h4>Which six, exactly</h4>
+
+      <p>
+        The window reaches two buckets beyond each end of its gap. For the gap from 45 m to 60 m that
+        means buckets 45 and 60 themselves, plus 15 and 30 before, plus 75 and 90 after &mdash; six
+        buckets covering 75 metres of street, used to colour 15 metres of it. Move to the next gap and
+        the window slides along with it, so neighbouring gaps share most of their buckets. That overlap
+        is why colours change gradually along a street instead of jumping.
+      </p>
+
+      <figure>
+        <div class="fig-frame">
+          <svg viewBox="0 0 880 396" role="img" aria-label="A block with seven buckets at 15 to 105 metres, dividing it into six gaps. The drawn line below shows all six gaps painted, each its own solid colour. Three rows underneath show which buckets each gap's window consults: gap 1 near the start of the block can only reach four buckets because none exist before it, while gap 3 and gap 4 each reach a full six, and their windows overlap by five buckets.">
+            <text x="0" y="16" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65" letter-spacing="0.9">ONE BLOCK · SEVEN BUCKETS · SIX GAPS</text>
+
+            <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.6" text-anchor="middle">
+              <text x="100" y="50">15</text><text x="200" y="50">30</text><text x="300" y="50">45</text>
+              <text x="400" y="50">60</text><text x="500" y="50">75</text><text x="600" y="50">90</text><text x="700" y="50">105</text>
+            </g>
+            <line x1="100" y1="70" x2="700" y2="70" stroke="currentColor" stroke-width="1.5" opacity="0.4"/>
+            <g fill="currentColor">
+              <circle cx="100" cy="70" r="5"/><circle cx="200" cy="70" r="5"/><circle cx="300" cy="70" r="5"/>
+              <circle cx="400" cy="70" r="5"/><circle cx="500" cy="70" r="5"/><circle cx="600" cy="70" r="5"/><circle cx="700" cy="70" r="5"/>
+            </g>
+            <text x="712" y="74" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.7">buckets</text>
+
+            <text x="0" y="108" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65" letter-spacing="0.9">THE DRAWN LINE — ONE SOLID COLOUR PER GAP, ALL SIX PAINTED</text>
+            <rect x="100" y="120" width="100" height="13" fill="#eab308"/>
+            <rect x="200" y="120" width="100" height="13" fill="#22c55e"/>
+            <rect x="300" y="120" width="100" height="13" fill="#22c55e"/>
+            <rect x="400" y="120" width="100" height="13" fill="#2563eb"/>
+            <rect x="500" y="120" width="100" height="13" fill="#22c55e"/>
+            <rect x="600" y="120" width="100" height="13" fill="#eab308"/>
+            <g font-family="Archivo, sans-serif" font-size="9.5" fill="currentColor" opacity="0.6" text-anchor="middle">
+              <text x="150" y="150">gap 1</text><text x="250" y="150">gap 2</text><text x="350" y="150">gap 3</text>
+              <text x="450" y="150">gap 4</text><text x="550" y="150">gap 5</text><text x="650" y="150">gap 6</text>
+            </g>
+
+            <text x="0" y="192" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65" letter-spacing="0.9">THE WINDOW EACH GAP CONSULTS — NOT DRAWN, JUST READ</text>
+
+            <!-- gap 1 -->
+            <text x="88" y="228" text-anchor="end" font-family="Archivo, sans-serif" font-size="10.5" font-weight="600" fill="currentColor">gap 1</text>
+            <rect x="100" y="218" width="300" height="11" fill="currentColor" opacity="0.16"/>
+            <rect x="100" y="212" width="100" height="5" fill="#eab308"/>
+            <g fill="currentColor">
+              <circle cx="100" cy="223.5" r="4"/><circle cx="200" cy="223.5" r="4"/><circle cx="300" cy="223.5" r="4"/><circle cx="400" cy="223.5" r="4"/>
+            </g>
+            <text x="412" y="228" font-family="Archivo, sans-serif" font-size="10.5" fill="#dc2626">only 4 buckets — nothing exists before 15 m</text>
+
+            <!-- gap 3 -->
+            <text x="88" y="278" text-anchor="end" font-family="Archivo, sans-serif" font-size="10.5" font-weight="600" fill="currentColor">gap 3</text>
+            <rect x="100" y="268" width="500" height="11" fill="currentColor" opacity="0.16"/>
+            <rect x="300" y="262" width="100" height="5" fill="#22c55e"/>
+            <g fill="currentColor">
+              <circle cx="100" cy="273.5" r="4"/><circle cx="200" cy="273.5" r="4"/><circle cx="300" cy="273.5" r="4"/>
+              <circle cx="400" cy="273.5" r="4"/><circle cx="500" cy="273.5" r="4"/><circle cx="600" cy="273.5" r="4"/>
+            </g>
+            <text x="612" y="278" font-family="Archivo, sans-serif" font-size="10.5" fill="var(--accent)">a full 6</text>
+
+            <!-- gap 4 -->
+            <text x="88" y="328" text-anchor="end" font-family="Archivo, sans-serif" font-size="10.5" font-weight="600" fill="currentColor">gap 4</text>
+            <rect x="200" y="318" width="500" height="11" fill="currentColor" opacity="0.16"/>
+            <rect x="400" y="312" width="100" height="5" fill="#2563eb"/>
+            <g fill="currentColor">
+              <circle cx="200" cy="323.5" r="4"/><circle cx="300" cy="323.5" r="4"/><circle cx="400" cy="323.5" r="4"/>
+              <circle cx="500" cy="323.5" r="4"/><circle cx="600" cy="323.5" r="4"/><circle cx="700" cy="323.5" r="4"/>
+            </g>
+            <text x="712" y="328" font-family="Archivo, sans-serif" font-size="10.5" fill="var(--accent)">a full 6</text>
+
+            <text x="0" y="370" font-family="Archivo, sans-serif" font-size="11" fill="currentColor" opacity="0.75">the window slides one bucket at a time · gap 3 and gap 4 share five of their six, which is why their colours rarely jump</text>
+            <text x="0" y="388" font-family="Archivo, sans-serif" font-size="11" fill="currentColor" opacity="0.75">the short coloured tick above each window bar marks the 15 m actually painted by that window</text>
+          </svg>
+        </div>
+        <figcaption>
+          <b>Six gaps, six colours, six separate decisions &mdash; each one reading a wider stretch than it paints.</b>
+          "Not six to be had" means exactly what gap 1 shows: the window wants two buckets before 15 m and there is
+          no such thing, because the block starts there. The code takes whatever exists rather than refusing, so the
+          first and last gaps of every segment are always fitted on fewer points than the middle ones.
+        </figcaption>
+      </figure>
+
+      <p>
+        Finally the result is capped at &plusmn;25%, since no rideable street here is steeper than
+        that &mdash; past that it is a bad reading, not terrain.
       </p>
 
       <div class="ramp">
@@ -1132,6 +1455,49 @@
         <div style="background:#f97316">+3 to +6<span>climb</span></div>
         <div style="background:#dc2626">&gt; +6%<span>wall</span></div>
       </div>
+
+      <h4>What these percentages actually feel like</h4>
+
+      <p>
+        First, clearing up a trap in the numbers you have been reading. Heights like <strong>1824 m</strong> and
+        <strong>1826 m</strong> are <em>altitude above sea level</em>, not climb. Colorado Springs sits at roughly
+        1,800 m, which is about 5,900 ft, so every height in this database starts near that. A change from 1824 to
+        1826 is a 2-metre rise &mdash; and on its own that tells you nothing about steepness.
+      </p>
+
+      <p>
+        <strong>Slope is rise divided by distance travelled forward.</strong> That same 2 m rise is a 13% wall if
+        you gained it over 15 m of street, and a gentle 2% if you gained it over 100 m. The percentage is the only
+        thing that describes steepness; the raw heights never do.
+      </p>
+
+      <p>
+        The percentage is also <strong>unit-free</strong>, which is handy if you think in feet: 6% means 6 metres
+        up per 100 metres forward <em>and</em> 6 feet up per 100 feet forward. The same number works in both.
+        Some reference points:
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Grade</th><th>Something you know at that grade</th></tr></thead>
+          <tbody>
+            <tr><td class="mono">2 – 3%</td><td>Barely perceptible; you notice it in your speed, not your legs</td></tr>
+            <tr><td class="mono">6%</td><td>The steepest a US highway normally goes before runaway-truck ramps appear</td></tr>
+            <tr><td class="mono">8.3%</td><td>The legal maximum for a wheelchair ramp</td></tr>
+            <tr><td class="mono">7 – 9%</td><td>The average grade of a famous Alpine cycling pass, sustained for an hour</td></tr>
+            <tr><td class="mono">15 – 25%</td><td>Mountain-bike trail pitches; walking territory for most riders</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <p>
+        So yes &mdash; sustained 6% is a real climb on a bicycle, and painting it red is defensible. But note the
+        weakness this reveals: <strong>the red band is open-ended.</strong> Everything above 6% is the same red, so
+        a 7% street and a 20% trail pitch are drawn identically, right up to the &plusmn;25% clamp. That was a fine
+        simplification for a city grid where almost nothing exceeds 8%. On mountain trails it throws away most of
+        the interesting range, and splitting red into two or three bands is probably the single cheapest
+        improvement available &mdash; it needs no rebuild, since colours are computed fresh on every request.
+      </p>
     </section>
 
     <section id="change">
@@ -1395,37 +1761,245 @@
       <div class="define">
         <span class="word">Distance along</span>
         <p>
-          For any GPS fix, "distance along" a street means: <strong>imagine dropping a perpendicular line from the GPS fix
-          straight down to the street's centreline. Measure where that perpendicular meets the line. That meeting point's distance
-          from the street's start is the "distance along."</strong>
+          A GPS fix is a point somewhere near the street &mdash; never exactly on the stored centreline, because
+          the centreline is a drawn line and the fix is a noisy measurement. <strong>Distance along throws away how far
+          to the side the fix landed and keeps a single number: how far down the segment it sits, measured from the
+          segment's start.</strong>
         </p>
         <p>
-          <strong>Example:</strong> You're riding South Wahsatch Avenue southbound. A GPS fix lands 3 metres to the left of the
-          centreline, but you've already travelled 40 metres down the block. If you stepped sideways from that fix onto the road,
-          you'd land 40 metres from the north end. So distance-along = 40 m.
+          Every segment has a start &mdash; the first node OSM stored for that block. On South Wahsatch Avenue, which runs
+          north to south, that start is the north end. A fix that lands 40 metres down the block has a distance along of
+          40 m <em>whether the fix itself was 2 metres off the centreline or 12</em>.
         </p>
         <p>
-          The key insight: GPS position and distance-along the street are <em>independent</em>. You could be 3 m off the road or 20 m
-          off the road, but the perpendicular always lands somewhere along the centreline, and that's what matters for the gate.
+          Sideways distance is not useless &mdash; it just belongs to an earlier step. The matcher computes it to
+          decide <em>which</em> street a fix belongs to, and once that decision is made it plays no further part.
+          Only distance along and height go into the elevation model.
+        </p>
+        <p>
+          <strong>But "discarded" is too strong, and the difference matters.</strong> The <em>computed</em> sideways
+          distance is never written down anywhere. The raw fix it was computed from &mdash; its latitude and
+          longitude &mdash; is kept forever in <code>session_samples</code>. So the number is not preserved, but it
+          is always recoverable, and a rebuild does exactly that: it re-reads the raw positions and recomputes every
+          sideways distance from scratch. That is the whole reason a matching decision made last year can be
+          revisited after a constant changes.
         </p>
       </div>
+
+      <figure>
+        <div class="fig-frame">
+          <svg viewBox="0 0 880 360" role="img" aria-label="Two stacked panels. The top panel is a map view of one 104-metre block with six GPS fixes sitting at different sideways distances from the centreline; a dashed line drops each fix onto the centreline at a right angle. The bottom panel is a ruler from 0 to 104 metres showing where each fix landed: 9, 25, 42, 58, 76 and 95 metres. The fix that wandered 12 metres off the centreline still lands at 76 metres, the same as it would have from 2 metres off.">
+            <defs>
+              <marker id="da-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+              </marker>
+            </defs>
+
+            <text x="0" y="18" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65" letter-spacing="0.9">1 · MAP VIEW, LOOKING STRAIGHT DOWN</text>
+
+            <!-- dashed drops: fix -> centreline -> ruler -->
+            <g stroke="var(--accent)" stroke-width="1" stroke-dasharray="2 3" opacity="0.55">
+              <line x1="150" y1="130" x2="150" y2="258"/>
+              <line x1="258" y1="177" x2="258" y2="258"/>
+              <line x1="371" y1="137" x2="371" y2="258"/>
+              <line x1="479" y1="190" x2="479" y2="258"/>
+              <line x1="599" y1="70"  x2="599" y2="258"/>
+              <line x1="727" y1="160" x2="727" y2="258"/>
+            </g>
+
+            <!-- the centreline -->
+            <line x1="90" y1="150" x2="787" y2="150" stroke="currentColor" stroke-width="3"/>
+            <text x="98" y="100" font-family="Archivo, sans-serif" font-size="11" fill="currentColor" opacity="0.7">South Wahsatch Avenue · the centreline OSM stored</text>
+
+            <!-- start / end -->
+            <g stroke="currentColor" stroke-width="2.5">
+              <line x1="90" y1="128" x2="90" y2="172"/>
+              <line x1="787" y1="128" x2="787" y2="172"/>
+            </g>
+            <text x="90" y="190" text-anchor="middle" font-family="Archivo, sans-serif" font-size="10.5" font-weight="600" fill="currentColor">start · 0 m</text>
+            <text x="90" y="204" text-anchor="middle" font-family="Archivo, sans-serif" font-size="9.5" fill="currentColor" opacity="0.6">(the north end here)</text>
+            <text x="787" y="190" text-anchor="middle" font-family="Archivo, sans-serif" font-size="10.5" font-weight="600" fill="currentColor">end · 104 m</text>
+
+            <!-- landing rings on the centreline -->
+            <g fill="none" stroke="var(--accent)" stroke-width="1.8">
+              <circle cx="150" cy="150" r="4"/><circle cx="258" cy="150" r="4"/><circle cx="371" cy="150" r="4"/>
+              <circle cx="479" cy="150" r="4"/><circle cx="599" cy="150" r="4"/><circle cx="727" cy="150" r="4"/>
+            </g>
+
+            <!-- the fixes themselves -->
+            <g fill="var(--accent)">
+              <circle cx="150" cy="130" r="5"/><circle cx="258" cy="177" r="5"/><circle cx="371" cy="137" r="5"/>
+              <circle cx="479" cy="190" r="5"/><circle cx="599" cy="70" r="5"/><circle cx="727" cy="160" r="5"/>
+            </g>
+            <text x="150" y="120" text-anchor="middle" font-family="Archivo, sans-serif" font-size="9.5" fill="currentColor" opacity="0.6">GPS fixes</text>
+
+            <!-- the far-off fix, measured -->
+            <g stroke="currentColor" stroke-width="1" opacity="0.5">
+              <line x1="583" y1="70" x2="583" y2="150"/>
+              <line x1="577" y1="70" x2="589" y2="70"/>
+              <line x1="577" y1="150" x2="589" y2="150"/>
+            </g>
+            <text x="572" y="114" text-anchor="end" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.75">12 m</text>
+            <text x="612" y="62" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">this one wandered into the yard</text>
+
+            <!-- panel 2 -->
+            <rect x="0" y="226" width="336" height="20" fill="var(--surface)"/>
+            <text x="0" y="240" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65" letter-spacing="0.9">2 · WHAT THE SERVER KEEPS</text>
+
+            <g font-family="IBM Plex Mono, monospace" font-size="11" fill="var(--accent)" text-anchor="middle">
+              <text x="150" y="272">9</text><text x="258" y="272">25</text><text x="371" y="272">42</text>
+              <text x="479" y="272">58</text><text x="599" y="272">76</text><text x="727" y="272">95</text>
+            </g>
+            <g stroke="var(--accent)" stroke-width="1" opacity="0.55">
+              <line x1="150" y1="276" x2="150" y2="284"/><line x1="258" y1="276" x2="258" y2="284"/>
+              <line x1="371" y1="276" x2="371" y2="284"/><line x1="479" y1="276" x2="479" y2="284"/>
+              <line x1="599" y1="276" x2="599" y2="284"/><line x1="727" y1="276" x2="727" y2="284"/>
+            </g>
+
+            <line x1="90" y1="286" x2="787" y2="286" stroke="currentColor" stroke-width="1.6"/>
+            <g fill="var(--accent)">
+              <circle cx="150" cy="286" r="4.5"/><circle cx="258" cy="286" r="4.5"/><circle cx="371" cy="286" r="4.5"/>
+              <circle cx="479" cy="286" r="4.5"/><circle cx="599" cy="286" r="4.5"/><circle cx="727" cy="286" r="4.5"/>
+            </g>
+            <g stroke="currentColor" stroke-width="1.4" opacity="0.7">
+              <line x1="90" y1="286" x2="90" y2="296"/><line x1="224" y1="286" x2="224" y2="296"/>
+              <line x1="358" y1="286" x2="358" y2="296"/><line x1="492" y1="286" x2="492" y2="296"/>
+              <line x1="626" y1="286" x2="626" y2="296"/><line x1="787" y1="286" x2="787" y2="296"/>
+            </g>
+            <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.55" text-anchor="middle">
+              <text x="90" y="311">0</text><text x="224" y="311">20</text><text x="358" y="311">40</text>
+              <text x="492" y="311">60</text><text x="626" y="311">80</text><text x="787" y="311">104</text>
+            </g>
+            <text x="438" y="336" text-anchor="middle" font-family="Archivo, sans-serif" font-size="11" fill="currentColor" opacity="0.7">distance along the segment, in metres from its start</text>
+
+            <rect x="642" y="226" width="212" height="18" fill="var(--surface)"/>
+            <path d="M 640 240 L 604 264" fill="none" stroke="currentColor" stroke-width="1" opacity="0.6" marker-end="url(#da-a)"/>
+            <text x="648" y="238" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">12 m off, and it still lands at 76</text>
+          </svg>
+        </div>
+        <figcaption>
+          <b>Distance along is a two-dimensional position collapsed to one number.</b> The dashed line drops each fix
+          onto the centreline at a right angle; where it lands is the only thing the gate ever sees. Two fixes at the
+          same point along the block are the same number to the gate even if one of them was standing in a garden.
+        </figcaption>
+      </figure>
 
       <div class="define">
         <span class="word">Span</span>
         <p>
-          <strong>The maximum distance-along in the run, minus the minimum distance-along.</strong> It measures how far down
-          the street the run stretched.
+          <strong>Within one run: the largest distance along, minus the smallest.</strong> Take the ruler from the
+          picture above, mark every fix belonging to that run on it, and measure from the leftmost mark to the
+          rightmost. That width is the span.
         </p>
         <p>
-          <strong>Ride the whole block:</strong> fixes land at 0, 20, 40, 60, 80, 104 m. Span = 104 − 0 = 104 m.<br/>
-          <strong>Clip the corner:</strong> fixes land at 102, 104 m. Span = 104 − 102 = 2 m.<br/>
-          <strong>Sit at a red light:</strong> fixes land at 50.1, 50.2, 50.3, 50.1 m (scattered by GPS noise). Span ≈ 0 m.
+          <strong>It is built out of fixes, so it inherits their spacing.</strong> If a run's first fix landed 9 m
+          into the block and its last landed 90 m in, the span from the run's own fixes is 81 m, not the block's
+          full 104 m &mdash; the first nine metres and the last fourteen were never sampled. In practice the two
+          bracketing fixes usually close that gap: on a genuine pass-through they sit outside the block entirely and
+          clamp to its ends, taking the span to the full 104 m.
         </p>
         <p>
-          The span is the entire range, not the distance travelled. Even if GPS noise scatters you around one point,
-          your max and min are nearly the same, so span stays near zero.
+          <strong>Span belongs to one run, not to the segment.</strong> The gate judges runs, one at a time, and a
+          segment collects many runs over many rides. The segment does enter, but only as the second test's
+          denominator: the coverage fraction is this run's span divided by the whole segment's length, so 81 m on a
+          104 m block is 78%. A segment's total ridden extent across every ride is tracked separately in
+          <code>segment_coverage</code>; that is what the renderer clips lines to, and it plays no part in the gate.
+        </p>
+        <p>
+          It is not the distance you travelled, and it is not how many fixes there were. A run of eighty fixes that never
+          moved has a span of nothing. The three rows below are the same 104 m block, drawn to the same scale.
         </p>
       </div>
+
+      <figure>
+        <div class="fig-frame">
+          <svg viewBox="0 0 880 470" role="img" aria-label="Three rows, all showing the same 104-metre block on the same ruler. Row A: riding the whole block puts six fixes from 0 to 104 metres, span 104 metres, kept. Row B: joining at 90 metres and leaving at 104 puts three fixes there, span 14 metres, rejected because that is only 13 percent of the block. Row C: waiting at the light at the near end puts eight fixes scattered sideways but all within 0.4 metres along, span 0.4 metres, rejected. A reference bar at the top shows how long 25 metres is on this ruler.">
+            <defs>
+              <marker id="sp-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+              </marker>
+            </defs>
+
+            <text x="0" y="16" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65" letter-spacing="0.9">THE SAME 104 m BLOCK IN ALL THREE ROWS — ONLY THE FOOTPRINT ON THE RULER CHANGES</text>
+
+            <!-- 25 m reference -->
+            <line x1="120" y1="40" x2="282" y2="40" stroke="currentColor" stroke-width="4" opacity="0.35"/>
+            <g stroke="currentColor" stroke-width="1.5" opacity="0.55">
+              <line x1="120" y1="34" x2="120" y2="46"/><line x1="282" y1="34" x2="282" y2="46"/>
+            </g>
+            <text x="292" y="44" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.75">25 m — the shortest span the gate accepts</text>
+
+            <!-- ================= ROW A ================= -->
+            <text x="0" y="86" font-family="Archivo, sans-serif" font-size="11.5" font-weight="600" fill="currentColor" letter-spacing="0.5">A · YOU RIDE THE WHOLE BLOCK</text>
+            <text x="796" y="86" text-anchor="end" font-family="Archivo, sans-serif" font-size="11.5" font-weight="600" fill="#22c55e">✓ kept</text>
+
+            <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.55" text-anchor="middle">
+              <text x="120" y="107">0</text><text x="796" y="107">104 m</text>
+            </g>
+            <line x1="120" y1="118" x2="796" y2="118" stroke="currentColor" stroke-width="3"/>
+            <g stroke="currentColor" stroke-width="2">
+              <line x1="120" y1="110" x2="120" y2="126"/><line x1="796" y1="110" x2="796" y2="126"/>
+            </g>
+            <g fill="#22c55e">
+              <circle cx="120" cy="118" r="5"/><circle cx="257" cy="118" r="5"/><circle cx="400" cy="118" r="5"/>
+              <circle cx="523" cy="118" r="5"/><circle cx="666" cy="118" r="5"/><circle cx="796" cy="118" r="5"/>
+            </g>
+            <line x1="120" y1="144" x2="796" y2="144" stroke="#22c55e" stroke-width="4"/>
+            <g stroke="#22c55e" stroke-width="2">
+              <line x1="120" y1="138" x2="120" y2="150"/><line x1="796" y1="138" x2="796" y2="150"/>
+            </g>
+            <text x="120" y="170" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor">span = 104 − 0 = 104 m</text>
+
+            <!-- ================= ROW B ================= -->
+            <text x="0" y="214" font-family="Archivo, sans-serif" font-size="11.5" font-weight="600" fill="currentColor" letter-spacing="0.5">B · YOU JOIN AT THE FAR END AND LEAVE 14 m LATER</text>
+            <text x="796" y="214" text-anchor="end" font-family="Archivo, sans-serif" font-size="11.5" font-weight="600" fill="#dc2626">✗ rejected</text>
+
+            <line x1="120" y1="256" x2="796" y2="256" stroke="currentColor" stroke-width="3"/>
+            <g stroke="currentColor" stroke-width="2">
+              <line x1="120" y1="248" x2="120" y2="264"/><line x1="796" y1="248" x2="796" y2="264"/>
+            </g>
+            <path d="M 700 332 L 700 250 L 792 250 L 792 196" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="4 4" opacity="0.45" marker-end="url(#sp-a)"/>
+            <text x="690" y="332" text-anchor="end" font-family="Archivo, sans-serif" font-size="10" fill="currentColor" opacity="0.6">your path</text>
+            <g fill="currentColor" opacity="0.35">
+              <circle cx="700" cy="300" r="4.5"/><circle cx="792" cy="218" r="4.5"/>
+            </g>
+            <g fill="#dc2626">
+              <circle cx="705" cy="256" r="5"/><circle cx="750" cy="256" r="5"/><circle cx="796" cy="256" r="5"/>
+            </g>
+            <line x1="705" y1="282" x2="796" y2="282" stroke="#dc2626" stroke-width="4"/>
+            <g stroke="#dc2626" stroke-width="2">
+              <line x1="705" y1="276" x2="705" y2="288"/><line x1="796" y1="276" x2="796" y2="288"/>
+            </g>
+            <text x="120" y="290" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor">span = 104 − 90 = 14 m &#160;·&#160; 13% of this block</text>
+            <text x="120" y="310" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.7">the same 14 m on a 16 m connector would be 88% — the coverage test would keep it there</text>
+
+            <!-- ================= ROW C ================= -->
+            <text x="0" y="352" font-family="Archivo, sans-serif" font-size="11.5" font-weight="600" fill="currentColor" letter-spacing="0.5">C · YOU WAIT AT THE LIGHT, THEN TURN AWAY — YOU NEVER RODE THE BLOCK</text>
+            <text x="796" y="352" text-anchor="end" font-family="Archivo, sans-serif" font-size="11.5" font-weight="600" fill="#dc2626">✗ rejected</text>
+
+            <line x1="120" y1="368" x2="120" y2="440" stroke="currentColor" stroke-width="3"/>
+            <text x="132" y="378" font-family="Archivo, sans-serif" font-size="10" fill="currentColor" opacity="0.6">the cross street — segments are cut here</text>
+            <line x1="120" y1="404" x2="796" y2="404" stroke="currentColor" stroke-width="3"/>
+            <line x1="796" y1="396" x2="796" y2="412" stroke="currentColor" stroke-width="2"/>
+
+            <g fill="#dc2626">
+              <circle cx="118" cy="378" r="4"/><circle cx="123" cy="386" r="4"/><circle cx="119" cy="393" r="4"/>
+              <circle cx="122" cy="400" r="4"/><circle cx="117" cy="408" r="4"/><circle cx="123" cy="415" r="4"/>
+              <circle cx="120" cy="422" r="4"/><circle cx="121" cy="429" r="4"/>
+            </g>
+            <path d="M 232 392 L 140 398" fill="none" stroke="currentColor" stroke-width="1" opacity="0.6" marker-end="url(#sp-a)"/>
+            <text x="240" y="382" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">eight fixes, thrown sideways by GPS noise —</text>
+            <text x="240" y="396" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">but sideways is exactly what distance along discards</text>
+            <text x="240" y="430" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor">span = 0.4 − 0.0 = 0.4 m</text>
+            <text x="240" y="450" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.7">more fixes than row B, and still rejected — spread is the test, not count</text>
+          </svg>
+        </div>
+        <figcaption>
+          <b>Span is the width of the run's footprint on the ruler, and nothing else.</b> Row B is the price of the rule:
+          a genuinely-ridden 14 m is thrown away on a long block, which is why the 70% coverage test exists alongside the
+          25 m one. Row C is what the rule is for.
+        </figcaption>
+      </figure>
 
       <p>
         So the rule becomes: <strong>keep the run only if span is at least 25 metres, or it
@@ -1433,6 +2007,31 @@
         a plain 25 m rule throws away genuinely-ridden short connector pieces, and a plain
         percentage rule lets a touch on a very short segment through.
       </p>
+
+      <div class="callout warn">
+        <span class="tag">Two unrelated rules, both the number 25</span>
+        <p>
+          This trips people up, and the two are easy to conflate because they share a value by pure coincidence. They
+          measure different axes, judge different things, and live in different files.
+        </p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th></th><th class="mono">MAX_MATCH_DISTANCE_M</th><th class="mono">MIN_SPAN_M</th></tr></thead>
+            <tbody>
+              <tr><td>Measures</td><td><strong>sideways</strong> &mdash; from the fix to the centreline</td><td><strong>along</strong> &mdash; from the run's nearest point to its furthest</td></tr>
+              <tr><td>Judges</td><td>one fix</td><td>one whole run</td></tr>
+              <tr><td>Asks</td><td>"is this fix even a candidate for this street?"</td><td>"did this run cover enough ground to count as a ride?"</td></tr>
+              <tr><td>Stage</td><td>matching &mdash; heuristic 2</td><td>the gate &mdash; heuristic 1, after matching</td></tr>
+              <tr><td>File</td><td class="mono">segmentMatcher.ts</td><td class="mono">elevationAggregator.ts</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>
+          Changing one has nothing to do with the other. There is a third 25 in the codebase &mdash;
+          <code>MAX_PLAUSIBLE_SLOPE_PCT</code> &mdash; but that one is a percentage, in the drawing code, and is not
+          easily mistaken for either.
+        </p>
+      </div>
 
       <h3>Why one fix has a span of zero</h3>
 
@@ -1455,14 +2054,20 @@
           These are the "bookends" around it.
         </p>
         <p>
-          A run happens when the matcher finds fixes landing on the same segment going the same way. The fix just before it
-          matched something else (or nothing), and the fix just after it also matched something else (or nothing). Both are
-          "recorded somewhere else" in the sense that they're not part of the run's own data stream.
+          <strong>Yes &mdash; these are fixes from outside the run.</strong> The server holds the whole ride as one
+          list of fixes in time order. A run is a stretch of that list. The bracketing fixes are simply the list entry
+          immediately before the stretch and the one immediately after it.
         </p>
         <p>
-          <strong>How they're used:</strong> Their <em>positions</em> are included in the span calculation, but their
-          <em>heights</em> are ignored completely. The bookends give you a wider bracket to measure across, without adding
-          their elevation readings to the mix (since they weren't on this segment).
+          What those two fixes were doing does not matter. One may belong to a different run on a different street; one
+          may have matched nothing at all; one may have been skipped for bad accuracy or a missing compass reading. They
+          are neighbours in time, not members of anything.
+        </p>
+        <p>
+          <strong>How they are used:</strong> each is projected onto <em>this</em> segment &mdash; the same sideways drop
+          as any other fix, clamped to the segment's ends if it falls past them &mdash; and the two landing points are
+          allowed to stretch the span. Their <em>heights are never read</em>. They widen the measurement on the ruler
+          without contributing a single elevation reading to the model, which is correct: they were recorded somewhere else.
         </p>
       </div>
 
@@ -1634,6 +2239,102 @@
         trail: rejected. Repeat five times. The entire descent disappeared from the map.
       </p>
 
+      <figure>
+        <div class="fig-frame">
+          <svg viewBox="0 0 880 420" role="img" aria-label="A switchback trail drawn as a zigzag climbing across a hillside, with five short green pieces marked at the hairpin apexes where the rider's heading briefly swings through east. The long legs between them are grey: on the way up the heading is about 036 degrees and on the way down about 144 degrees, both 54 degrees away from the stored segment's bearing of 090 degrees, past the 45 degree limit. Below, the same trail as the database stores it: one straight arrow pointing east.">
+            <defs>
+              <marker id="sw-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+              </marker>
+            </defs>
+
+            <text x="0" y="16" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65" letter-spacing="0.9">A SWITCHBACK CLIMB — THE TRAIL ZIGZAGS, THE STORED SEGMENT DOES NOT</text>
+
+            <!-- the trail as ridden -->
+            <polyline points="90,205 196,60 302,205 408,60 514,205 620,60 700,170" fill="none" stroke="currentColor" stroke-width="2.5" opacity="0.45"/>
+
+            <!-- the five pieces that matched -->
+            <g fill="none" stroke="#22c55e" stroke-width="5" stroke-linejoin="round">
+              <path d="M 183 78 L 196 60 L 209 78"/>
+              <path d="M 289 187 L 302 205 L 315 187"/>
+              <path d="M 395 78 L 408 60 L 421 78"/>
+              <path d="M 501 187 L 514 205 L 527 187"/>
+              <path d="M 607 78 L 620 60 L 633 78"/>
+            </g>
+            <g font-family="Archivo, sans-serif" font-size="10.5" font-weight="600" fill="#22c55e" text-anchor="middle">
+              <text x="196" y="48">1</text><text x="408" y="48">3</text><text x="620" y="48">5</text>
+              <text x="302" y="224">2</text><text x="514" y="224">4</text>
+            </g>
+
+            <!-- legend -->
+            <line x1="716" y1="92" x2="740" y2="92" stroke="#22c55e" stroke-width="5"/>
+            <text x="748" y="96" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">matched</text>
+            <line x1="716" y1="116" x2="740" y2="116" stroke="currentColor" stroke-width="2.5" opacity="0.45"/>
+            <text x="748" y="120" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">no match</text>
+
+            <!-- heading callouts -->
+            <path d="M 150 240 L 110 190" fill="none" stroke="currentColor" stroke-width="1" opacity="0.6" marker-end="url(#sw-a)"/>
+            <text x="96" y="254" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.85">up-leg heading ≈ 036°</text>
+            <path d="M 300 240 L 290 190" fill="none" stroke="currentColor" stroke-width="1" opacity="0.6" marker-end="url(#sw-a)"/>
+            <text x="262" y="254" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.85">down-leg heading ≈ 144°</text>
+            <text x="96" y="282" font-family="Archivo, sans-serif" font-size="11" fill="currentColor" opacity="0.75">both sit 54° from the stored bearing — past the 45° limit, so the fix does not match and the run ends there</text>
+
+            <!-- what the database stores -->
+            <line x1="90" y1="336" x2="688" y2="336" stroke="currentColor" stroke-width="3" marker-end="url(#sw-a)"/>
+            <text x="390" y="326" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="11" fill="currentColor" opacity="0.8">bearing 090°</text>
+            <text x="90" y="362" font-family="Archivo, sans-serif" font-size="11" fill="currentColor" opacity="0.7">what the database stores: one straight line — the trail's net direction across the hillside</text>
+
+            <text x="90" y="398" font-family="Archivo, sans-serif" font-size="11.5" fill="currentColor">one 146 m descent → five matched pieces of 1–15 m each → <tspan font-weight="600" fill="#dc2626">every one fails the 25 m gate</tspan></text>
+          </svg>
+        </div>
+        <figcaption>
+          <b>The heading test is what breaks, not the distance test.</b> Every fix on this trail is within a metre or
+          two of the stored line &mdash; distance is never the problem. It is the direction check that fails, on every
+          leg, leaving only the hairpin apexes where the rider is momentarily pointing the way the segment does.
+        </figcaption>
+      </figure>
+
+      <h3>Two different things called a "line"</h3>
+
+      <p>
+        I have been saying "the stored line" without explaining it, and it matters here, because the answer is
+        the opposite of what you would guess. <strong>The stored line exists before you ride anywhere.</strong>
+      </p>
+
+      <div class="define">
+        <span class="word">The stored line &mdash; segment geometry</span>
+        <p>
+          A list of latitude/longitude points forming a polyline, downloaded from OpenStreetMap by
+          <code>npm run fetch</code> and sitting in the <code>geom</code> column of the <code>segments</code>
+          table. It exists for every street and trail in the city whether or not anyone has ever ridden there.
+        </p>
+        <p>
+          You have already met it: this is the dashed centreline from <a href="#segment">Step 1</a>, where the
+          point was that the database stores no road width and no edges &mdash; only this line, its length, and
+          which way it points.
+        </p>
+        <p>
+          It is never compared as text. It is used <em>geometrically</em>: how far is this fix from that polyline,
+          and where along it does the fix land. Both of those are the operations from the traversal-gate section
+          &mdash; sideways distance, and distance along.
+        </p>
+        <p>
+          Each segment also carries one <code>bearing_deg</code>: the compass direction of a straight line drawn
+          from the polyline's first point to its last. It is computed once at import and never changes. <strong>That
+          single number is what the 45&deg; heading test compares your heading against</strong> &mdash; and on a
+          switchback it is the number that is lying, because a zigzag's start-to-end direction says nothing about
+          the direction you are facing at any moment on it.
+        </p>
+      </div>
+
+      <div class="define">
+        <span class="word">The gradient line &mdash; what gets drawn</span>
+        <p>
+          The coloured thing on the map. <em>This</em> one is built from your fixes: buckets, slopes, colour bands.
+          It is drawn on top of the stored line, offset 4 m to one side so both directions are visible at once.
+        </p>
+      </div>
+
       <h3>The fix: rejoin fragments within a time window</h3>
 
       <p>
@@ -1646,11 +2347,133 @@
         <li><strong>Separate crossings of the same trail:</strong> at least 90 seconds apart, never in between</li>
       </ul>
 
+      <h4>What stitchFragmentedRuns actually does</h4>
+
       <p>
-        <code>stitchFragmentedRuns()</code> runs before the gate. It rejoins same-segment,
-        same-direction fragments within <code>STITCH_WINDOW_S = 45</code> seconds, producing one
-        run per traversal. The gate then judges the whole descent at once and keeps it.
+        Considerably less than the name suggests, and that is worth being precise about. It walks the runs in time
+        order, keeping a note of the most recent run seen for each (segment, direction) pair. When a new run turns
+        up on a pair it has seen before, it checks exactly one thing: <strong>how many seconds passed between the
+        previous run's last fix and this run's first fix.</strong> Under 45, it appends this run's fixes onto the
+        end of the previous run and throws away the separate run. Over 45, it starts a fresh one.
       </p>
+
+      <p>
+        Because appending moves the previous run's end time forward, the next fragment is measured against the
+        <em>new</em> end. That is what lets five fragments chain into one run rather than merely joining in pairs.
+      </p>
+
+      <h4>Three things it does not do</h4>
+
+      <p>
+        <strong>It does not change any bearing.</strong> The segment's stored bearing is import-time data from
+        OpenStreetMap and is never written to by anything in the app. Nothing "makes the bearing match the trail".
+      </p>
+
+      <p>
+        <strong>It does not re-decide any fix's direction.</strong> Every fragment already had "forward" or
+        "backward" stamped on it at match time, and stitching only ever joins fragments that already agree on
+        segment <em>and</em> direction. Two fragments pointing opposite ways stay separate no matter how close in
+        time.
+      </p>
+
+      <p>
+        <strong>It does not rescue the fixes that failed to match.</strong> Everything recorded on the long legs
+        &mdash; the great majority of the descent &mdash; failed the heading test, stayed unmatched, and
+        contributes no height to anything. Those readings are simply gone.
+      </p>
+
+      <h4>So what does it actually recover?</h4>
+
+      <p>
+        <strong>Extent, not data.</strong> Remember what the gate measures: span, the largest distance along in the
+        run minus the smallest. Five separate runs meant five separate spans of 1&ndash;15 m, each judged alone and
+        each failing the 25 m minimum. Joined into one run, the first fix sits near the top of the descent and the
+        last near the bottom, so the span is the full 146 m and the gate keeps it.
+      </p>
+
+      <p>
+        The heights that end up in the buckets are <em>exactly the same heights as before</em>, from exactly the
+        same five fragments. Not one extra reading was recovered. The only thing that changed is that the gate now
+        measures across all five at once instead of judging each in isolation &mdash; which is also why stitching
+        has to run <em>before</em> the gate rather than after it.
+      </p>
+
+      <figure>
+        <div class="fig-frame">
+          <svg viewBox="0 0 880 330" role="img" aria-label="A time axis in seconds. Before stitching: five short red bars between 4 and 84 seconds, separated by gaps of 9, 14, 7 and 11 seconds, plus a sixth grey bar at 180 seconds that is a separate descent 96 seconds later. A reference bar shows how long 45 seconds is at this scale — longer than any gap inside the descent. After stitching: the five red bars have become one green bar spanning 4 to 84 seconds, labelled one run, span 146 metres, kept; the sixth bar is untouched.">
+            <defs>
+              <marker id="st-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+              </marker>
+            </defs>
+
+            <text x="0" y="16" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65" letter-spacing="0.9">BEFORE · ONE DESCENT, AS THE MATCHER LEFT IT</text>
+
+            <!-- gap arcs -->
+            <g fill="none" stroke="currentColor" stroke-width="1.2" opacity="0.6">
+              <path d="M 149 66 Q 164 40 179 66"/>
+              <path d="M 199 66 Q 222 40 245 66"/>
+              <path d="M 261 66 Q 272 42 284 66"/>
+              <path d="M 327 66 Q 345 40 363 66"/>
+            </g>
+            <path d="M 386 66 Q 543 22 701 66" fill="none" stroke="#dc2626" stroke-width="1.2" opacity="0.75"/>
+            <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8" text-anchor="middle">
+              <text x="164" y="36">9 s</text><text x="222" y="36">14 s</text><text x="272" y="38">7 s</text><text x="345" y="36">11 s</text>
+            </g>
+            <text x="543" y="30" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="#dc2626">96 s</text>
+
+            <!-- before bars -->
+            <g fill="#dc2626">
+              <rect x="123" y="66" width="26" height="16"/><rect x="179" y="66" width="20" height="16"/>
+              <rect x="245" y="66" width="16" height="16"/><rect x="284" y="66" width="43" height="16"/>
+              <rect x="363" y="66" width="23" height="16"/>
+            </g>
+            <rect x="701" y="66" width="40" height="16" fill="currentColor" opacity="0.35"/>
+            <g font-family="Archivo, sans-serif" font-size="10" font-weight="600" fill="#dc2626" text-anchor="middle">
+              <text x="136" y="98">1</text><text x="189" y="98">2</text><text x="253" y="98">3</text><text x="305" y="98">4</text><text x="374" y="98">5</text>
+            </g>
+            <text x="721" y="98" text-anchor="middle" font-family="Archivo, sans-serif" font-size="10" fill="currentColor" opacity="0.7">a second descent</text>
+
+            <text x="0" y="124" font-family="Archivo, sans-serif" font-size="11" fill="currentColor" opacity="0.8">five pieces, 1–15 m each — every one under the 25 m gate, so all five are thrown away</text>
+
+            <!-- 45 s reference -->
+            <line x1="123" y1="150" x2="271" y2="150" stroke="currentColor" stroke-width="3" opacity="0.4"/>
+            <g stroke="currentColor" stroke-width="1.5" opacity="0.6">
+              <line x1="123" y1="144" x2="123" y2="156"/><line x1="271" y1="144" x2="271" y2="156"/>
+            </g>
+            <text x="281" y="154" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.75">45 s at this scale — longer than every gap inside the descent, shorter than the one after it</text>
+
+            <text x="0" y="192" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65" letter-spacing="0.9">AFTER · stitchFragmentedRuns()</text>
+
+            <rect x="123" y="210" width="263" height="16" fill="#22c55e"/>
+            <text x="396" y="222" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="#22c55e">one run · span 146 m · kept</text>
+            <rect x="701" y="210" width="40" height="16" fill="currentColor" opacity="0.35"/>
+            <text x="800" y="204" text-anchor="end" font-family="Archivo, sans-serif" font-size="10" fill="currentColor" opacity="0.7">left alone — 96 s away</text>
+
+            <text x="0" y="248" font-family="Archivo, sans-serif" font-size="11" fill="currentColor" opacity="0.8">the window is measured from the END of the run so far, so each piece extends it — five chain into one</text>
+
+            <!-- axis -->
+            <line x1="110" y1="272" x2="800" y2="272" stroke="currentColor" stroke-width="1.5" opacity="0.6"/>
+            <g stroke="currentColor" stroke-width="1.4" opacity="0.6">
+              <line x1="110" y1="272" x2="110" y2="280"/><line x1="209" y1="272" x2="209" y2="280"/>
+              <line x1="307" y1="272" x2="307" y2="280"/><line x1="406" y1="272" x2="406" y2="280"/>
+              <line x1="504" y1="272" x2="504" y2="280"/><line x1="603" y1="272" x2="603" y2="280"/>
+              <line x1="701" y1="272" x2="701" y2="280"/><line x1="800" y1="272" x2="800" y2="280"/>
+            </g>
+            <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.55" text-anchor="middle">
+              <text x="110" y="295">0</text><text x="209" y="295">30</text><text x="307" y="295">60</text><text x="406" y="295">90</text>
+              <text x="504" y="295">120</text><text x="603" y="295">150</text><text x="701" y="295">180</text><text x="800" y="295">210</text>
+            </g>
+            <text x="455" y="318" text-anchor="middle" font-family="Archivo, sans-serif" font-size="11" fill="currentColor" opacity="0.7">seconds since the ride started</text>
+          </svg>
+        </div>
+        <figcaption>
+          <b>Only the time between pieces decides it.</b> The seconds in the gaps are seconds the rider spent matching
+          nothing, and their elevation readings are left out &mdash; but the ends of the joined run now bracket the whole
+          descent, which is what the gate measures. The second descent is 96 s from the first and stays its own run,
+          which is what stops a rider looping one block from stitching two touches at opposite ends into a phantom.
+        </figcaption>
+      </figure>
 
       <p>
         <strong>Streets were never touched.</strong> Genuine intersection touches stayed dead (94 → 92
@@ -1721,14 +2544,28 @@
       <ol>
         <li><strong>Look up the terrain.</strong> For every GPS coordinate the ride touched, ask the DEM "how high is the ground here?"</li>
         <li><strong>Measure the gap.</strong> For each spot, subtract the official height from what the ride thought it was. This gives you a list of offsets.</li>
-        <li><strong>Find the middle offset.</strong> Take the <em>median</em> (the number in the middle when sorted) of all those differences. One number for the whole ride. Not the average — a bridge, tunnel, or a few bad fixes can skew that. The median ignores outliers.</li>
+        <li><strong>Find the middle offset.</strong> Line those differences up <em>in order of size</em> &mdash; smallest to largest, ignoring where along the ride each one came from &mdash; and take the one sitting in the middle of the list. That is the <em>median</em>, and it becomes the single offset for the whole ride.</li>
         <li><strong>Shift everything.</strong> Subtract that one median offset from every single height in the ride. Now store it.</li>
       </ol>
 
       <p>
-        <strong>Concrete example:</strong> a ride measures itself as 1814, 1815, 1817, 1816, 1815 m. The terrain says
-        those spots are actually 1800, 1801, 1803, 1802, 1801 m. The offsets are +14, +14, +14, +14, +14 m.
-        The median is +14. Subtract 14 from every height: 1800, 1801, 1803, 1802, 1801. Now it's correct.
+        <strong>Concrete example.</strong> A ride measures five spots as 1814, 1846, 1815, 1812 and 1816 m. The
+        terrain says those same spots are 1800, 1801, 1801, 1800 and 1801 m. Subtracting one list from the other
+        gives five differences &mdash; and one of them is clearly wrong:
+      </p>
+
+      <div class="calc">
+        <div><span>as recorded, in ride order</span><b>+14 &nbsp; +45 &nbsp; +14 &nbsp; +12 &nbsp; +15</b></div>
+        <div><span>sorted, smallest to largest</span><b>+12 &nbsp; +14 &nbsp; <em>+14</em> &nbsp; +15 &nbsp; +45</b></div>
+        <div><span>the middle one is the median</span><b>+14</b></div>
+      </div>
+
+      <p>
+        Every height in the ride then drops by 14 m. Notice what the <strong>+45</strong> would have done to an
+        average: it drags the mean up to +20, which would have shoved the entire ride 6 metres underground. Sorting
+        and taking the middle gives that bad reading exactly the weight of any other single reading &mdash; one
+        vote &mdash; no matter how absurd its value. That is the whole reason for choosing median over average
+        here.
       </p>
 
       <figure>
@@ -1821,6 +2658,185 @@
     <!-- ================= PART 6 ================= -->
     <div class="partbreak"><span>Part 6</span><h2>Reference</h2></div>
 
+    <section id="overview">
+      <h2 class="sec">The whole thing in one pass</h2>
+      <p class="sec-note">Every stage, and what one item of data has become by the time it gets there</p>
+
+      <p>
+        The thing that makes this system hard to hold in your head is that <strong>the unit of data changes four
+        times</strong>. You start with a fix. Fixes become runs. Runs become buckets. Buckets become coloured pieces.
+        Each stage judges the unit it was handed, not the one before it &mdash; which is why "a fix is matched to a
+        bucket" skips the two steps that do most of the work.
+      </p>
+
+      <figure>
+        <div class="fig-frame">
+          <svg viewBox="0 0 880 660" role="img" aria-label="A vertical pipeline in three phases. On the phone: record a fix, roughly one every 11 metres. On the server at save time, in one transaction: smooth the heights, match each fix to a street and direction to form runs (heuristic 2), rejoin fragments under 45 seconds apart (heuristic 2b), bucketize each run onto 15 metre marks, apply the traversal gate (heuristic 1), anchor the ride against terrain data (heuristic 3), then merge into the model. Later, when the map is drawn: build the coloured lines from one slope per gap between buckets. Four of the nine stages are marked as judgement calls; the rest are arithmetic.">
+            <defs>
+              <marker id="ov-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+              </marker>
+            </defs>
+
+            <text x="0" y="16" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65" letter-spacing="0.9">ON THE PHONE, WHILE YOU RIDE</text>
+
+            <rect x="60" y="26" width="370" height="44" fill="none" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+            <text x="76" y="52" font-family="Archivo, sans-serif" font-size="11.5" font-weight="600" fill="currentColor">Record a fix</text>
+            <text x="452" y="45" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">one GPS fix — position, height, heading, accuracy</text>
+            <text x="452" y="61" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">roughly one every 11 m; the phone paces them off your speed</text>
+            <line x1="100" y1="70" x2="100" y2="86" stroke="currentColor" stroke-width="1.2" opacity="0.6" marker-end="url(#ov-a)"/>
+
+            <text x="0" y="98" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65" letter-spacing="0.9">ON THE SERVER, THE MOMENT YOU HIT SAVE — ALL ONE TRANSACTION</text>
+
+            <rect x="60" y="108" width="370" height="44" fill="none" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+            <text x="76" y="134" font-family="Archivo, sans-serif" font-size="11.5" font-weight="600" fill="currentColor">Smooth the heights</text>
+            <text x="452" y="127" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">each height becomes a running average of itself and the ones before</text>
+            <text x="452" y="143" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">it — 30% new reading, 70% history · no outside data, just this ride</text>
+            <line x1="100" y1="152" x2="100" y2="168" stroke="currentColor" stroke-width="1.2" opacity="0.6" marker-end="url(#ov-a)"/>
+
+            <rect x="60" y="170" width="370" height="44" fill="none" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+            <rect x="60" y="170" width="5" height="44" fill="var(--accent)"/>
+            <text x="78" y="196" font-family="Archivo, sans-serif" font-size="11.5" font-weight="600" fill="currentColor">Match to a street · heuristic 2</text>
+            <text x="452" y="189" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">each fix gains a street and a direction — a stretch of fixes</text>
+            <text x="452" y="205" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">agreeing on both becomes a RUN, the unit for everything after</text>
+            <line x1="100" y1="214" x2="100" y2="230" stroke="currentColor" stroke-width="1.2" opacity="0.6" marker-end="url(#ov-a)"/>
+
+            <rect x="60" y="232" width="370" height="44" fill="none" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+            <rect x="60" y="232" width="5" height="44" fill="var(--accent)"/>
+            <text x="78" y="258" font-family="Archivo, sans-serif" font-size="11.5" font-weight="600" fill="currentColor">Rejoin fragments · heuristic 2b</text>
+            <text x="452" y="258" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">runs on one street and direction under 45 s apart become one</text>
+            <line x1="100" y1="276" x2="100" y2="292" stroke="currentColor" stroke-width="1.2" opacity="0.6" marker-end="url(#ov-a)"/>
+
+            <rect x="60" y="294" width="370" height="44" fill="none" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+            <text x="76" y="320" font-family="Archivo, sans-serif" font-size="11.5" font-weight="600" fill="currentColor">Bucketize each run</text>
+            <text x="452" y="313" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">the run's fixes are rounded onto 15 m marks measured along the</text>
+            <text x="452" y="329" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">street; heights landing on the same mark are averaged together</text>
+            <line x1="100" y1="338" x2="100" y2="354" stroke="currentColor" stroke-width="1.2" opacity="0.6" marker-end="url(#ov-a)"/>
+
+            <rect x="60" y="356" width="370" height="44" fill="none" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+            <rect x="60" y="356" width="5" height="44" fill="var(--accent)"/>
+            <text x="78" y="382" font-family="Archivo, sans-serif" font-size="11.5" font-weight="600" fill="currentColor">The traversal gate · heuristic 1</text>
+            <text x="452" y="375" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">span at least 25 m, or at least 70% of the block — otherwise the</text>
+            <text x="452" y="391" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">whole run is thrown away here, before anything is written</text>
+            <line x1="100" y1="400" x2="100" y2="416" stroke="currentColor" stroke-width="1.2" opacity="0.6" marker-end="url(#ov-a)"/>
+
+            <rect x="60" y="418" width="370" height="44" fill="none" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+            <rect x="60" y="418" width="5" height="44" fill="var(--accent)"/>
+            <text x="78" y="444" font-family="Archivo, sans-serif" font-size="11.5" font-weight="600" fill="currentColor">Anchor the ride · heuristic 3</text>
+            <text x="452" y="437" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">one offset subtracted from every height in the ride, so it sits on</text>
+            <text x="452" y="453" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">the same vertical scale as every ride already in the model</text>
+            <line x1="100" y1="462" x2="100" y2="478" stroke="currentColor" stroke-width="1.2" opacity="0.6" marker-end="url(#ov-a)"/>
+
+            <rect x="60" y="480" width="370" height="44" fill="none" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+            <text x="76" y="506" font-family="Archivo, sans-serif" font-size="11.5" font-weight="600" fill="currentColor">Merge into the model</text>
+            <text x="452" y="499" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">buckets blended into the running mean · coverage widened ·</text>
+            <text x="452" y="515" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">a row logging which ride this came from — irreversible</text>
+            <line x1="100" y1="524" x2="100" y2="540" stroke="currentColor" stroke-width="1.2" opacity="0.6" marker-end="url(#ov-a)"/>
+
+            <text x="0" y="552" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65" letter-spacing="0.9">LATER, EVERY TIME THE MAP IS DRAWN</text>
+
+            <rect x="60" y="562" width="370" height="44" fill="none" stroke="currentColor" stroke-width="1" opacity="0.35"/>
+            <text x="76" y="588" font-family="Archivo, sans-serif" font-size="11.5" font-weight="600" fill="currentColor">Build the coloured lines</text>
+            <text x="452" y="581" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">one slope per gap between buckets, from a best-fit line through</text>
+            <text x="452" y="597" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">six of them → a colour band → one solid-coloured piece</text>
+
+            <rect x="60" y="634" width="5" height="12" fill="var(--accent)"/>
+            <text x="78" y="644" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.75">a marked edge is a judgement call — every other box is arithmetic that could only be right or wrong</text>
+          </svg>
+        </div>
+        <figcaption>
+          <b>All four judgement calls sit between the fix and the stored bucket.</b> None of them are in the colouring:
+          once buckets exist, turning them into colours is a fixed calculation with no opinions in it. If a line looks
+          wrong, the question is almost always which run got in, not how it was painted.
+        </figcaption>
+      </figure>
+
+      <h3>What "merge" writes, in plain terms</h3>
+
+      <p>
+        That last box does three separate writes, and one of them &mdash; the audit row &mdash; is a term I have
+        been using without ever defining. All three are laid out fully in
+        <a href="#flows">flow C</a> below; here is what each one <em>is</em>:
+      </p>
+
+      <ul>
+        <li>
+          <strong>Blend into the running means.</strong> Each of this run's bucket heights is averaged into
+          whatever is already stored at that (street, direction, 15 m mark), weighted by how many rides are
+          already there. This is the elevation model itself.
+        </li>
+        <li>
+          <strong>Widen coverage.</strong> A second table holds one row per street and direction recording which
+          stretch of it has ever been ridden, as a start metre and an end metre. This run's reach is merged into
+          that range. It is what tells the renderer where to stop drawing.
+        </li>
+        <li>
+          <strong>Write an audit row.</strong> A third table, <code>session_segment_matches</code>, gets one row
+          saying <em>"session 43 contributed a forward run on segment 12555, covering fixes 8811 through 8847"</em>.
+          That is the whole content of an audit row: a receipt naming which ride produced which run on which street.
+          It stores no heights and no geometry, and it is never read when drawing the map. It exists so questions
+          about <em>provenance</em> can be answered later &mdash; how many segments did this ride actually
+          contribute to, which rides contributed nothing and can be pruned, and what to clear before a rebuild
+          replays everything from raw fixes.
+        </li>
+      </ul>
+
+      <div class="callout">
+        <span class="tag">Smoothing and anchoring are not the same thing</span>
+        <p>
+          Both touch heights, so they are easy to conflate, but they are different boxes doing opposite jobs and
+          neither one is the other's ingredient.
+        </p>
+        <p>
+          <strong>Smoothing</strong> is the second box. It looks only at this ride's own barometer readings, in time
+          order, and replaces each with a blend of itself and the running average before it. No terrain data, no other
+          rides, nothing external. It takes the jitter off the line without meaningfully changing the ride's overall
+          height.
+        </p>
+        <p>
+          <strong>Anchoring</strong> is the seventh box, and it is the one that consults the DEM &mdash; a public
+          elevation dataset for the terrain. It leaves the shape of the ride completely alone and slides the whole
+          thing up or down by one number, so that a ride recorded on a day when the barometer was reading 14 m high
+          lands on the same vertical scale as every other ride.
+        </p>
+        <p>
+          One removes wobble <em>within</em> a ride. The other fixes where the whole ride sits. See
+          <a href="#anchor">the DEM anchor</a> for how that offset is chosen.
+        </p>
+      </div>
+
+      <h3>How many buckets does a segment get?</h3>
+
+      <p>
+        Bucket positions are fixed multiples of 15 m from the segment's start: 0, 15, 30, 45, and so on. A 104-metre
+        block therefore has eight possible slots &mdash; 0 through 105 &mdash; and that is decided entirely by the
+        segment's length. Nothing about your ride changes where the slots are.
+      </p>
+
+      <p>
+        What your ride decides is which slots exist as rows. A bucket row is created the first time a qualifying run
+        lands on it, so a street you have only ridden half of has rows for half its slots. And because buckets are keyed
+        by <em>(segment, direction, distance)</em>, a two-way street keeps two independent sets &mdash; riding it
+        northbound never touches the southbound numbers.
+      </p>
+
+      <h3>Where the heuristics are, and where they are not</h3>
+
+      <p>
+        All three live in the save path, and all three decide <em>what data is allowed into the model</em> &mdash; never
+        how it is displayed. Matching decides which street a fix belongs to; stitching decides whether two runs were
+        really one; the gate decides whether a run counts as having ridden the street; the anchor decides how far to
+        shift the ride vertically.
+      </p>
+
+      <p>
+        Colouring has none. Given a set of buckets, the slope of every gap and the colour it maps to are fully
+        determined. The two tuning numbers there &mdash; the five-bucket window and the &plusmn;25% plausibility clamp
+        &mdash; smooth and bound the arithmetic, but they do not choose between competing interpretations the way the
+        three heuristics do.
+      </p>
+    </section>
+
     <section id="flows">
       <h2 class="sec">The four flows</h2>
       <p class="sec-note">Condensed, now that the vocabulary exists</p>
@@ -1898,13 +2914,71 @@
       <p>All of this happens inside one transaction &mdash; it either all lands or none of it does.</p>
       <ol class="steps">
         <li><h4>Guards</h4><p>Already ended? Return "already processed" and do nothing. No fixes at all? Delete the session.</p></li>
-        <li><h4>Load</h4><p>The ride's fixes, plus every canonical segment in a box around them.</p></li>
-        <li><h4>Smooth</h4><p>A rolling average over the heights, damping single-reading barometer noise.</p></li>
-        <li><h4>Match</h4><p>Heuristic 2. Produces runs.</p></li>
-        <li><h4>Gate</h4><p>Heuristic 1. Drops the touches.</p></li>
-        <li><h4>Bucketize</h4><p>Round onto the 15 m grid; record where coverage starts and ends.</p></li>
-        <li><h4>Anchor</h4><p>Heuristic 3. Fitted across the whole ride, which is why nothing can be written before this point.</p></li>
-        <li><h4>Merge</h4><p>Blend into the running means, widen coverage, write an audit row. Irreversible.</p></li>
+        <li><h4>Load</h4><p>The ride's fixes in time order, plus every canonical segment in a box about 500 m around them.</p></li>
+        <li>
+          <h4>Smooth</h4>
+          <p>
+            An exponential moving average over the ride's own heights, in time order: each reading is replaced by
+            30% of itself plus 70% of the average so far (<code>EMA_ALPHA = 0.3</code>, about the last three seconds).
+            Nothing external is consulted &mdash; this is the ride steadying its own barometer, not a comparison
+            against terrain data.
+          </p>
+        </li>
+        <li>
+          <h4>Match &mdash; <em>heuristic 2</em></h4>
+          <p>
+            Each fix is given a street and a direction. Consecutive fixes that agree on both become a <strong>run</strong>.
+            From here on nothing judges individual fixes; everything judges runs.
+          </p>
+        </li>
+        <li>
+          <h4>Stitch &mdash; <em>heuristic 2b</em></h4>
+          <p>Runs on the same street and direction less than 45 s apart are rejoined, so a switchback traversal is judged whole.</p>
+        </li>
+        <li>
+          <h4>Bucketize</h4>
+          <p>
+            Project each of the run's fixes onto the street, round the distance along to the nearest 15 m mark, and average
+            the heights that land on the same mark. Also record the run's reach &mdash; where along the street it started
+            and ended, bracketing fixes included.
+          </p>
+        </li>
+        <li>
+          <h4>Gate &mdash; <em>heuristic 1</em></h4>
+          <p>
+            Span at least 25 m, or at least 70% of the block. This happens <em>after</em> bucketizing, because the span it
+            measures is a by-product of the projection. Failures are dropped here, before anything is written.
+          </p>
+        </li>
+        <li>
+          <h4>Anchor &mdash; <em>heuristic 3</em></h4>
+          <p>One offset for the whole ride, fitted against terrain data. This is why nothing can be written until every run has been measured.</p>
+        </li>
+        <li>
+          <h4>Merge</h4>
+          <p>Three writes per surviving run.</p>
+          <p>
+            <strong>Blend into the running means.</strong> Each bucket is averaged into whatever is already stored for that
+            (street, direction, 15 m mark), weighted by how many rides are already in there. Nothing is ever overwritten.
+          </p>
+          <p>
+            <strong>Widen coverage.</strong> A separate table holds one row per street and direction saying which stretch of
+            it has ever been ridden &mdash; a start metre and an end metre. This run's reach is unioned into that row: the
+            stored start moves down if this run began earlier, the end moves up if it finished later. That row is what tells
+            the renderer where to stop drawing, so a half-ridden street gets a half-length line instead of a full one.
+          </p>
+          <p>
+            <strong>Write an audit row.</strong> One row in <code>session_segment_matches</code> recording that this session
+            contributed this run to this street and direction, with the first and last fix id. It is provenance, not model
+            data: it is how the app can report that a ride matched 42 segments, how <code>npm run prune-sessions</code> finds
+            rides that contributed nothing, and what a rebuild clears before replaying everything.
+          </p>
+          <p>
+            <strong>Irreversible</strong> because the blend is a running mean &mdash; once a ride's numbers are averaged in,
+            no subtraction takes them back out. Undoing a bad ride means <code>npm run rebuild-model</code>, which wipes the
+            model and replays every session from its raw fixes.
+          </p>
+        </li>
       </ol>
 
       <h3>D · Drawing the map</h3>
@@ -1944,7 +3018,7 @@
 
             <tr class="grouprow"><td colspan="4">Drawing &nbsp;·&nbsp; no rebuild needed</td></tr>
             <tr><td>OFFSET_M</td><td class="mono">4</td><td class="mono">gradientBuilder</td><td>How far each direction sits from the centreline</td></tr>
-            <tr><td>SLOPE_WINDOW</td><td class="mono">2</td><td class="mono">gradientBuilder</td><td>&plusmn;2 buckets = a 5-point, ~60 m best-fit line</td></tr>
+            <tr><td>SLOPE_WINDOW</td><td class="mono">2</td><td class="mono">gradientBuilder</td><td>2 buckets beyond each end of the gap = a 6-point, 75 m best-fit line</td></tr>
             <tr><td>MAX_PLAUSIBLE_SLOPE_PCT</td><td class="mono">25</td><td class="mono">gradientBuilder</td><td>No rideable street here is steeper</td></tr>
             <tr><td>VIEWPORT_PAD</td><td class="mono">0.2</td><td class="mono">MapScreen</td><td>Small pans stay inside what's loaded</td></tr>
 
@@ -1989,7 +3063,7 @@
             <tr><td>Every hill shown as a descent</td><td>Backward distances used as if they were forward</td><td>Explicit conversion when drawing</td></tr>
             <tr><td>A small gap at the start of most lines</td><td>Start inferred from the first bucket, which sits up to 7.5 m inside</td><td>Coverage recorded at merge time</td></tr>
             <tr><td>A flat street rendered purple and red</td><td>Two old rides stored on a relative scale averaged with absolute ones</td><td>Plausibility floor of 1000 m</td></tr>
-            <tr><td>Speckled colours on gentle terrain</td><td>Slope from differencing two noisy neighbours</td><td>Best-fit line over 5 buckets</td></tr>
+            <tr><td>Speckled colours on gentle terrain</td><td>Slope from differencing two noisy neighbours</td><td>Best-fit line over 6 buckets</td></tr>
             <tr><td>One ride split across parallel lines</td><td>Nearest street chosen fresh for every fix</td><td>8 m reluctance to switch, plus sidewalk folding</td></tr>
             <tr><td>Trails cut into disconnected pieces</td><td>Sidewalk detection by shape alone absorbed trail stretches</td><td>Name-based eligibility</td></tr>
             <tr><td>A ride landed as zero rows</td><td>One database trip per fix inside one transaction; connection dropped</td><td>Batched inserts, plus safe retry</td></tr>

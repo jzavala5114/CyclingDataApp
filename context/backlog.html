@@ -1,0 +1,719 @@
+<title>Trail Fidelity Backlog</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+
+<style>
+  :root {
+    --ground: #F5F7F4;
+    --surface: #FFFFFF;
+    --surface-2: #EBEEE9;
+    --ink: #14181B;
+    --ink-2: #454D51;
+    --ink-3: #6E7679;
+    --rule: #D5DAD3;
+    --rule-strong: #B6BEB6;
+    --accent: #0B6E75;
+    --accent-ink: #075258;
+    --accent-soft: #DFEEEE;
+    --umber: #8A6A4B;
+    --umber-soft: #F2E8DC;
+    --warn-bg: #FBF0DE;
+    --warn-rule: #D8A94E;
+
+    --measure: 68ch;
+    --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+    --f-body: "Source Serif 4", Georgia, "Times New Roman", serif;
+    --f-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0E1316;
+      --surface: #161C20;
+      --surface-2: #1D2529;
+      --ink: #E3E9E5;
+      --ink-2: #A6B1B0;
+      --ink-3: #7B8687;
+      --rule: #2A353B;
+      --rule-strong: #3C4A50;
+      --accent: #4FB8BC;
+      --accent-ink: #7FD3D5;
+      --accent-soft: #0F2E30;
+      --umber: #C2996B;
+      --umber-soft: #2A2015;
+      --warn-bg: #2B2213;
+      --warn-rule: #9A7429;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --ground: #0E1316;
+    --surface: #161C20;
+    --surface-2: #1D2529;
+    --ink: #E3E9E5;
+    --ink-2: #A6B1B0;
+    --ink-3: #7B8687;
+    --rule: #2A353B;
+    --rule-strong: #3C4A50;
+    --accent: #4FB8BC;
+    --accent-ink: #7FD3D5;
+    --accent-soft: #0F2E30;
+    --umber: #C2996B;
+    --umber-soft: #2A2015;
+    --warn-bg: #2B2213;
+    --warn-rule: #9A7429;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--f-body);
+    font-size: 17px;
+    line-height: 1.64;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 940px; margin: 0 auto; padding: 0 28px 120px; }
+
+  header.top { border-bottom: 1px solid var(--rule); background: var(--surface); }
+  .top-inner { max-width: 940px; margin: 0 auto; padding: 52px 28px 36px; }
+  .eyebrow {
+    font-family: var(--f-display); font-weight: 600; font-size: 11px;
+    letter-spacing: 0.16em; text-transform: uppercase; color: var(--umber); margin: 0 0 16px;
+  }
+  h1 {
+    font-family: var(--f-display); font-weight: 700;
+    font-size: clamp(2.1rem, 5vw, 3rem); line-height: 1.05;
+    letter-spacing: -0.025em; text-wrap: balance; margin: 0 0 18px; max-width: 20ch;
+  }
+  .standfirst { font-size: 1.1rem; line-height: 1.55; color: var(--ink-2); max-width: 60ch; margin: 0 0 26px; }
+
+  .snapshot {
+    display: flex; flex-wrap: wrap; gap: 0 34px;
+    padding-top: 20px; border-top: 1px solid var(--rule);
+    font-family: var(--f-display);
+  }
+  .snapshot div { padding: 4px 0; }
+  .snapshot dt { font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 3px; }
+  .snapshot dd { margin: 0; font-family: var(--f-mono); font-size: 15px; font-variant-numeric: tabular-nums; color: var(--ink); }
+
+  section { padding: 46px 0 6px; border-top: 1px solid var(--rule); }
+  section:first-of-type { border-top: none; }
+
+  h2.q {
+    font-family: var(--f-display); font-weight: 700; font-size: 1.55rem;
+    line-height: 1.2; letter-spacing: -0.018em; margin: 0 0 8px; max-width: 26ch; text-wrap: balance;
+  }
+  .slug {
+    font-family: var(--f-mono); font-size: 11px; letter-spacing: 0.06em;
+    color: var(--ink-3); margin: 0 0 22px;
+  }
+
+  h3 {
+    font-family: var(--f-display); font-weight: 600; font-size: 12px;
+    letter-spacing: 0.13em; text-transform: uppercase; color: var(--ink-3);
+    margin: 30px 0 12px;
+  }
+
+  p { max-width: var(--measure); margin: 0 0 16px; }
+  ul, ol { max-width: var(--measure); margin: 0 0 16px; padding-left: 22px; }
+  li { margin-bottom: 9px; }
+  strong { font-weight: 600; }
+  em { font-style: italic; }
+  code { font-family: var(--f-mono); font-size: 0.87em; background: var(--surface-2); padding: 1px 5px; border-radius: 2px; }
+  a { color: var(--accent-ink); }
+
+  .chip {
+    display: inline-block; font-family: var(--f-display); font-weight: 600;
+    font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+    padding: 3px 8px; border-radius: 2px; vertical-align: 2px;
+  }
+  .chip.measured { background: var(--accent-soft); color: var(--accent-ink); }
+  .chip.open { background: var(--umber-soft); color: var(--umber); }
+  .chip.answered { background: var(--surface-2); color: var(--ink-2); }
+
+  .verdict {
+    background: var(--surface); border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    padding: 16px 20px; margin: 0 0 22px; max-width: var(--measure);
+  }
+  .verdict p { margin: 0; }
+  .verdict p + p { margin-top: 10px; }
+
+  .caution { border-left-color: var(--warn-rule); background: var(--warn-bg); }
+
+  .table-wrap { overflow-x: auto; margin: 0 0 22px; border: 1px solid var(--rule); background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-family: var(--f-display); font-size: 13.5px; }
+  th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  thead th { font-weight: 600; font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--ink-3); background: var(--surface-2); }
+  tbody tr:last-child td { border-bottom: none; }
+  td.num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+  tr.hi td { background: var(--accent-soft); }
+  td.wrap-cell { white-space: normal; min-width: 260px; }
+
+  figure { margin: 26px 0; }
+  figure svg { display: block; width: 100%; height: auto; color: var(--ink); }
+  .fig-frame { background: var(--surface); border: 1px solid var(--rule); padding: 20px 18px 14px; overflow-x: auto; }
+  figcaption { font-family: var(--f-display); font-size: 12.5px; line-height: 1.5; color: var(--ink-3); margin-top: 11px; max-width: 72ch; }
+  figcaption b { color: var(--ink-2); font-weight: 600; }
+
+  .ideas { list-style: none; padding-left: 0; max-width: var(--measure); }
+  .ideas li {
+    padding: 12px 0 12px 20px; border-top: 1px solid var(--rule);
+    position: relative; margin-bottom: 0;
+  }
+  .ideas li::before {
+    content: ""; position: absolute; left: 0; top: 21px;
+    width: 7px; height: 7px; background: var(--umber); border-radius: 50%;
+  }
+  .ideas li:last-child { border-bottom: 1px solid var(--rule); }
+
+  .chain { counter-reset: step; list-style: none; padding-left: 0; max-width: var(--measure); }
+  .chain li {
+    counter-increment: step; position: relative;
+    padding: 0 0 18px 46px; margin: 0;
+  }
+  .chain li::before {
+    content: counter(step); position: absolute; left: 0; top: 1px;
+    width: 28px; height: 28px; border: 1px solid var(--rule-strong); border-radius: 50%;
+    font-family: var(--f-mono); font-size: 12px; color: var(--ink-2);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .chain li::after {
+    content: ""; position: absolute; left: 14px; top: 32px; bottom: 4px;
+    width: 1px; background: var(--rule);
+  }
+  .chain li:last-child::after { display: none; }
+  .chain b { font-family: var(--f-display); font-size: 15px; }
+
+  footer.end {
+    margin-top: 56px; padding-top: 22px; border-top: 2px solid var(--rule-strong);
+    font-family: var(--f-display); font-size: 13px; color: var(--ink-3); max-width: var(--measure);
+  }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+  @media (max-width: 620px) {
+    .snapshot { gap: 0 22px; }
+    p, ul, ol, .verdict, .ideas, .chain { max-width: none; }
+  }
+</style>
+
+<header class="top">
+  <div class="top-inner">
+    <p class="eyebrow">Companion to the Gradient Field Manual · nothing here is decided</p>
+    <h1>Trail Fidelity Backlog</h1>
+    <p class="standfirst">
+      Six open questions about recording mountain trails, each measured against the data
+      already in the database before anything is proposed. No code has been written for any
+      of this.
+    </p>
+    <dl class="snapshot">
+      <div><dt>Measured</dt><dd>23 Aug 2026</dd></div>
+      <div><dt>Segments with data</dt><dd>268</dd></div>
+      <div><dt>Buckets</dt><dd>1,739</dd></div>
+      <div><dt>Rendered lines</dt><dd>341</dd></div>
+      <div><dt>Rides per bucket</dt><dd>1.32 – 1.68</dd></div>
+    </dl>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <!-- ============================================ -->
+  <section>
+    <h2 class="q">Is 11 m the right spacing between fixes?</h2>
+    <p class="slug">fix-spacing &nbsp;·&nbsp; <span class="chip measured">measured</span></p>
+
+    <div class="verdict">
+      <p>
+        <strong>11 m is not a city-versus-trail number at all &mdash; it is a fraction of the bucket.</strong>
+        The target exists so that no 15 m bucket goes unmeasured. Judged against that, it holds below about
+        6 m/s and fails above it, in both worlds equally.
+      </p>
+      <p>
+        And current trail riding is <em>slower</em> than street riding, so spacing there is already finer than
+        the target. Fix frequency is almost certainly not what is limiting trail detail.
+      </p>
+    </div>
+
+    <h3>What the phone actually achieved</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Speed band</th><th>Fixes</th><th>Mean gap</th><th>Gap ÷ bucket</th><th>Effect</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>under 2 m/s</td><td class="num">843</td><td class="num">6.8 m</td><td class="num">0.45</td><td>oversampled</td></tr>
+          <tr><td>2 – 4 m/s</td><td class="num">2,129</td><td class="num">8.1 m</td><td class="num">0.54</td><td>oversampled</td></tr>
+          <tr class="hi"><td>4 – 6 m/s</td><td class="num">1,866</td><td class="num">10.6 m</td><td class="num">0.71</td><td>on target</td></tr>
+          <tr><td>6 – 8 m/s</td><td class="num">780</td><td class="num">14.2 m</td><td class="num">0.94</td><td>marginal</td></tr>
+          <tr><td>8 – 10 m/s</td><td class="num">216</td><td class="num">16.7 m</td><td class="num">1.12</td><td>buckets skipped</td></tr>
+          <tr><td>10+ m/s</td><td class="num">111</td><td class="num">21.9 m</td><td class="num">1.46</td><td>buckets skipped</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Two things fall out of this. First, <strong>the phone under-delivers against its own request.</strong> At
+      7 m/s the computed interval is about 1.57 s, which should give 11 m; the measured gap is 14.2 m, implying
+      the operating system is handing over fixes roughly 2 s apart. The interval is a request, not a contract.
+    </p>
+
+    <p>
+      Second, <strong>there is a hard floor that no tuning can move.</strong> <code>MIN_INTERVAL_MS</code> is
+      1000 because GPS is a 1 Hz device. At 10 m/s the best achievable spacing is 10 m, and at 15 m/s it is
+      15 m &mdash; a whole bucket. Descents are the fastest part of any ride, so the fastest ground is always
+      the worst sampled, and the interval knob cannot fix it.
+    </p>
+
+    <h3>Ideas, undecided</h3>
+    <ul class="ideas">
+      <li>
+        Accept that above ~8 m/s buckets get skipped, and instead <strong>interpolate between fixes</strong>
+        when the gap exceeds one bucket. Cheap, but it invents data, and the whole model has so far refused
+        to do that.
+      </li>
+      <li>
+        Use the barometer's higher sample rate to fill the gaps. Height is what buckets store; position
+        between two fixes 20 m apart is well approximated by the segment centreline anyway, since we
+        already project onto it.
+      </li>
+      <li>
+        Leave the target alone and simply <strong>record how many buckets were skipped per ride</strong> as a
+        quality figure. Measuring the damage before treating it fits how everything else here was decided.
+      </li>
+    </ul>
+  </section>
+
+  <!-- ============================================ -->
+  <section>
+    <h2 class="q">Why a real green section inside an orange climb never shows up</h2>
+    <p class="slug">slope-resolution &nbsp;·&nbsp; <span class="chip answered">answered</span> <span class="chip open">what to do is open</span></p>
+
+    <div class="verdict">
+      <p>
+        <strong>The bucket size is not the culprit; the slope window is.</strong> Colour is computed from a
+        least-squares line through six buckets &mdash; a 75 m baseline. Any change in gradient shorter than
+        roughly 54 m is averaged into its surroundings before a colour is ever chosen.
+      </p>
+    </div>
+
+    <h3>Three smoothers stack, in this order</h3>
+
+    <ol class="chain">
+      <li>
+        <b>The moving average over heights &mdash; about 3 seconds</b><br>
+        <code>EMA_ALPHA = 0.3</code>. At trail speeds of 2–3 m/s that is 6–9 m of ground; on a fast street
+        descent it is closer to 20 m.
+      </li>
+      <li>
+        <b>The bucket &mdash; 15 m</b><br>
+        Every fix within ±7.5 m of a mark is averaged into one height. This sets the finest detail that can
+        be <em>stored</em>.
+      </li>
+      <li>
+        <b>The slope window &mdash; 75 m</b><br>
+        <code>SLOPE_WINDOW = 2</code> fits a line through the bucket at each end of the gap plus the two beyond
+        each of those &mdash; six buckets. This sets the finest detail that can be <em>seen</em>, and it is five
+        times coarser than the bucket.
+      </li>
+    </ol>
+
+    <h3>The arithmetic, on your example</h3>
+
+    <p>
+      Take a 5% climb with a 15 m stretch at &minus;2% in the middle of it &mdash; a real dip you can feel in
+      the pedals. The window centred on that dip sees 15 m of &minus;2% and 60 m of +5%:
+    </p>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Length of the dip</th><th>Slope the window reports</th><th>Colour drawn</th><th>Colour deserved</th></tr></thead>
+        <tbody>
+          <tr><td class="num">15 m</td><td class="num">+3.60%</td><td>orange</td><td>green</td></tr>
+          <tr><td class="num">22 m</td><td class="num">+2.95%</td><td>yellow</td><td>green</td></tr>
+          <tr><td class="num">30 m</td><td class="num">+2.20%</td><td>yellow</td><td>green</td></tr>
+          <tr class="hi"><td class="num">54 m</td><td class="num">&minus;0.04%</td><td>green</td><td>green</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <figure>
+      <div class="fig-frame">
+        <svg viewBox="0 0 880 350" role="img" aria-label="A slope profile across 150 metres. The true slope is a step: plus 5 percent, dropping to minus 2 percent for a 15 metre stretch between 60 and 75 metres, then back to plus 5 percent. The 75-metre best-fit line barely notices the dip, sagging only from 5 percent to 3.6 percent. Two colour bars below compare what the ground does — orange, a short green section, orange — with what the map draws, which is orange the whole way.">
+          <defs>
+            <marker id="rs-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+            </marker>
+          </defs>
+
+          <text x="0" y="16" font-family="Archivo, sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65" letter-spacing="0.9">SLOPE ACROSS 150 m OF CLIMB, WITH A 15 m DIP AT 60 m</text>
+
+          <!-- colour band regions -->
+          <rect x="60" y="96" width="720" height="42" fill="#f97316" opacity="0.12"/>
+          <rect x="60" y="138" width="720" height="42" fill="#eab308" opacity="0.12"/>
+          <rect x="60" y="180" width="720" height="42" fill="#22c55e" opacity="0.12"/>
+          <g font-family="Archivo, sans-serif" font-size="9.5" fill="currentColor" opacity="0.5" text-anchor="end">
+            <text x="772" y="129">orange band</text>
+            <text x="772" y="163">yellow band</text>
+            <text x="772" y="205">green band</text>
+          </g>
+
+          <!-- gridlines -->
+          <g stroke="currentColor" stroke-width="1" opacity="0.22">
+            <line x1="60" y1="96" x2="780" y2="96"/>
+            <line x1="60" y1="138" x2="780" y2="138"/>
+            <line x1="60" y1="180" x2="780" y2="180"/>
+            <line x1="60" y1="222" x2="780" y2="222"/>
+          </g>
+          <g font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.6" text-anchor="end">
+            <text x="52" y="100">+6%</text><text x="52" y="142">+3%</text>
+            <text x="52" y="184">0%</text><text x="52" y="226">−3%</text>
+          </g>
+
+          <!-- true slope -->
+          <polyline points="60,110 348,110 348,208 420,208 420,110 780,110" fill="none" stroke="currentColor" stroke-width="2.5"/>
+          <text x="150" y="102" font-family="Archivo, sans-serif" font-size="10.5" font-weight="600" fill="currentColor">what the ground does</text>
+
+          <!-- smoothed slope -->
+          <polyline points="60,110 204,110 384,130 564,110 780,110" fill="none" stroke="var(--accent)" stroke-width="3"/>
+          <text x="592" y="128" font-family="Archivo, sans-serif" font-size="10.5" font-weight="600" fill="var(--accent)">the 75 m best-fit line</text>
+
+          <path d="M 470 172 L 400 138" fill="none" stroke="var(--accent)" stroke-width="1" opacity="0.75" marker-end="url(#rs-a)"/>
+          <text x="476" y="176" font-family="IBM Plex Mono, monospace" font-size="10.5" fill="var(--accent)">sags only to +3.6%</text>
+
+          <!-- dip bracket -->
+          <g stroke="currentColor" stroke-width="1.2" opacity="0.6">
+            <line x1="348" y1="216" x2="348" y2="236"/><line x1="420" y1="216" x2="420" y2="236"/>
+            <line x1="348" y1="236" x2="420" y2="236"/>
+          </g>
+          <text x="384" y="252" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="10" fill="currentColor" opacity="0.8">15 m</text>
+
+          <!-- x axis -->
+          <line x1="60" y1="266" x2="780" y2="266" stroke="currentColor" stroke-width="1.2" opacity="0.5"/>
+          <g stroke="currentColor" stroke-width="1.2" opacity="0.5">
+            <line x1="60" y1="266" x2="60" y2="272"/><line x1="204" y1="266" x2="204" y2="272"/>
+            <line x1="348" y1="266" x2="348" y2="272"/><line x1="492" y1="266" x2="492" y2="272"/>
+            <line x1="636" y1="266" x2="636" y2="272"/><line x1="780" y1="266" x2="780" y2="272"/>
+          </g>
+          <g font-family="IBM Plex Mono, monospace" font-size="9.5" fill="currentColor" opacity="0.5" text-anchor="middle">
+            <text x="60" y="284">0</text><text x="204" y="284">30</text><text x="348" y="284">60</text>
+            <text x="492" y="284">90</text><text x="636" y="284">120</text><text x="780" y="284">150 m</text>
+          </g>
+
+          <!-- outcome bars -->
+          <text x="52" y="308" text-anchor="end" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">the ground</text>
+          <rect x="60" y="300" width="288" height="10" fill="#f97316"/>
+          <rect x="348" y="300" width="72" height="10" fill="#22c55e"/>
+          <rect x="420" y="300" width="360" height="10" fill="#f97316"/>
+
+          <text x="52" y="332" text-anchor="end" font-family="Archivo, sans-serif" font-size="10.5" fill="currentColor" opacity="0.8">the map</text>
+          <rect x="60" y="324" width="720" height="10" fill="#f97316"/>
+        </svg>
+      </div>
+      <figcaption>
+        <b>The dip is real, stored, and then averaged away at the last step.</b> The buckets underneath this
+        picture do hold the lower heights &mdash; nothing is lost until slope is computed. Shrinking the
+        window is what would recover it, and barometer noise is the only reason the window is wide.
+      </figcaption>
+    </figure>
+
+    <h3>Why the window cannot simply be shrunk</h3>
+
+    <p>
+      It was widened for a reason. About 0.15 m of barometer noise across a 15 m bucket is roughly 1% of slope
+      error from a plain two-point difference &mdash; about the width of a colour band. That is what made a flat
+      street come out speckled with oranges and blues. Narrow the window today and the speckle comes back.
+    </p>
+
+    <p>
+      <strong>The leverage is noise, not the window.</strong> Oversampling the barometer &mdash; already the
+      first item on the main plan, and close to power-neutral &mdash; cuts noise roughly fourfold. That is what
+      would buy the room to drop <code>SLOPE_WINDOW</code> to 1, a 30 m baseline, and roughly double the
+      resolution without the speckle returning.
+    </p>
+
+    <div class="verdict caution">
+      <p>
+        <strong>Two things worth fixing regardless.</strong> A line needs six buckets before any gap on it can
+        get a full window. Of the 341 lines currently rendered, <strong>205 &mdash; 60% &mdash; have five or
+        fewer</strong>, so on most of the map the fit is silently running on three or four points.
+      </p>
+      <p>
+        Worse, <strong>23 lines have exactly one bucket.</strong> With a single bucket the code cannot compute
+        a slope at all and falls back to zero, which maps to the green band. Those 23 lines are painted
+        "gentle descent" on no evidence whatsoever.
+      </p>
+    </div>
+
+    <h3>Ideas, undecided</h3>
+    <ul class="ideas">
+      <li>
+        Cut the barometer noise first, then narrow the window. The ordering matters &mdash; doing it the other
+        way round just reintroduces a bug that was already paid for.
+      </li>
+      <li>
+        Make the window <strong>adaptive</strong>: narrow where a bucket has several rides behind it, wide where
+        it has one. <code>sample_count</code> is already stored per bucket, so the information is there.
+      </li>
+      <li>
+        Give trails a smaller <code>BUCKET_SIZE_M</code>. Tempting, but it does nothing on its own &mdash; the
+        75 m window would still span twice as many smaller buckets and land in the same place.
+      </li>
+      <li>
+        Render one-bucket and low-confidence lines as a neutral grey rather than green, so "we don't know" stops
+        looking like "gentle descent".
+      </li>
+    </ul>
+  </section>
+
+  <!-- ============================================ -->
+  <section>
+    <h2 class="q">How should segments work on trails, where there are no intersections?</h2>
+    <p class="slug">trail-segmentation &nbsp;·&nbsp; <span class="chip measured">measured</span> <span class="chip open">open</span></p>
+
+    <div class="verdict">
+      <p>
+        <strong>Trail segments today are arbitrary.</strong> On roads a segment is a real thing &mdash; a block
+        between two junctions. On a trail there is nothing to cut at, so the pipeline falls back to chopping the
+        way into equal pieces of at most 150 m. Those boundaries mean nothing on the ground.
+      </p>
+    </div>
+
+    <h3>What the network looks like</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Kind</th><th>Segments</th><th>Median length</th><th>90th pct</th><th>At the 150 m cap</th></tr></thead>
+        <tbody>
+          <tr><td>road</td><td class="num">30,233</td><td class="num">87.5 m</td><td class="num">137.0 m</td><td class="num">2,345</td></tr>
+          <tr><td>cycleway</td><td class="num">3,220</td><td class="num">109.0 m</td><td class="num">144.6 m</td><td class="num">574</td></tr>
+          <tr><td>footway</td><td class="num">13,305</td><td class="num">34.2 m</td><td class="num">133.7 m</td><td class="num">859</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      The road median of 87.5 m is a city block, which is the number topology gives you for free. Cycleways
+      run longer and hit the cap far more often in proportion &mdash; and one single OSM way in the database
+      was split into <strong>144 pieces</strong>, with several others between 30 and 63.
+    </p>
+
+    <h3>Why arbitrary boundaries actually hurt</h3>
+
+    <ul>
+      <li>
+        <strong>The coverage test loses its meaning.</strong> The gate accepts a run covering 70% of "the
+        block". On a trail the denominator is a number the splitter invented, so 70% of it is not a fact about
+        anything.
+      </li>
+      <li>
+        <strong>The stored bearing becomes nonsense.</strong> Each segment carries one straight-line bearing.
+        Chop a switchback into 150 m chunks and a chunk's net bearing can point somewhere the rider never
+        faced &mdash; which is precisely the failure fragment stitching exists to paper over.
+      </li>
+      <li>
+        <strong>A 150 m chunk is about ten buckets</strong>, wide enough to contain a full climb, crest and
+        descent, which the 75 m slope window then smears across the crest.
+      </li>
+    </ul>
+
+    <h3>Ideas, undecided</h3>
+    <ul class="ideas">
+      <li>
+        <strong>Cut at direction changes rather than at even intervals.</strong> Walk the way and start a new
+        segment wherever cumulative heading has turned past some threshold. This attacks the root cause behind
+        stitching instead of compensating for it, and every segment would then have a bearing that means
+        something.
+      </li>
+      <li>
+        Use a shorter cap for trails than for roads &mdash; more, smaller pieces makes each bearing more honest,
+        at the cost of more segments and more gate decisions.
+      </li>
+      <li>
+        Do not cut long trails at all: treat a named trail as one segment with a very long ruler. Simplest
+        conceptually, but it breaks the coverage test in the other direction and makes every query heavier.
+      </li>
+      <li>
+        Whatever is chosen, it changes segment ids and requires a re-import <em>and</em> a full model rebuild.
+        This is the most expensive item here to change later, which argues for deciding it before recording
+        many more trail rides.
+      </li>
+    </ul>
+  </section>
+
+  <!-- ============================================ -->
+  <section>
+    <h2 class="q">Why is there nothing on Ute Valley Regional Trail?</h2>
+    <p class="slug">ute-valley &nbsp;·&nbsp; <span class="chip answered">answered — no bug</span></p>
+
+    <div class="verdict">
+      <p>
+        <strong>The trail is in the database, correctly classified, and has never been ridden with recording
+        on.</strong> All nine of its segments exist as <code>cycleway</code>, none were folded into a parent
+        road, and <strong>zero GPS fixes have ever landed within 30 m of any of them.</strong> There is nothing
+        to fix.
+      </p>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Trail</th><th>Kind</th><th>Segments</th><th>Length</th><th>Fixes within 30 m</th><th>Buckets</th></tr></thead>
+        <tbody>
+          <tr class="hi"><td>BeaUTEiful Loop</td><td>cycleway + footway</td><td class="num">20</td><td class="num">2,515 m</td><td class="num">1,221</td><td class="num">140</td></tr>
+          <tr class="hi"><td>Ute Valley Park Trail</td><td>cycleway + footway</td><td class="num">12</td><td class="num">656 m</td><td class="num">374</td><td class="num">35</td></tr>
+          <tr><td>Ute Valley Regional Trail</td><td>cycleway</td><td class="num">9</td><td class="num">725 m</td><td class="num">0</td><td class="num">0</td></tr>
+          <tr><td>Ute Valley Trail</td><td>road + cycleway</td><td class="num">9</td><td class="num">607 m</td><td class="num">0</td><td class="num">0</td></tr>
+          <tr><td>Garbage Chute &amp; Overlook</td><td>cycleway</td><td class="num">11</td><td class="num">1,411 m</td><td class="num">0</td><td class="num">0</td></tr>
+          <tr><td>Ute Trail</td><td>cycleway</td><td class="num">11</td><td class="num">916 m</td><td class="num">0</td><td class="num">0</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      Ute Valley Regional Trail sits about 650 m northeast of the BeaUTEiful Loop, which is one of the best-covered
+      pieces of trail in the whole model. So the area is mapped and the matcher works there &mdash; that
+      particular path just has not been ridden.
+    </p>
+
+    <div class="verdict caution">
+      <p>
+        <strong>One real exclusion worth auditing, though.</strong> <code>highway=track</code> is on the
+        excluded list in <code>split_ways.mjs</code>, alongside driveways and parking aisles. Any local trail
+        tagged <code>track</code> in OpenStreetMap is invisible to this app and always will be, silently.
+      </p>
+      <p>
+        Worth one query against the raw Overpass extract to count how many rideable-looking <code>track</code>
+        ways exist locally before deciding whether that exclusion is still right for a mountain-biking use case.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================================ -->
+  <section>
+    <h2 class="q">Should mountain and city tracking be separated?</h2>
+    <p class="slug">one-pipeline-or-two &nbsp;·&nbsp; <span class="chip open">open — leaning no</span></p>
+
+    <div class="verdict">
+      <p>
+        <strong>Leaning strongly toward one pipeline, parameterised by segment kind.</strong> Not because the
+        two are similar &mdash; they clearly are not &mdash; but because a fork would have to cut a single ride
+        in half.
+      </p>
+    </div>
+
+    <h3>The argument against forking</h3>
+
+    <ul>
+      <li>
+        <strong>One ride crosses both worlds.</strong> You ride streets to the trailhead and streets home. A
+        forked pipeline would need to decide, mid-session, which code path each fix belongs to &mdash; and that
+        decision is itself a map-matching problem, so nothing has been made simpler.
+      </li>
+      <li>
+        <strong>The knobs that differ are already isolated.</strong> Everything under discussion is a named
+        constant in one of three files. Varying them by <code>kind</code> is a lookup, not a second pipeline.
+      </li>
+      <li>
+        <strong>Two paths drift.</strong> The rebuild script already exists specifically so that reprocessing
+        old rides goes through exactly the same code as a live save. Forking would create the same class of
+        divergence that guard was written to prevent.
+      </li>
+    </ul>
+
+    <h3>What genuinely differs, and would need to vary by kind</h3>
+
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Knob</th><th>Today</th><th class="wrap-cell">Why a trail might want something else</th></tr></thead>
+        <tbody>
+          <tr><td class="num">MAX_SEGMENT_M</td><td class="num">150</td><td class="wrap-cell">No intersections to cut at, so the cap is doing all the work</td></tr>
+          <tr><td class="num">BUCKET_SIZE_M</td><td class="num">15</td><td class="wrap-cell">Terrain changes over shorter distances than a city block</td></tr>
+          <tr><td class="num">MAX_BEARING_DELTA_DEG</td><td class="num">45</td><td class="wrap-cell">Switchbacks routinely exceed it; stitching is the current workaround</td></tr>
+          <tr><td class="num">MIN_COVERAGE</td><td class="num">0.7</td><td class="wrap-cell">Measured against an arbitrary denominator on trails</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      The catch: any per-kind value has to be applied identically at rebuild time, and a bucket already written
+      under one setting is not comparable to one written under another. Whatever is chosen, it lands with a
+      full rebuild &mdash; the same discipline that already applies to every constant marked "rebuild".
+    </p>
+  </section>
+
+  <!-- ============================================ -->
+  <section>
+    <h2 class="q">What would a dev view cost?</h2>
+    <p class="slug">dev-view &nbsp;·&nbsp; <span class="chip measured">scoped</span> <span class="chip open">not built</span></p>
+
+    <p>
+      Four separate features, listed cheapest first. Everything below reads data that already exists; none of
+      it changes how a ride is processed.
+    </p>
+
+    <h3>A · Bucket counts and run counts on the segment</h3>
+    <p>
+      <strong>Smallest.</strong> The <code>/segments</code> route already loads every bucket row for the
+      viewport in order to build the lines, then discards the counts. Attaching bucket count and maximum
+      <code>sample_count</code> per segment is a field on the existing response with no extra query. The only
+      real work is a zoom-gated label layer on the map.
+    </p>
+
+    <h3>B · Where the fixes actually landed</h3>
+    <p>
+      <strong>Small.</strong> Needs one new read-only route returning a session's raw samples &mdash; no such
+      endpoint exists today. Payload is trivial: the longest recent ride is 862 fixes. On the map it is a
+      point layer with a toggle. Most valuable while the ride is fresh, since it shows scatter and dropouts
+      directly rather than through their effects.
+    </p>
+
+    <h3>C · Tap a segment to see its buckets</h3>
+    <p>
+      <strong>Medium.</strong> A per-segment detail route returning every bucket &mdash; distance, stored mean
+      height, how many rides are behind it &mdash; plus the coverage row and the matched runs. All three tables
+      exist and are indexed. The cost is mostly the panel UI, not the data.
+    </p>
+
+    <h3>D · Why is there no line here?</h3>
+    <p>
+      <strong>Medium, and the one worth arguing for.</strong> Every save already computes a full diagnostic for
+      each rejected run &mdash; span, coverage fraction, sample count, how many runs landed on the same
+      segment, what the span would have been if stitched, and the gap in seconds to the previous run. Then it
+      is deliberately thrown away: the field is marked diagnostics-only and stripped from the API response.
+    </p>
+    <p>
+      Persisting that to a table would turn the hardest question in this whole system &mdash; <em>why is this
+      street blank?</em> &mdash; into something tappable. The computation is already written and already runs
+      on every ride; only the table and the insert are missing.
+    </p>
+
+    <div class="verdict caution">
+      <p>
+        <strong>Keep it off the hot path.</strong> Whatever gets built, it should be separate routes behind a
+        flag and gated on zoom, so the normal viewport request keeps exactly the cost it has now. The one
+        exception is A, which rides along on a query that already runs.
+      </p>
+    </div>
+  </section>
+
+  <footer class="end">
+    <p>
+      <strong>If only three things happen:</strong> decide trail segmentation before recording many more trail
+      rides, because it is the only item here that gets more expensive with every ride. Persist the discard
+      diagnostics, because the work is already done and thrown away. Cut barometer noise, because it is the
+      one change that unlocks finer slope resolution rather than trading it against speckle.
+    </p>
+    <p>
+      Measured against the live database on 23 August 2026 &mdash; 268 segments with data, 1,739 buckets,
+      341 rendered lines. Every figure here is reproducible from those tables.
+    </p>
+  </footer>
+
+</div>
