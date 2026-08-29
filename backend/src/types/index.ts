@@ -1,5 +1,10 @@
 export type Direction = "forward" | "backward";
 
+// Which sensor produced a sample's elevation. Null for rows recorded before
+// the phone started reporting it -- those predate the column and cannot be
+// classified after the fact, only inferred from their noise.
+export type ElevationSource = "barometer" | "gps";
+
 export interface SessionSample {
   id: number;
   sessionId: number;
@@ -7,6 +12,9 @@ export interface SessionSample {
   lat: number;
   lon: number;
   elevationM: number;
+  elevationSource: ElevationSource | null;
+  // Vertical accuracy in metres. Unrelated to accuracyM, which is horizontal.
+  altitudeAccuracyM: number | null;
   headingDeg: number | null;
   speedMps: number | null;
   accuracyM: number | null;

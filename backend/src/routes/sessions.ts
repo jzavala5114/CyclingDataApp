@@ -45,11 +45,16 @@ sessionsRouter.delete("/:id", asyncRoute(async (req, res) => {
   res.status(200).json({ deleted: rowCount ?? 0 });
 }));
 
+// elevationSource and altitudeAccuracyM are optional so an older build of the
+// app keeps uploading successfully -- its samples land with a null source,
+// which is what "unknown" means everywhere downstream.
 const sampleSchema = z.object({
   recordedAt: z.string(),
   lat: z.number(),
   lon: z.number(),
   elevationM: z.number(),
+  elevationSource: z.enum(["barometer", "gps"]).nullable().optional(),
+  altitudeAccuracyM: z.number().nullable().optional(),
   headingDeg: z.number().nullable().optional(),
   speedMps: z.number().nullable().optional(),
   accuracyM: z.number().nullable().optional(),
@@ -65,7 +70,7 @@ const uploadSchema = z.object({ samples: z.array(sampleSchema) });
 // connection went, the transaction rolled back and the ride landed as zero
 // rows. Batched, the same upload is a couple of round trips.
 const SAMPLE_INSERT_BATCH = 500;
-const SAMPLE_COLUMNS = 8;
+const SAMPLE_COLUMNS = 10;
 
 sessionsRouter.post("/:id/samples", asyncRoute(async (req, res) => {
   const sessionId = Number(req.params.id);
@@ -78,13 +83,18 @@ sessionsRouter.post("/:id/samples", asyncRoute(async (req, res) => {
       const batch = samples.slice(start, start + SAMPLE_INSERT_BATCH);
       const values: unknown[] = [];
       const tuples = batch.map((s, i) => {
-        values.push(sessionId, s.recordedAt, s.lat, s.lon, s.elevationM, s.headingDeg, s.speedMps, s.accuracyM);
+        values.push(
+          sessionId, s.recordedAt, s.lat, s.lon, s.elevationM,
+          s.elevationSource ?? null, s.altitudeAccuracyM ?? null,
+          s.headingDeg, s.speedMps, s.accuracyM,
+        );
         const n = i * SAMPLE_COLUMNS;
-        return `($${n + 1}, $${n + 2}, $${n + 3}, $${n + 4}, $${n + 5}, $${n + 6}, $${n + 7}, $${n + 8})`;
+        return `($${n + 1}, $${n + 2}, $${n + 3}, $${n + 4}, $${n + 5}, $${n + 6}, $${n + 7}, $${n + 8}, $${n + 9}, $${n + 10})`;
       });
       await client.query(
         `insert into session_samples
-           (session_id, recorded_at, lat, lon, elevation_m, heading_deg, speed_mps, accuracy_m)
+           (session_id, recorded_at, lat, lon, elevation_m,
+            elevation_source, altitude_accuracy_m, heading_deg, speed_mps, accuracy_m)
          values ${tuples.join(", ")}
          on conflict (session_id, recorded_at) do nothing`,
         values,

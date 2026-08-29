@@ -55,6 +55,18 @@ create table session_samples (
     lat           double precision not null,
     lon           double precision not null,
     elevation_m   double precision not null,
+    -- Which sensor produced elevation_m. expo-sensors has no background
+    -- counterpart to expo-location's task, so the barometer stops delivering
+    -- when the screen locks and the phone falls back to GPS altitude, which is
+    -- ~100x worse vertically. Without this column that swap is invisible:
+    -- measured roughness splits the archive into rides at 0.35-0.49m (the
+    -- barometer working) and rides at 0.7-6.4m, but only by inference.
+    -- Null on rows recorded before this column existed.
+    elevation_source text check (elevation_source in ('barometer', 'gps')),
+    -- Vertical accuracy, in metres, as reported by the OS. Unrelated to
+    -- accuracy_m below, which is horizontal -- a fix can sit within 4m
+    -- horizontally while its altitude is out by 15.
+    altitude_accuracy_m double precision,
     heading_deg   double precision,
     speed_mps     double precision,
     accuracy_m    double precision

@@ -124,7 +124,8 @@ export async function processSession(
 ): Promise<ProcessResult> {
   const { rows: sampleRows } = await client.query<SessionSample>(
     `select id, session_id as "sessionId", recorded_at as "recordedAt", lat, lon,
-            elevation_m as "elevationM", heading_deg as "headingDeg",
+            elevation_m as "elevationM", elevation_source as "elevationSource",
+            altitude_accuracy_m as "altitudeAccuracyM", heading_deg as "headingDeg",
             speed_mps as "speedMps", accuracy_m as "accuracyM"
        from session_samples where session_id = $1 order by recorded_at`,
     [sessionId],

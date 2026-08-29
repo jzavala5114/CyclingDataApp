@@ -22,32 +22,93 @@ import { processSession, type DiscardedRun } from "../services/sessionProcessor.
 // the test: anything below this is not an altitude above sea level.
 const MIN_PLAUSIBLE_ELEVATION_M = 1000;
 
+// The barometer stops delivering when the screen locks -- expo-sensors has no
+// background counterpart to expo-location's task -- and the phone falls back to
+// GPS altitude, which is ~100x worse vertically. Rides recorded before
+// session_samples.elevation_source existed carry no record of which they used,
+// so as with the scale test above, the data itself is the test.
+//
+// Barometer and GPS-altitude stretches have different noise signatures. The
+// median absolute *second* difference of a session's elevation series isolates
+// that: it cancels the genuine slope and leaves only the roughness. Measured
+// across the archive:
+//
+//   0.35 - 0.49 m   barometer throughout   (sessions 5, 6, 11-15, 29, 42, 48, 52)
+//   0.69 - 0.89 m   mixed                  (sessions 43, 47, 49, 51, 53, 54)
+//   1.48 - 6.39 m   GPS altitude           (sessions 45, 46, 50)
+//
+// Session 45 swings 1989.92 -> 1992.60 -> 1983.71 on fixes ~8m apart. A 9m drop
+// and recovery over 8m of ground is not terrain. Its *horizontal* accuracy read
+// 4-19m throughout, which is why this went unnoticed: horizontal accuracy says
+// nothing about vertical.
+//
+// Set in the empty band between 0.89 and 1.48 rather than below the middle
+// group, and that choice is load-bearing. Cutting at 0.6 to catch the mixed
+// rides as well drops 9 sessions and half the archive, and takes 97 segments
+// down to no coverage at all -- every mountain trail recorded so far, including
+// all of Chamberlain, Ridge Trail, The Chutes, Ladders and the BeaUTEiful Loop.
+// Cutting here drops 3 sessions and 244 samples and loses no segment entirely.
+// The mixed rides are partly real barometer data and are the only trail data
+// there is; going forward elevation_source labels them per sample, which is
+// what actually fixes them.
+//
+// Rides carrying elevation_source are exempt -- once a ride says what it used,
+// guessing from noise is strictly worse.
+const MAX_PLAUSIBLE_ROUGHNESS_M = 1.2;
+
 const dryRun = process.argv.includes("--dry-run");
 
 const { rows: sessions } = await pool.query<{
   id: number;
   samples: number;
   min_elev: number | null;
-  usable: boolean;
+  roughness_m: number | null;
+  labelled: number;
+  scale_ok: boolean;
+  roughness_ok: boolean;
 }>(
-  `select s.id,
+  `with curvature as (
+     select session_id,
+            abs(elevation_m
+                - 2 * lag(elevation_m, 1) over w
+                + lag(elevation_m, 2) over w) as curv
+       from session_samples
+     window w as (partition by session_id order by recorded_at)
+   ),
+   roughness as (
+     select session_id,
+            percentile_cont(0.5) within group (order by curv) as median_curv
+       from curvature where curv is not null group by session_id
+   )
+   select s.id,
           count(ss.id)::int as samples,
           min(ss.elevation_m) as min_elev,
-          coalesce(min(ss.elevation_m) >= $1, false) as usable
+          max(r.median_curv) as roughness_m,
+          count(ss.elevation_source)::int as labelled,
+          coalesce(min(ss.elevation_m) >= $1, false) as scale_ok,
+          -- A labelled ride is trusted on its own account; an unlabelled one
+          -- has to pass the noise test. A ride too short to have a second
+          -- difference has no roughness and is let through on the scale test.
+          (count(ss.elevation_source) > 0
+             or coalesce(max(r.median_curv) <= $2, true)) as roughness_ok
      from sessions s
      left join session_samples ss on ss.session_id = s.id
+     left join roughness r on r.session_id = s.id
     group by s.id
     having count(ss.id) > 0
     order by s.id`,
-  [MIN_PLAUSIBLE_ELEVATION_M],
+  [MIN_PLAUSIBLE_ELEVATION_M, MAX_PLAUSIBLE_ROUGHNESS_M],
 );
 
-const usable = sessions.filter((s) => s.usable);
-const skipped = sessions.filter((s) => !s.usable);
+const usable = sessions.filter((s) => s.scale_ok && s.roughness_ok);
+const skipped = sessions.filter((s) => !(s.scale_ok && s.roughness_ok));
 
 console.log(`sessions with samples: ${sessions.length}`);
 for (const s of skipped) {
-  console.log(`  skipping session ${s.id}: min elevation ${s.min_elev?.toFixed(1)}m is not absolute`);
+  const why = !s.scale_ok
+    ? `min elevation ${s.min_elev?.toFixed(1)}m is not absolute`
+    : `elevation roughness ${s.roughness_m?.toFixed(2)}m exceeds ${MAX_PLAUSIBLE_ROUGHNESS_M}m — recorded on GPS altitude, not the barometer`;
+  console.log(`  skipping session ${s.id} (${s.samples} samples): ${why}`);
 }
 console.log(`rebuilding from ${usable.length} sessions: ${usable.map((s) => s.id).join(", ")}`);
 

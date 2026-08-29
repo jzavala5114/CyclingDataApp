@@ -1,7 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
-import type { TrackedSample } from "../types";
+import type { ElevationSource, TrackedSample } from "../types";
 
 export const LOCATION_TASK_NAME = "cyclingdataapp-location-updates";
 const SAMPLE_BUFFER_KEY = "cyclingdataapp:sample-buffer";
@@ -128,17 +128,39 @@ export function resetTrackingState(): void {
   baselineGpsAltitudeM = null;
 }
 
-function elevationFor(location: Location.LocationObject): number | null {
+// Which branch below was taken, recorded with the sample. Measuring the
+// archive showed rides sitting at 0.35-0.49m of elevation roughness (the
+// barometer working) mixed with rides at 0.7-6.4m (GPS altitude), with nothing
+// in the data saying which was which -- one ride swung 9m between fixes 8m
+// apart while its *horizontal* accuracy read 4-19m the whole way. Storing the
+// source makes that visible per sample instead of inferrable per ride.
+interface ElevationReading {
+  elevationM: number;
+  source: ElevationSource;
+  altitudeAccuracyM: number | null;
+}
+
+function elevationFor(location: Location.LocationObject): ElevationReading | null {
   const gpsAltitude = location.coords.altitude;
   if (baselineGpsAltitudeM == null && gpsAltitude != null) baselineGpsAltitudeM = gpsAltitude;
 
   const barometerIsFresh =
     barometerRelativeM != null && Date.now() - barometerAtMs < BAROMETER_STALE_AFTER_MS;
 
+  // Vertical accuracy. Deliberately not `coords.accuracy`, which is horizontal
+  // and says nothing about altitude -- confusing the two is how screen-off
+  // stretches passed for good data.
+  const altitudeAccuracyM = location.coords.altitudeAccuracy ?? null;
+
   if (barometerIsFresh && baselineGpsAltitudeM != null) {
-    return baselineGpsAltitudeM + barometerRelativeM!;
+    return {
+      elevationM: baselineGpsAltitudeM + barometerRelativeM!,
+      source: "barometer",
+      altitudeAccuracyM,
+    };
   }
-  return gpsAltitude;
+  if (gpsAltitude == null) return null;
+  return { elevationM: gpsAltitude, source: "gps", altitudeAccuracyM };
 }
 
 // --- Sample buffer ---------------------------------------------------------
@@ -259,13 +281,15 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
 
   const samples: TrackedSample[] = [];
   for (const location of locations) {
-    const elevationM = elevationFor(location);
-    if (elevationM == null) continue; // no usable altitude yet -- skip rather than invent one
+    const elevation = elevationFor(location);
+    if (elevation == null) continue; // no usable altitude yet -- skip rather than invent one
     samples.push({
       recordedAt: new Date(location.timestamp).toISOString(),
       lat: location.coords.latitude,
       lon: location.coords.longitude,
-      elevationM,
+      elevationM: elevation.elevationM,
+      elevationSource: elevation.source,
+      altitudeAccuracyM: elevation.altitudeAccuracyM,
       headingDeg: location.coords.heading,
       speedMps: location.coords.speed,
       accuracyM: location.coords.accuracy,
