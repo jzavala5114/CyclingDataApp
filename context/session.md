@@ -326,7 +326,12 @@ Keep these in mind before "simplifying" anything.
   deploy serves *committed* code, so anything uncommitted that was pushed up
   with `railway up` is silently rolled back the next time a push lands — which
   happened to the access log the moment the repo was connected.
+  Verified by a real push, not by the config looking right: `ae75369..65450fd`
+  moved `builtAt` to 2026-08-30T18:14:34.337Z in ~60s, and the access log that
+  only exists in the new commits then appeared in `railway logs`.
   Still verify by `builtAt`; it remains the only field that moves with the image.
+  Railway's log stream lags a container start by a few seconds — an empty tail
+  right after a deploy means "too early", not "not running".
 - `railway link` is per-directory and interactive unless given
   `-p cyclingdataapp-backend -e production -s cyclingdataapp-backend`.
   `railway status --json` carries the real deployment state; `deploymentStopped`
