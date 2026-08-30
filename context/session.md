@@ -302,6 +302,22 @@ Keep these in mind before "simplifying" anything.
   re-pairs over mDNS a few seconds after `adb devices`.
 - A Gradle `packageRelease` failure is usually a transient Windows file lock —
   retry before investigating.
+- **Pushing is not deploying.** The Railway service had *no* GitHub connection
+  for a long stretch — its deployments came only from `railway up`, so the
+  running server sat six days behind `main` while Railway reported healthy and
+  `/health` answered `ok` from the old container. Always confirm a deploy by
+  watching `builtAt` change; that is the only field that moves with the image.
+  A GitHub connection was added on 2026-08-29 and has **not been verified** — a
+  README-only push after it did not move `builtAt`.
+- `railway link` is per-directory and interactive unless given
+  `-p cyclingdataapp-backend -e production -s cyclingdataapp-backend`.
+  `railway status --json` carries the real deployment state; `deploymentStopped`
+  is misleading and `status` is the field to read (`DEPLOYING` ≠ failed).
+- **Pixel logcat holds ~16 seconds** at the default 256 KiB — useless for
+  diagnosing anything after the fact. `adb logcat -G 64M` buys about an hour;
+  it resets on reboot. Confirm app output actually appears (`ReactNativeJS`)
+  before relying on it in a release build.
+- `POST /sessions` returns `id` as a **string**, not a number.
 
 ## Elevation accuracy, measured
 
@@ -327,23 +343,71 @@ best-covered lines):
   **anchoring has not changed any rendered colour yet**. It is preventative: it
   pays the first time a street is ridden twice.
 
+## Which sensor: measured, 2026-08-29
+
+`session_samples.elevation_source` now records `barometer` or `gps` per fix
+(migration `001_elevation_source.sql`, additive, null on older rows). Deployed
+and verified end to end. This settled several things and overturned others.
+
+- **The barometer works, and the screen is the whole problem.** Screen on: 100%
+  barometer, including session 62 — 842 fixes, 45 minutes, 186 m of climb at
+  Stratton, 829 distinct values. Screen off: it dies in 11–19 s and GPS takes
+  over for the rest of the ride.
+- **`expo-sensors` unregisters the sensor deliberately.** `SensorProxy.kt` has
+  `OnActivityEntersBackground → stopObserving()`. Android is not refusing to
+  deliver; the library stops asking. `isObserving` survives the pause, so
+  `OnActivityEntersForeground` re-subscribes — **waking the screen mid-ride
+  should revive it on its own. Untested.**
+- **The barometer is ~2× better for slope, which is all this app computes.**
+  Colour depends on how much the error *changes* between adjacent buckets, not
+  on absolute error. Median change per 15 m: barometer 0.29 m (1.96% slope
+  error), GPS altitude 0.65 m (4.35%). Against 3-point colour bands, GPS
+  altitude alone can shift a piece a whole band.
+- **GPS altitude is quantized to 0.1 m and holds values across fixes** — 53.9%
+  of fixes identical to the previous one in session 61. But only 3.2% in
+  session 56, also GPS. The signature is **not consistent enough to classify
+  the unlabelled archive retroactively**; that was tried and abandoned.
+- **Two obvious metrics both mislead here, in the same direction.** Flat-ground
+  second difference favours GPS because a held value has zero jitter by
+  construction — it measures stillness, not precision. DEM residual spread also
+  favours GPS, but is confounded by terrain: spread rises 3.24 m → 5.32 m with
+  steepness regardless of sensor, and the barometer rides are the steep ones.
+  Only the adjacent-bucket delta answers the question the app actually asks.
+- **GPS vertical accuracy on a Pixel 10 Pro is 1.2–2.2 m**, not the ±10–20 m
+  assumed throughout the earlier planning. Dual-frequency GNSS. Every argument
+  built on the larger figure was wrong by roughly an order of magnitude.
+
 ## Open items
 
 - **Two directions on one path** (deferred). Roads get two ±4 m offset lines,
   as intended. Unresolved for genuine single paths, and coupled to putting
   lines exactly *on* a trail: removing the offset makes both directions overlap.
-- **Record the elevation source.** `expo-sensors` has no background delivery, so
-  a screen-off ride may be silently falling back to GPS altitude (±10–20 m
-  vertical). Adding `elevation_source` + `altitude_accuracy_m` to
-  `session_samples` would measure whether the battery work cost precision.
-  Deferred once already; it also gates the two items below.
-- **Barometer oversampling.** `recordBarometerAltitude()` overwrites and the
-  task reads only the newest value, so most readings are discarded. Sampling at
-  ~5 Hz and averaging is roughly a 4× noise cut for negligible power — but
-  worthless if the sensor isn't running in the background, which is exactly
-  what the item above would establish.
-- **Weight by source/accuracy** — a barometer reading and a ±15 m GPS altitude
-  currently count equally.
+- **Keep the barometer alive with the screen off.** The measured 2× slope-error
+  penalty applies to every screen-off ride, silently. Three routes, cheapest
+  first: `expo-keep-awake` while tracking, so the activity never backgrounds
+  (two lines, works today, costs battery and leaves the screen exposed);
+  patching out `OnActivityEntersBackground` (minimal, unsupported, and the
+  pressure sensor is typically non-wake so delivery may stop when the CPU
+  suspends anyway); or a native module holding the `SensorEventListener`
+  against the foreground service rather than the activity, as expo-location
+  does for GPS. Only the last makes screen-off rides as good as screen-on.
+- **Reverse the roughness quarantine.** `MAX_PLAUSIBLE_ROUGHNESS_M = 1.2` in
+  `rebuildModel.ts` excludes sessions 45, 46 and 50 on the theory that high
+  roughness meant GPS-altitude contamination. That premise is now doubtful —
+  the barometer is the *noisier* signal fix-to-fix and the better one for
+  slope, so the test may be excluding the good rides. 244 samples. Raise the
+  threshold and rebuild.
+- **Barometer oversampling — now justified.** `recordBarometerAltitude()`
+  overwrites and the task reads only the newest value, so most readings are
+  discarded. ~5 Hz plus averaging is roughly a 4× noise cut. This was deferred
+  pending proof the barometer was the right sensor to improve; it now is.
+  Android caps sensors at 200 Hz, so 5 Hz is well within limits.
+- **Weight by source/accuracy** — a barometer reading and a GPS altitude count
+  equally. Note `altitude_accuracy_m` is now recorded and is a finer signal than
+  the binary source. Design risk: down-weighting GPS makes the smoothed trace
+  *coast* through a screen-off stretch, recording a near-flat climb — a
+  different wrong answer. Treating a GPS fix like a bracketing fix (position
+  counts, height ignored) reuses an existing precedent and is more honest.
 - **Within-ride barometric drift.** Anchoring fits one offset per session, which
   leaves the 3.52 m of drift across a ride untouched. A linear drift term fit
   against the DEM would take most of it, at the risk of absorbing real terrain
@@ -377,18 +441,51 @@ best-covered lines):
   there are many block ends and therefore many small gaps. Two fixes: clamp
   coverage to the full segment when a run has bookend fixes on *both* sides
   (it passed through), and bridge a gap under ~10m at draw time.
+- **A failed map refresh reports as a failed save, and lies about it.**
+  `saveRide()` runs `uploadSamplesInChunks → endSession → discardBuffered →
+  reloadSegments`. `reloadSegments` is *last*, so a `/segments` timeout throws
+  after the ride is fully uploaded, matched, merged and dropped from the phone —
+  and the alert then says "The ride is safe on this phone" and points at a
+  "Finish saving ride" button that no longer exists. Seen for real on session
+  59. `reloadSegments` needs its own try/catch; it is cosmetic and does not
+  belong inside the save path's error surface.
+- **The barometer is never re-subscribed after a process restart.**
+  `startBarometer()` is called only from `start()`. The reconciliation effect in
+  `useTrackingSession.ts` restores a ride after Android recycles the JS context
+  but never calls it, so the better sensor stays dead for the rest of that ride.
+  Only bites on process death — a plain screen-off self-heals on foreground.
+- **A ride that records zero fixes is discarded silently.** `handleStop()`
+  returns early on `finalSamples.length === 0`, showing no breadcrumb, no saving
+  spinner and no message — indistinguishable from a normal stop. Happened once;
+  cause unknown, and the logs had rotated before it could be read.
 
 ## Committed / deployed
 
-Everything above is committed as of 2026-08-22 — `2217ed4` → `abf26ac`
-("Record rides offline and reassemble split traversals") → `ebcf4b3`
-("Make /health say which build is answering"). All three are **unpushed**;
-`origin/main` is 3 behind and this machine holds the only copy.
+Pushed through `83b57e7` as of 2026-08-29. `origin/main` is current.
 
-Backend deployed and verified (`builtAt` 2026-08-22T23:52:21.729Z). The APK on
-the phone was built 2026-08-18 20:58, which is *after* every file under
-`mobile/` was last touched — the app is current with the mobile source; the
-work since then has all been backend and pipeline.
+- `5745ac6` — record which sensor measured each sample's elevation
+- `61e48fa` — least-squares, gap/window, stitching and the trail backlog docs
+- `83b57e7` — document migrations and deploys in the backend README
 
-`context/architecture.html` is a full walkthrough of the system, published as an
-Artifact. It predates stitching and still needs the #14 correction folded in.
+Backend deployed and verified by behaviour, not by status: `builtAt`
+2026-08-29T03:05:53.143Z, plus a round-trip that posted one `barometer` and one
+`gps` sample through the live API and read both back from the database. Test
+sessions cleaned up afterwards.
+
+APK rebuilt and installed 2026-08-27 20:51 (release, local Gradle — there is no
+`eas.json`). It carries the elevation-source instrumentation. **Anything in
+Open items that touches `mobile/` needs another APK cycle**; backend-only work
+does not.
+
+Model: **2,460 buckets across 380 segments**, 0 implausible, after Palmer Park
+merged. Note Palmer Park was never missing from `segments` — 3,883 segments were
+already there and 489 of 500 fixes sat within 25 m of one; the absent lines were
+purely a failed save.
+
+Docs, both published as Artifacts:
+- `context/architecture.html` — full system walkthrough. Current, including
+  stitching, least-squares, gap/window and the six-bucket correction.
+- `context/backlog.html` — six open questions on recording mountain trails, each
+  measured against the live database. Its slope-window figures are current; its
+  framing of GPS altitude as the weak source is **superseded** by the section
+  above.
