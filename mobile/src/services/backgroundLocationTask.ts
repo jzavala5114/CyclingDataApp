@@ -108,13 +108,49 @@ function headingDelta(a: number, b: number): number {
 // real gradient entirely. Anchoring the relative readings to the session's
 // first GPS altitude keeps every sample on one absolute scale.
 const BAROMETER_STALE_AFTER_MS = 5000;
-let barometerRelativeM: number | null = null;
-let barometerAtMs = 0;
 let baselineGpsAltitudeM: number | null = null;
 
+// --- Oversampling ----------------------------------------------------------
+//
+// The barometer is polled far faster than fixes arrive (5Hz here against a
+// fix every 1-4s), so instead of keeping only the newest reading we sum them
+// and hand `elevationFor` the mean of everything since the last fix. Averaging
+// n independent readings cuts noise by roughly sqrt(n) -- about 2.2x at the
+// 1s floor and 4.5x at the 4s ceiling. This used to overwrite a single
+// variable, throwing away every reading between two fixes but the last.
+//
+// The mean is centred on the middle of the window rather than on the fix, so
+// elevation lags position by about half a fix interval. That does not hurt:
+// `TARGET_SPACING_M` holds the gap between fixes near-constant in *distance*,
+// so the lag is a near-constant ~5m shift along the segment, and a constant
+// shift cancels out of a slope. Only the absolute level moves, and the DEM
+// anchor sets that per ride anyway.
+let barometerSumM = 0;
+let barometerCount = 0;
+let barometerAtMs = 0;
+// The last mean handed out, kept so that a batch of locations delivered in one
+// task invocation all read the same elevation. Without it the first location
+// would drain the accumulator and the rest would find it empty and silently
+// fall back to GPS altitude.
+let lastBarometerRelativeM: number | null = null;
+
 export function recordBarometerAltitude(relativeM: number): void {
-  barometerRelativeM = relativeM;
+  barometerSumM += relativeM;
+  barometerCount += 1;
   barometerAtMs = Date.now();
+}
+
+// Averages and clears whatever has arrived since the previous fix. Freshness is
+// judged on `barometerAtMs` -- when the last *reading* landed, not when the
+// accumulator was last drained -- so an empty accumulator means "no new data",
+// not "no data".
+function drainBarometerRelativeM(): number | null {
+  if (barometerCount > 0) {
+    lastBarometerRelativeM = barometerSumM / barometerCount;
+    barometerSumM = 0;
+    barometerCount = 0;
+  }
+  return lastBarometerRelativeM;
 }
 
 export function resetTrackingState(): void {
@@ -123,8 +159,10 @@ export function resetTrackingState(): void {
   lastHeadingDeg = null;
   lastTurnAtMs = 0;
   lastModeSwitchAtMs = 0;
-  barometerRelativeM = null;
+  barometerSumM = 0;
+  barometerCount = 0;
   barometerAtMs = 0;
+  lastBarometerRelativeM = null;
   baselineGpsAltitudeM = null;
 }
 
@@ -144,17 +182,17 @@ function elevationFor(location: Location.LocationObject): ElevationReading | nul
   const gpsAltitude = location.coords.altitude;
   if (baselineGpsAltitudeM == null && gpsAltitude != null) baselineGpsAltitudeM = gpsAltitude;
 
-  const barometerIsFresh =
-    barometerRelativeM != null && Date.now() - barometerAtMs < BAROMETER_STALE_AFTER_MS;
+  const barometerIsFresh = Date.now() - barometerAtMs < BAROMETER_STALE_AFTER_MS;
+  const barometerRelativeM = drainBarometerRelativeM();
 
   // Vertical accuracy. Deliberately not `coords.accuracy`, which is horizontal
   // and says nothing about altitude -- confusing the two is how screen-off
   // stretches passed for good data.
   const altitudeAccuracyM = location.coords.altitudeAccuracy ?? null;
 
-  if (barometerIsFresh && baselineGpsAltitudeM != null) {
+  if (barometerIsFresh && barometerRelativeM != null && baselineGpsAltitudeM != null) {
     return {
-      elevationM: baselineGpsAltitudeM + barometerRelativeM!,
+      elevationM: baselineGpsAltitudeM + barometerRelativeM,
       source: "barometer",
       altitudeAccuracyM,
     };

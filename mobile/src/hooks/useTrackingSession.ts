@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as Location from "expo-location";
+import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { Barometer } from "expo-sensors";
 import {
   CRUISE_OPTIONS,
@@ -26,6 +27,23 @@ function pressureToAltitudeM(pressureHpa: number): number {
   return 44330 * (1 - Math.pow(pressureHpa / SEA_LEVEL_HPA, 1 / 5.255));
 }
 
+// Poll the barometer far faster than fixes arrive and average the readings
+// (see `drainBarometerRelativeM` in backgroundLocationTask.ts). At one reading
+// per fix there was nothing to average and the single value carried its full
+// noise into the elevation series; at 5Hz a 1-4s fix interval collects 5-20
+// readings, cutting noise by roughly sqrt(n).
+//
+// Android 12 caps every sensor at 200Hz, so 5Hz is far inside the limit, and a
+// pressure sensor costs almost nothing next to the GPS this app already runs.
+// The interval is a request, not a guarantee -- the OS may deliver faster or
+// slower, which is why the accumulator counts readings instead of assuming a
+// rate.
+const BAROMETER_INTERVAL_MS = 200;
+
+// Tag for the screen lock below. Named rather than defaulted so it cannot be
+// released by anything else that happens to call deactivateKeepAwake().
+const KEEP_AWAKE_TAG = "cyclingdataapp-ride";
+
 // The background task writes samples to AsyncStorage rather than React state,
 // so the live breadcrumb polls the buffer instead of receiving each fix.
 const BREADCRUMB_POLL_MS = 2000;
@@ -49,7 +67,6 @@ export function useTrackingSession() {
   const [unsavedRide, setUnsavedRide] = useState<UnsavedRide | null>(null);
 
   const baselinePressureAltitudeM = useRef<number | null>(null);
-  const barometerSubscription = useRef<ReturnType<typeof Barometer.addListener> | null>(null);
 
   // Reconcile with whatever the OS is still doing from a previous launch.
   useEffect(() => {
@@ -103,21 +120,71 @@ export function useTrackingSession() {
     return () => clearInterval(interval);
   }, [isTracking]);
 
-  const startBarometer = useCallback(async () => {
-    if (!(await Barometer.isAvailableAsync())) return;
-    Barometer.setUpdateInterval(1000);
-    barometerSubscription.current = Barometer.addListener(({ pressure, relativeAltitude }) => {
-      if (relativeAltitude != null) {
-        recordBarometerAltitude(relativeAltitude);
-        return;
-      }
-      const absoluteAltitudeM = pressureToAltitudeM(pressure);
-      if (baselinePressureAltitudeM.current == null) {
-        baselinePressureAltitudeM.current = absoluteAltitudeM;
-      }
-      recordBarometerAltitude(absoluteAltitudeM - baselinePressureAltitudeM.current);
-    });
-  }, []);
+  // The barometer's lifetime is tied to `isTracking` rather than to `start()`.
+  // It used to be subscribed from `start()` alone, which meant the recovery
+  // path above -- Android tearing down the JS context mid-ride and the effect
+  // resuming the session -- restored the ride but never restarted the sensor,
+  // leaving the rest of that ride on GPS altitude with nothing to say so. Any
+  // route into a tracking state now subscribes, because there is only one.
+  //
+  // On resume the relative baseline is re-established wherever the rider
+  // currently is, and `elevationFor` re-anchors it to the next GPS altitude, so
+  // the series stays continuous across the restart to within GPS accuracy
+  // instead of stepping.
+  useEffect(() => {
+    if (!isTracking) return;
+
+    let cancelled = false;
+    let subscription: ReturnType<typeof Barometer.addListener> | null = null;
+    baselinePressureAltitudeM.current = null;
+
+    (async () => {
+      if (!(await Barometer.isAvailableAsync())) return;
+      if (cancelled) return; // stopped while we were awaiting availability
+      Barometer.setUpdateInterval(BAROMETER_INTERVAL_MS);
+      subscription = Barometer.addListener(({ pressure, relativeAltitude }) => {
+        if (relativeAltitude != null) {
+          recordBarometerAltitude(relativeAltitude);
+          return;
+        }
+        const absoluteAltitudeM = pressureToAltitudeM(pressure);
+        if (baselinePressureAltitudeM.current == null) {
+          baselinePressureAltitudeM.current = absoluteAltitudeM;
+        }
+        recordBarometerAltitude(absoluteAltitudeM - baselinePressureAltitudeM.current);
+      });
+    })().catch((err) => console.warn("failed to start barometer", err));
+
+    return () => {
+      cancelled = true;
+      subscription?.remove();
+    };
+  }, [isTracking]);
+
+  // Hold the screen on for the length of the ride. `expo-sensors` unregisters
+  // the barometer itself when the activity backgrounds -- SensorProxy.kt has
+  // `OnActivityEntersBackground -> stopObserving()` -- and after
+  // BAROMETER_STALE_AFTER_MS the task falls back to GPS altitude, which is
+  // about twice as noisy per bucket and can shift a segment a whole colour
+  // band. Keeping the activity in the foreground keeps the better sensor.
+  //
+  // This only defeats the *idle timeout*. Pressing the power button still
+  // backgrounds the activity and still costs the barometer; it comes back by
+  // itself on the next wake, so the loss is bounded by how long the screen
+  // stays dark. Making screen-off riding as good as screen-on needs the sensor
+  // held against the foreground service instead of the activity, which is a
+  // native module.
+  useEffect(() => {
+    if (!isTracking) return;
+    activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch((err) =>
+      console.warn("failed to keep the screen awake", err),
+    );
+    return () => {
+      // Rejects if the activity is already gone, which is exactly when we no
+      // longer care -- the lock dies with it.
+      deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
+    };
+  }, [isTracking]);
 
   // Takes no session id: a ride begins entirely on the phone. Requiring a
   // server round trip here meant a weak signal at the trailhead blocked the
@@ -140,11 +207,10 @@ export function useTrackingSession() {
       }
 
       resetTrackingState();
-      baselinePressureAltitudeM.current = null;
       await clearBufferedSamples();
       setSamples([]);
 
-      await startBarometer();
+      // The barometer is subscribed by the effect above, off `isTracking`.
       await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, CRUISE_OPTIONS);
 
       const rideStartedAt = new Date().toISOString();
@@ -154,13 +220,12 @@ export function useTrackingSession() {
       setStartedAt(rideStartedAt);
       setIsTracking(true);
     },
-    [startBarometer],
+    [],
   );
 
   const stop = useCallback(async (): Promise<TrackedSample[]> => {
-    barometerSubscription.current?.remove();
-    barometerSubscription.current = null;
-
+    // The barometer subscription and the screen lock are released by the
+    // effects above when `isTracking` goes false at the end of this function.
     if (await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK_NAME)) {
       await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
     }
