@@ -302,13 +302,31 @@ Keep these in mind before "simplifying" anything.
   re-pairs over mDNS a few seconds after `adb devices`.
 - A Gradle `packageRelease` failure is usually a transient Windows file lock —
   retry before investigating.
-- **Pushing is not deploying.** The Railway service had *no* GitHub connection
-  for a long stretch — its deployments came only from `railway up`, so the
-  running server sat six days behind `main` while Railway reported healthy and
-  `/health` answered `ok` from the old container. Always confirm a deploy by
-  watching `builtAt` change; that is the only field that moves with the image.
-  A GitHub connection was added on 2026-08-29 and has **not been verified** — a
-  README-only push after it did not move `builtAt`.
+- **Pushing now deploys — fixed 2026-08-30, and here is what was wrong.** The
+  running server once sat six days behind `main` while Railway reported healthy
+  and `/health` answered `ok` from the old container. The cause was not a broken
+  webhook. Connecting the repo on 2026-08-29 created a **second service** named
+  after the repo (`CyclingDataApp`) instead of attaching the repo to the service
+  that owns the domain, and that second service had **no service instance in any
+  environment** — so its GitHub trigger fired on every push with nothing to
+  deploy, while the real service kept serving its last `railway up` image.
+  A second fault would have broken it anyway: `rootDirectory` was null and there
+  is **no `package.json` at the repo root**, so a GitHub build would have cloned
+  the monorepo root and found nothing to build.
+  Fixed via the Railway GraphQL API (`backboard.railway.com/graphql/v2`, bearer
+  `~/.railway/config.json` → `user.accessToken`; note `user.token` is refused):
+  `serviceInstanceUpdate` set `rootDirectory: "backend"` and
+  `watchPatterns: ["backend/**"]`, then `serviceConnect` attached
+  `jzavala5114/CyclingDataApp` @ `main`, then `serviceDelete` removed the stray
+  service — necessary, not tidy, because by then both services carried a trigger
+  on `main` and every push would have fired both. **Set the root directory
+  before connecting the repo**: `serviceConnect` deploys immediately, and it did.
+  Consequences to remember: `watchPatterns: ["backend/**"]` means a commit
+  touching only `mobile/` or `context/` deploys nothing, by design. And a GitHub
+  deploy serves *committed* code, so anything uncommitted that was pushed up
+  with `railway up` is silently rolled back the next time a push lands — which
+  happened to the access log the moment the repo was connected.
+  Still verify by `builtAt`; it remains the only field that moves with the image.
 - `railway link` is per-directory and interactive unless given
   `-p cyclingdataapp-backend -e production -s cyclingdataapp-backend`.
   `railway status --json` carries the real deployment state; `deploymentStopped`
@@ -353,11 +371,19 @@ and verified end to end. This settled several things and overturned others.
   barometer, including session 62 — 842 fixes, 45 minutes, 186 m of climb at
   Stratton, 829 distinct values. Screen off: it dies in 11–19 s and GPS takes
   over for the rest of the ride.
-- **`expo-sensors` unregisters the sensor deliberately.** `SensorProxy.kt` has
-  `OnActivityEntersBackground → stopObserving()`. Android is not refusing to
-  deliver; the library stops asking. `isObserving` survives the pause, so
-  `OnActivityEntersForeground` re-subscribes — **waking the screen mid-ride
-  should revive it on its own. Untested.**
+- **`expo-sensors` unregisters the sensor deliberately — and re-subscribes on
+  its own.** `SensorProxy.kt` has `OnActivityEntersBackground →
+  stopObserving()`. Android is not refusing to deliver; the library stops
+  asking. `isObserving` survives the pause, so `OnActivityEntersForeground`
+  restores it with no code from us. **Confirmed on session 64** (2026-08-30), a
+  3:39 ride locked and woken twice on purpose: barometer 60 s → gps 17 s →
+  barometer 46 s → gps 4 s → barometer 83 s.
+- **Losing the barometer is slow; getting it back is instant.** The fallback
+  needs 11–19 s of sensor silence plus the 5 s `BAROMETER_STALE_AFTER_MS`
+  window before it switches to GPS, but the first fix after the screen wakes is
+  already barometric. So the damage is bounded by how long the screen stays
+  dark, not by the length of the ride — session 64 lost 13% of its fixes,
+  session 61 (screen off and left off) lost 93.5%.
 - **The barometer is ~2× better for slope, which is all this app computes.**
   Colour depends on how much the error *changes* between adjacent buckets, not
   on absolute error. Median change per 15 m: barometer 0.29 m (1.96% slope
@@ -391,17 +417,34 @@ and verified end to end. This settled several things and overturned others.
   suspends anyway); or a native module holding the `SensorEventListener`
   against the foreground service rather than the activity, as expo-location
   does for GPS. Only the last makes screen-off rides as good as screen-on.
+  Session 64 makes this **less urgent than it looked** — the sensor comes back
+  by itself on wake, so this is a quality loss proportional to screen-off time,
+  not a ride that silently records on the wrong sensor throughout. It still
+  bites hardest on exactly the rides that matter most: a long trail descent
+  with the phone pocketed.
+  **Route one shipped 2026-08-30**: `expo-keep-awake` is held for the length of
+  a ride, keyed on `isTracking` like the barometer subscription. It defeats the
+  *idle timeout* only — pressing the power button still backgrounds the
+  activity and still costs the sensor until the next wake. So a mounted phone
+  is now covered and a pocketed one is not. The native-module route is what
+  closes the remainder, and nothing cheaper will.
 - **Reverse the roughness quarantine.** `MAX_PLAUSIBLE_ROUGHNESS_M = 1.2` in
   `rebuildModel.ts` excludes sessions 45, 46 and 50 on the theory that high
   roughness meant GPS-altitude contamination. That premise is now doubtful —
   the barometer is the *noisier* signal fix-to-fix and the better one for
   slope, so the test may be excluding the good rides. 244 samples. Raise the
   threshold and rebuild.
-- **Barometer oversampling — now justified.** `recordBarometerAltitude()`
-  overwrites and the task reads only the newest value, so most readings are
-  discarded. ~5 Hz plus averaging is roughly a 4× noise cut. This was deferred
-  pending proof the barometer was the right sensor to improve; it now is.
-  Android caps sensors at 200 Hz, so 5 Hz is well within limits.
+- ~~**Barometer oversampling.**~~ Done 2026-08-30. `setUpdateInterval` went
+  1000 ms → 200 ms, and `recordBarometerAltitude()` now sums into an
+  accumulator that `elevationFor()` drains as a mean instead of overwriting a
+  single variable. A 1–4 s fix interval collects 5–20 readings, so noise falls
+  by roughly √n — 2.2× at the floor, 4.5× at the ceiling. Two details worth
+  keeping: the last mean is retained so a *batch* of locations in one task
+  invocation all read the same elevation rather than the first draining the
+  accumulator and the rest falling back to GPS; and the mean is centred on the
+  middle of the window, so elevation lags position by half a fix interval —
+  harmless, because `TARGET_SPACING_M` holds that gap near-constant in distance
+  and a constant shift along a segment cancels out of a slope.
 - **Weight by source/accuracy** — a barometer reading and a GPS altitude count
   equally. Note `altitude_accuracy_m` is now recorded and is a finer signal than
   the binary source. Design risk: down-weighting GPS makes the smoothed trace
@@ -449,11 +492,50 @@ and verified end to end. This settled several things and overturned others.
   "Finish saving ride" button that no longer exists. Seen for real on session
   59. `reloadSegments` needs its own try/catch; it is cosmetic and does not
   belong inside the save path's error surface.
-- **The barometer is never re-subscribed after a process restart.**
-  `startBarometer()` is called only from `start()`. The reconciliation effect in
-  `useTrackingSession.ts` restores a ride after Android recycles the JS context
-  but never calls it, so the better sensor stays dead for the rest of that ride.
-  Only bites on process death — a plain screen-off self-heals on foreground.
+- ~~**The barometer is never re-subscribed after a process restart.**~~ Fixed
+  2026-08-30. `startBarometer()` was only ever called from `start()`, so the
+  reconciliation effect restored a ride after Android recycled the JS context
+  but left the sensor dead for the rest of it. The subscription is now an effect
+  keyed on `isTracking`, so every route into a tracking state subscribes because
+  there is only one. On resume the relative baseline is re-established where the
+  rider is and re-anchored to the next GPS altitude, so the series stays
+  continuous across the restart rather than stepping.
+- **Saving a ride intermittently times out, and succeeds on retry.** Measured
+  2026-08-30 against the live API with the same 250-sample chunk the app sends
+  (51.1 KB of JSON): `/health` 622 ms, `POST /sessions` 1190 ms, `/samples`
+  1151 ms cold and 794–975 ms warm. The pool's `idleTimeoutMillis` of 30 s does
+  mean every save opens a fresh Supabase connection, but that costs ~0.3 s, not
+  the 19 s that would be needed. The failing call is `/samples` while
+  `POST /sessions` — sent seconds earlier in the same save — succeeds, so the
+  link is alive and the difference is payload: ~50 bytes against 51 KB. For
+  51 KB to miss a 20 s budget the uplink has to be under ~20 kbit/s, which is
+  an ordinary bad cellular link at a trailhead. Retrying is safe by
+  construction and was verified: a verbatim re-upload took 797 ms and deduped
+  on `on conflict (session_id, recorded_at) do nothing`.
+  **Instrumented 2026-08-30.** `index.ts` now logs method, path, status,
+  duration and content-length for every request except `/health` (excluded
+  because Railway polls it and it would bury the ride traffic). Registered
+  *before* `express.json()`, because a stalled upload stalls inside the body
+  parser; and logging on `close` rather than `finish` so an abandoned request
+  is recorded, with `writableFinished` false printing as `ABORTED-BY-CLIENT`.
+  Verified locally against a deliberately slowed upload:
+  `POST /sessions/999/samples 500 ABORTED-BY-CLIENT 1003ms 270177B`.
+  **How to read the next occurrence:** `ABORTED-BY-CLIENT ~20000ms ~52000B`
+  means the upload stalled in flight and the uplink is the problem; a clean
+  `204` at the same moment the phone reported failure means the server finished
+  and the reply was lost. Those need opposite fixes, which is why this had to
+  come first.
+  **Still to do:** halve `UPLOAD_CHUNK` 250 → 125 in
+  `mobile/src/services/api.ts` — each chunk then needs half the throughput, and
+  since `onChunkUploaded` drops landed samples a retry resumes instead of
+  restarting. Needs an APK, so it was held. A longer timeout is not the fix; it
+  only delays the same failure.
+- ~~**A failed upload dumped the whole ride into the logs.**~~ Fixed
+  2026-08-30, found while testing the access log. `body-parser` attaches the
+  entire unparsed payload to its errors as `err.body`, and the error handler
+  logged the error *object* — so one malformed upload wrote 260 KB on a single
+  line, a rider's complete GPS trace, and buried everything else in the
+  retention window. The handler logs the message and stack only.
 - **A ride that records zero fixes is discarded silently.** `handleStop()`
   returns early on `finalSamples.length === 0`, showing no breadcrumb, no saving
   spinner and no message — indistinguishable from a normal stop. Happened once;
