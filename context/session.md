@@ -264,6 +264,69 @@ Keep these in mind before "simplifying" anything.
     writes a timestamp into `dist/buildInfo.json` and `/health` returns it as
     `builtAt`. One request confirms which build is answering.
 
+## Trails the importer was silently throwing away
+
+Found 2026-08-30 from a screenshot: Ridgeway Trail drew colour along its dashed
+half and nothing along its solid half. The two halves are two OSM ways —
+`36980276` is `highway=path` + `bicycle=designated` and reached the database;
+`7686548` is `highway=track` + `bicycle=yes` + `access=no` and never did. The
+blank half was not unridden or unmatched; it had never existed in our data.
+
+`classify()` in `split_ways.mjs` rejected it twice over, and one of those was a
+real bug:
+
+- **`access` was read without its overrides.** OSM access is layered — a
+  mode-specific tag beats the general one, so `access=no` + `bicycle=designated`
+  means *designated bike route*, not "keep out". Testing `access` alone
+  discarded 42 ways the map explicitly opens to bikes.
+- **`highway=track` was excluded wholesale.** Of 234 in this extract, 203 really
+  are driveways and farm roads (Cedar Heights Drive, Amber Valley Drive,
+  `access=private`, unpaved) — but 31 are trails.
+
+Now: tracks are admitted only when bikes are explicitly allowed
+(`yes|designated|permissive` — deliberately not `dismount` or `destination`),
+classified `cycleway` when `bicycle=designated` and `footway` otherwise. The
+kind matters: `link_canonical.mjs` folds footway/cycleway into parent roads but
+treats `road` as a **parent**, so calling a track a road would let it absorb the
+trails beside it. And the access test now yields to an explicit bicycle tag.
+
+Measured exactly against the same extract the live network was built from:
+**27,775 → 27,845 ways (+70, none removed), 66,424 → 66,684 segments.** 0.3%
+more data, concentrated entirely in what this project exists to record —
+Pikes Peak Greenway ×3, Ute Valley Regional Trail ×8, Rim Trail ×9,
+Red Rock Canyon ×3, Mesa Trail ×2, New Santa Fe Regional Trail ×4, and the
+Palmer Park singletrack network (Thriller, Shreadzilla, Rolly Poly, Rattlerocks,
+Pinball, Crank it, High-ya, Icebreaker), none of which existed in `segments` at
+all.
+
+**This corrects an earlier finding.** The note that Ute Valley Regional Trail
+was "present and correctly classified, never ridden" was true only of its
+`path`-tagged pieces; its `track`-tagged pieces were missing entirely. Any
+future "is this trail missing or just unridden?" question has to check the OSM
+tags, not only the `segments` table — absence from `segments` is not evidence
+that OSM lacks the way.
+
+**Applied 2026-08-30** via `split → load → prune → link` then `rebuild-model`.
+Results, all verified rather than assumed:
+
+- Segments 66,424 → 66,684. `prune` removed 49 orphans, **0 of them carrying
+  buckets** — the re-split of Woodmen Trail predicted by note #27, costing no
+  ride data.
+- `link` folded 19,669 paths and the sidewalk count held at 19,663, so it
+  absorbed pavements and not trails. Every newly admitted named trail came out
+  **100% canonical, 0 absorbed** — the name test carried them, no linker change
+  needed.
+- Model 2,535 buckets / 384 segments → **2,778 / 414, 0 implausible**.
+- Ridgeway Trail: 2 segments → 19. The formerly excluded way `7686548` now
+  holds **78 buckets across 11 segments**, making Ridgeway the 8th
+  most-covered named route in the model.
+
+**The rides were already there.** Nothing was re-ridden: those samples had sat
+in `session_samples` since they were recorded, matching nothing because the
+geometry did not exist. A classification bug in the importer is therefore
+retroactive in both directions — fixing it recovers history, and any future one
+is invisible until someone looks at a blank stretch of map and asks why.
+
 ## Operational gotchas
 
 - **Pipeline order is `fetch → split → load → prune → link`**, then
