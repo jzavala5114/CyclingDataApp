@@ -75,21 +75,22 @@ the same path as a ride coming off the phone.
 
 ## Current state
 
-*(as of 2026-08-22)*
+*(as of 2026-08-30)*
 
-- **Network**: 66,424 segments over 38.71–38.97 N, −104.90 to −104.75 W —
+- **Network**: 66,684 segments over 38.71–38.97 N, −104.90 to −104.75 W —
   central Colorado Springs plus the northwest suburbs and Ute Valley Park.
-  46,758 canonical; 19,666 pavements and unnamed sidepaths folded into parent
+  47,015 canonical; 19,663 pavements and unnamed sidepaths folded into parent
   roads. Every road stays canonical.
-- **Model**: 1,523 buckets across 242 segments, **0 implausible**, from 431
-  merged runs (94 of 525 discarded). Lines are clipped to what was ridden.
-- **Ute Valley Park**: 236 buckets over 34 trail segments — BeaUTEiful Loop,
-  Triple Treat, Winding Woods Loop, Nacho's Trail, Ute Valley Park Trail, Scrub
-  Oak Connector, plus unnamed paths. Only 4 buckets have a second pass, against
-  320 downtown, so trail data is still thin.
-- **Rides**: 13 sessions with samples, 4,417 samples; 11 usable.
+- **Model**: 2,778 buckets across 414 segments, **0 implausible**, from 812
+  merged runs (309 of 1,121 discarded). Lines are clipped to what was ridden.
+- **Rides**: 28 sessions with samples, 10,066 samples; 23 usable.
   **Sessions 5 and 6 are permanently corrupt** — `rebuildModel.ts` excludes
-  them automatically by elevation scale (below).
+  them automatically by elevation scale (below). 45, 46 and 50 are excluded by
+  the roughness test, which is itself now doubted — see Open items.
+- **Most-covered named routes**: East Fountain Boulevard 196 buckets, Shooks
+  Run Trail 158, BeaUTEiful Loop 140, Palmer Point Trail 117, South Wahsatch
+  109, Chamberlain 103, Grandview Trail 102, South Weber 101, Ridgeway Trail
+  85, Ladders 78.
 - **DB**: was 40 MB of Supabase's 500 MB before the re-import roughly doubled
   the segment count. Not re-measured since.
 - **Cost headroom**: ~55 KB/ride; ~9,200 rides before the storage cap (decades
