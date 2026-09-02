@@ -655,14 +655,23 @@ per-fix work is arithmetic rather than turf geometry calls.
   there are many block ends and therefore many small gaps. Two fixes: clamp
   coverage to the full segment when a run has bookend fixes on *both* sides
   (it passed through), and bridge a gap under ~10m at draw time.
-- **A failed map refresh reports as a failed save, and lies about it.**
-  `saveRide()` runs `uploadSamplesInChunks → endSession → discardBuffered →
-  reloadSegments`. `reloadSegments` is *last*, so a `/segments` timeout throws
-  after the ride is fully uploaded, matched, merged and dropped from the phone —
-  and the alert then says "The ride is safe on this phone" and points at a
-  "Finish saving ride" button that no longer exists. Seen for real on session
-  59. `reloadSegments` needs its own try/catch; it is cosmetic and does not
-  belong inside the save path's error surface.
+- ~~**A failed map refresh reports as a failed save, and lies about it.**~~
+  Fixed 2026-09-02. `saveRide()` runs `uploadSamplesInChunks → endSession →
+  discardBuffered → reloadSegments`, and `reloadSegments` is *last* — so a
+  `/segments` timeout threw after the ride was uploaded, matched, merged and
+  dropped from the phone, and the alert then said "The ride is safe on this
+  phone" and pointed at a "Finish saving ride" button `discardBuffered()` had
+  just removed. The one moment that reassurance is guaranteed to be false was
+  the only moment it appeared. Seen for real on session 59.
+  `reloadSegments` now has its own try/catch, so every failure that still
+  reaches the save path's error handler happens *before* `discardBuffered()`
+  and its message is finally true. On failure it also clears
+  `loadedBbox.current`: `loadSegments` only sets that on success and
+  `handleRegionDidChange` skips refetching while the viewport sits inside what
+  it believes is loaded, so without clearing it the ride just saved would stay
+  invisible until the rider panned somewhere new. **Tradeoff:** that path now
+  shows no message at all, and the new lines appear on the next pan rather than
+  immediately.
 - ~~**The barometer is never re-subscribed after a process restart.**~~ Fixed
   2026-08-30. `startBarometer()` was only ever called from `start()`, so the
   reconciliation effect restored a ride after Android recycled the JS context

@@ -134,7 +134,28 @@ export function MapScreen() {
       await uploadSamplesInChunks(id, rideSamples, (uploaded) => dropBufferedSamples(uploaded));
       await endSession(id);
       await discardBuffered();
-      await reloadSegments();
+
+      // Everything above is the ride. This is only the map catching up, and it
+      // runs *after* the ride has been uploaded, matched, merged into the model
+      // and cleared from the phone -- so a failure here says nothing about
+      // whether the ride was saved.
+      //
+      // It used to throw into the save path's error handler, which then told
+      // the rider their ride was still on the phone and pointed at a "Finish
+      // saving ride" button that discardBuffered() had just removed. The one
+      // moment the reassurance is guaranteed to be false is the only moment it
+      // appeared. Seen for real on session 59.
+      //
+      // Forgetting the loaded bbox rather than only logging: handleRegionDidChange
+      // skips refetching while the viewport sits inside what it believes is
+      // already loaded, so without this the ride just saved would stay invisible
+      // until the rider happened to pan somewhere new.
+      try {
+        await reloadSegments();
+      } catch (err) {
+        console.warn("ride saved; refreshing the map failed", err);
+        loadedBbox.current = null;
+      }
     },
     [discardBuffered, reloadSegments],
   );
