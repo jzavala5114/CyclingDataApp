@@ -716,6 +716,21 @@ per-fix work is arithmetic rather than turf geometry calls.
   logged the error *object* — so one malformed upload wrote 260 KB on a single
   line, a rider's complete GPS trace, and buried everything else in the
   retention window. The handler logs the message and stack only.
+- ~~**The app abandoned most of the requests it made.**~~ Fixed 2026-09-02, and
+  found only because the access log existed. The server log showed **420
+  `ABORTED-BY-CLIENT` against 69 completed** — 86% — every one a `/segments`
+  fetch, with viewports differing in the *eighth decimal place*.
+  `loadSegments` wrote `loadedBbox.current` only when a fetch **completed**, and
+  `handleRegionDidChange` tested only that. So while requests were in flight the
+  guard read stale state, `covers()` kept failing, and every region event during
+  a camera animation started another fetch. `requestSeq` was doing its job —
+  stopping a stale *response* overwriting a fresh one — but nothing stopped the
+  redundant *requests*.
+  Now a `pendingBbox` ref records what is already being asked for, and the guard
+  checks it too. It is cleared in a `finally` so a timeout cannot block an area
+  permanently, and only by the request that still owns the slot
+  (`seq === requestSeq.current`) — a straggler settling late must not clear a
+  newer claim, or the burst it was suppressing restarts.
 - **A ride that records zero fixes is discarded silently.** `handleStop()`
   returns early on `finalSamples.length === 0`, showing no breadcrumb, no saving
   spinner and no message — indistinguishable from a normal stop. Happened once;

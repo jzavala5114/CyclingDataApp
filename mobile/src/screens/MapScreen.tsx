@@ -79,21 +79,40 @@ export function MapScreen() {
   // ride. Only the newest request is allowed to write.
   const requestSeq = useRef(0);
 
+  // What the in-flight request is asking for. `loadedBbox` is only written when
+  // a fetch *completes*, so during a burst of region events it stays stale,
+  // `covers()` below keeps failing, and every event starts another fetch.
+  // `requestSeq` stops a stale *response* overwriting a fresh one, but nothing
+  // stopped the redundant *requests*: the server log showed 420 abandoned
+  // against 69 completed, viewports differing in the eighth decimal place.
+  // Remembering what is already being asked for collapses a camera-follow burst
+  // to one request per real move.
+  const pendingBbox = useRef<Bbox | null>(null);
+
   const loadSegments = useCallback(async (bbox: Bbox) => {
     const seq = ++requestSeq.current;
-    const { segments: fetched } = await fetchSegments(bbox);
-    if (seq !== requestSeq.current) return;
-    loadedBbox.current = bbox;
-    // Merge rather than replace. Each response only describes its own bbox, so
-    // replacing wholesale made every line outside the newest one vanish -- and
-    // while the camera follows a rider, region events fire mid-animation with a
-    // viewport that is briefly much tighter than the real one. Keyed by id, so
-    // a re-fetched segment updates in place after a ride is saved.
-    setSegments((previous) => {
-      const merged = new Map(previous.map((s) => [s.id, s]));
-      for (const segment of fetched) merged.set(segment.id, segment);
-      return [...merged.values()];
-    });
+    pendingBbox.current = bbox;
+    try {
+      const { segments: fetched } = await fetchSegments(bbox);
+      if (seq !== requestSeq.current) return;
+      loadedBbox.current = bbox;
+      // Merge rather than replace. Each response only describes its own bbox, so
+      // replacing wholesale made every line outside the newest one vanish -- and
+      // while the camera follows a rider, region events fire mid-animation with a
+      // viewport that is briefly much tighter than the real one. Keyed by id, so
+      // a re-fetched segment updates in place after a ride is saved.
+      setSegments((previous) => {
+        const merged = new Map(previous.map((s) => [s.id, s]));
+        for (const segment of fetched) merged.set(segment.id, segment);
+        return [...merged.values()];
+      });
+    } finally {
+      // Only the newest request owns the pending slot. A straggler settling
+      // later must not clear a newer request's claim, or the burst it was
+      // suppressing starts again. Cleared on failure too, so a timeout cannot
+      // block fetching that area for good.
+      if (seq === requestSeq.current) pendingBbox.current = null;
+    }
   }, []);
 
   // Refetch after the ride is saved, for wherever we're currently looking.
@@ -109,6 +128,9 @@ export function MapScreen() {
       // loaded, so this only hits the network when the view genuinely moves
       // onto streets we don't have yet.
       if (loadedBbox.current && covers(loadedBbox.current, bbox)) return;
+      // Already on its way. A camera animation fires dozens of these with
+      // near-identical viewports, and one request answers all of them.
+      if (pendingBbox.current && covers(pendingBbox.current, bbox)) return;
       loadSegments(bbox).catch((err) => console.warn("failed to load segments", err));
     },
     [loadSegments],
