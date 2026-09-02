@@ -583,12 +583,28 @@ per-fix work is arithmetic rather than turf geometry calls.
   activity and still costs the sensor until the next wake. So a mounted phone
   is now covered and a pocketed one is not. The native-module route is what
   closes the remainder, and nothing cheaper will.
-- **Reverse the roughness quarantine.** `MAX_PLAUSIBLE_ROUGHNESS_M = 1.2` in
-  `rebuildModel.ts` excludes sessions 45, 46 and 50 on the theory that high
-  roughness meant GPS-altitude contamination. That premise is now doubtful —
-  the barometer is the *noisier* signal fix-to-fix and the better one for
-  slope, so the test may be excluding the good rides. 244 samples. Raise the
-  threshold and rebuild.
+- ~~**Reverse the roughness quarantine.**~~ Replaced 2026-08-30, and **not** by
+  reversing it — that would have been wrong. Sessions 45, 46 and 50 really do
+  contain impossible data (45: `1971.0 → 1984.1 → 1962.9` across 4.4 m of
+  ground). But the test was incoherent: measured by the share of steps implying
+  a gradient past 100%, it excluded session 46 (3.8%) and 50 (3.2%) while
+  keeping session 54 at **6.6%**, twice as bad. And its stated premise —
+  detecting GPS-altitude rides — is false, because GPS quantises and holds its
+  value and so reads *smoother* than a barometer (GPS session 56: 0.259 m;
+  barometer session 62: 0.564 m). The old bands sorted rides by terrain, not by
+  sensor.
+  Now `rejectElevationSpikes()` drops individual fixes that cannot be reconciled
+  with the fixes either side — compared against the straight line *between*
+  neighbours, since comparing to the previous fix alone blames both ends of a
+  step and cannot say which moved. It runs before the EMA, because smoothing an
+  impossible reading smears it across its neighbours instead of deleting it.
+  The session-level guard survives as `MAX_IMPLAUSIBLE_STEP_SHARE = 0.15`,
+  catching a ride that *is* spikes rather than one with spikes in it: session 45
+  sits at 20.7% with a median implied gradient of 41.5%, the next worst is 6.6%.
+  Result: 23 → 26 sessions, 117 impossible fixes dropped (**91 of them from
+  session 54**, which the old test never touched), model 2,884 → 2,895 buckets
+  across 409 segments, 0 implausible. The volume gain is small; the point was
+  correctness.
 - ~~**Barometer oversampling.**~~ Done 2026-08-30. `setUpdateInterval` went
   1000 ms → 200 ms, and `recordBarometerAltitude()` now sums into an
   accumulator that `elevationFor()` drains as a mean instead of overwriting a

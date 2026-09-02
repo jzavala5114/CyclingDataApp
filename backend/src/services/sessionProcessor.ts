@@ -8,7 +8,7 @@ import {
   MIN_SPAN_M,
   type BucketSample,
 } from "./elevationAggregator.js";
-import { smoothElevations } from "./elevationSmoothing.js";
+import { rejectElevationSpikes, smoothElevations } from "./elevationSmoothing.js";
 import { demKey, ensureDemElevations, type DemPosition } from "./demElevation.js";
 import type { Direction, Segment, SessionSample } from "../types/index.js";
 
@@ -62,6 +62,9 @@ export interface ProcessResult {
   // or null if it was merged unanchored.
   demOffsetM: number | null;
   demPoints: number;
+  // Fixes dropped for claiming a physically impossible height. Reported so a
+  // ride that is mostly spikes is visible rather than silently thinned.
+  rejectedSpikes: number;
   // Diagnostics only -- never written to the database, and stripped from the
   // API response. The rebuild script aggregates these.
   discards: DiscardedRun[];
@@ -132,7 +135,7 @@ export async function processSession(
   );
 
   if (sampleRows.length === 0) {
-    return { matchedRuns: 0, discardedRuns: 0, demOffsetM: null, demPoints: 0, discards: [] };
+    return { matchedRuns: 0, discardedRuns: 0, demOffsetM: null, demPoints: 0, rejectedSpikes: 0, discards: [] };
   }
 
   const lats = sampleRows.map((s) => s.lat);
@@ -155,7 +158,11 @@ export async function processSession(
     ],
   );
 
-  const smoothed = smoothElevations(sampleRows);
+  // Spikes are removed before the EMA, not after: smoothing an impossible
+  // reading spreads it over the fixes around it instead of deleting it, so by
+  // the time it reaches the buckets it has contaminated its neighbours too.
+  const { kept, rejected: rejectedSpikes } = rejectElevationSpikes(sampleRows);
+  const smoothed = smoothElevations(kept);
   // Rejoined before gating, not after: the gate judges whether a run covered
   // ground, and a traversal chopped into pieces cannot answer that honestly.
   const runs = stitchFragmentedRuns(matchSamplesToSegments(smoothed, segmentRows));
@@ -276,6 +283,7 @@ export async function processSession(
     discardedRuns: runs.length - qualifying.length,
     demOffsetM,
     demPoints,
+    rejectedSpikes: rejectedSpikes.length,
     discards,
   };
 }
