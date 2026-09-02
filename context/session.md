@@ -472,6 +472,92 @@ and verified end to end. This settled several things and overturned others.
   assumed throughout the earlier planning. Dual-frequency GNSS. Every argument
   built on the larger figure was wrong by roughly an order of magnitude.
 
+## What oversampling actually bought, measured 2026-08-30
+
+Session 66 (Ute Valley, 790 fixes, 48 min, 100% barometer in a single unbroken
+run — keep-awake held the screen for the whole ride) against the six earlier
+Ute Valley rides on the same trails.
+
+- **Sensor noise fell hard.** Median absolute second difference 0.759 m → 0.304 m
+  and local-fit residual 0.372 m → 0.228 m, so **2.5× and 1.6×**. Understated,
+  because 66 ran at 7.1 m fix spacing against ~5 m and the second difference's
+  terrain term scales with spacing².
+- **Confirmed from an unrelated angle: 790 distinct elevation values out of 790
+  samples, 0.0% repeats.** A 1 Hz barometer ride repeats 1.5%; GPS session 61
+  repeats 53.9%. A mean of ~18 readings essentially never lands twice on the
+  same value, so the averaging is visible in the data itself.
+- **But end-to-end it bought much less: 5.00% → 3.90% of slope error**, about
+  22%, measured as the median change in DEM residual between adjacent 15 m
+  buckets — the quantity the colour bands actually depend on. **An earlier
+  projection of ~0.8% from the noise figures was wrong**; it assumed the
+  barometer was still the dominant error term.
+- **It is not, on trails.** Same sensor, same 1 Hz rate: downtown street rides
+  sit at 0.24–0.40 m of per-bucket error change, Ute Valley rides at
+  0.59–0.98 m. Two to three times worse purely for being a trail. That gap is
+  the DEM sampled along an OSM centreline that on singletrack is not where you
+  rode, 10 m 3DEP not resolving trail-scale terrain, and lateral match error.
+- **Read 3.90% as an upper bound, not an estimate.** The metric charges us for
+  the DEM's own error as well as ours, and there is no way to separate them at
+  10 m resolution.
+
+Consequence for the backlog: further barometer work has poor marginal return on
+trails, and matching/reference error is now the larger term. That is what moved
+the bearing/tangent fix up the list.
+
+## The bearing test compared against the wrong line, 2026-08-30
+
+`directionForBearing` was fed `segment.bearingDeg` — the straight line from one
+end of a segment to the other. On a street that line *is* the street. On a
+switchback it describes no part of the trail, so a rider correctly on the
+segment reads as 90° off, the segment drops out of the candidate list, the run
+ends, and one traversal arrives as fragments too short to clear the gate.
+
+**This is not another threshold.** `MAX_BEARING_DELTA_DEG` is still 45,
+`MAX_MATCH_DISTANCE_M` still 25, `SWITCH_MARGIN_M` still 8. It is the same test
+asked of the right geometry. The artifact's "honest limitation" note still
+stands — this is still nearest-segment + bearing + hysteresis, not an HMM.
+
+**Two implementations; the first was subtly wrong.** Snapping to the nearest
+point on the line and taking its tangent fails on exactly the geometry it was
+meant to fix: on a switchback the *neighbouring* leg is often closer than the
+one being ridden, and its tangent points backwards. `nearestAlignedEdge` walks
+the segment's edges instead and takes the nearest one that is both within 25 m
+**and** aligned — so the leg you are on wins, being near *and* aligned. Measured,
+edge-selection beat point-snapping on every column (5,011 → 5,074 buckets,
+29.0% → 27.2% trail discard).
+
+Measured through the real matcher, gate and stitcher, chord versus tangent:
+
+| | chord | tangent+edge |
+|---|---|---|
+| buckets | 4,810 | **5,074** (+5.5%) |
+| trail buckets | 2,973 | **3,240** (+9.0%) |
+| covered | 77.26 km | **78.83 km** |
+| trail discard | 31.6% | **27.2%** |
+
+**Insensitive to the window**, which is the check that it is not a tuned knob:
+10 m and 20 m give 5,074 and 5,081 buckets. The window only has to be long
+enough to average out metre-scale OSM digitising noise.
+
+**Lines drawn fell 524 → 517, and that is a gain, not a loss.** The clearest
+case was Gold Camp Road segment 13309: under the chord it drew 116 m of a 140 m
+segment at 0.83 coverage from **four fixes**, while 27 of the 34 fixes near it
+matched Ladders — the trail beside it — where the rider actually was. Bracketing
+inflates a span across the fixes either side of a run, so four scattered fixes
+became most of a road. The new matcher produces no run there and hands those
+fixes back to Ladders (backward 9 → 13). Most of the other 21 dropped lines are
+coverage 0.21–0.39, the same shape. So the count falls while the data rises:
+phantoms deleted, real traversals lengthened.
+
+**Beware the aggregate.** Road buckets read 1837 → 1837 across the first
+comparison and were briefly taken as proof the change could not touch streets.
+The per-line diff showed roads both lost and gained; the totals coincided.
+
+Also added a result-preserving bbox prefilter (`PREFILTER_PAD_DEG`), since the
+distance from a point to a segment's bounding box is a lower bound on its
+distance to the segment. Per-edge tangents are precomputed per segment, so the
+per-fix work is arithmetic rather than turf geometry calls.
+
 ## Open items
 
 - **Two directions on one path** (deferred). Roads get two ±4 m offset lines,
