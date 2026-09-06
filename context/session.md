@@ -75,22 +75,22 @@ the same path as a ride coming off the phone.
 
 ## Current state
 
-*(as of 2026-08-30)*
+*(as of 2026-09-05)*
 
 - **Network**: 66,684 segments over 38.71–38.97 N, −104.90 to −104.75 W —
   central Colorado Springs plus the northwest suburbs and Ute Valley Park.
   47,015 canonical; 19,663 pavements and unnamed sidepaths folded into parent
   roads. Every road stays canonical.
-- **Model**: 2,778 buckets across 414 segments, **0 implausible**, from 812
-  merged runs (309 of 1,121 discarded). Lines are clipped to what was ridden.
-- **Rides**: 28 sessions with samples, 10,066 samples; 23 usable.
-  **Sessions 5 and 6 are permanently corrupt** — `rebuildModel.ts` excludes
-  them automatically by elevation scale (below). 45, 46 and 50 are excluded by
-  the roughness test, which is itself now doubted — see Open items.
-- **Most-covered named routes**: East Fountain Boulevard 196 buckets, Shooks
-  Run Trail 158, BeaUTEiful Loop 140, Palmer Point Trail 117, South Wahsatch
-  109, Chamberlain 103, Grandview Trail 102, South Weber 101, Ridgeway Trail
-  85, Ladders 78.
+- **Model**: **3,532 buckets across 483 segments**, 0 implausible, 618 coverage
+  rows. Lines are clipped to what was ridden.
+- **Rides**: 35 sessions, 13,279 samples. **Sessions 5 and 6 are permanently
+  corrupt** — `rebuildModel.ts` excludes them by elevation scale. Session 45 is
+  excluded for being spikes rather than a ride (20.7% of its steps impossible);
+  46 and 50 were restored when the roughness test was replaced.
+- Every saved ride is merged by `/end` as it is saved, so the model is current
+  without a rebuild; the last full rebuild left 2,895 buckets and sessions
+  70–72 took it to 3,532. A rebuild is only needed when the *algorithm*
+  changes.
 - **DB**: was 40 MB of Supabase's 500 MB before the re-import roughly doubled
   the segment count. Not re-measured since.
 - **Cost headroom**: ~55 KB/ride; ~9,200 rides before the storage cap (decades
@@ -500,6 +500,22 @@ Ute Valley rides on the same trails.
   the DEM's own error as well as ours, and there is no way to separate them at
   10 m resolution.
 
+**Replicated 2026-09-02 on identical terrain**, which the session 66 comparison
+could not claim. Sessions 68 and 69 rode the same Chamberlain / Ladders /
+Ladders-to-Chutes trails as 62 and 63 did before oversampling:
+
+| session | date | fixes | 2nd diff | residual | spacing |
+|---|---|---|---|---|---|
+| 62 | Aug 29 | 842 | 0.564 | 0.298 | 5.0 m |
+| 63 | Aug 29 | 406 | 0.582 | 0.316 | 5.3 m |
+| 68 | Sep 02 | 735 | **0.263** | **0.166** | 5.4 m |
+| 69 | Sep 02 | 597 | **0.304** | **0.211** | 5.9 m |
+
+Noise roughly halved with terrain held constant, and the newer rides ran at
+slightly *wider* fix spacing, which works against them — so the gain is
+understated. Both were 99.9% barometer across 36 and 27 minutes, so keep-awake
+holds for a whole ride.
+
 Consequence for the backlog: further barometer work has poor marginal return on
 trails, and matching/reference error is now the larger term. That is what moved
 the bearing/tangent fix up the list.
@@ -557,6 +573,92 @@ Also added a result-preserving bbox prefilter (`PREFILTER_PAD_DEG`), since the
 distance from a point to a segment's bounding box is a lower bound on its
 distance to the segment. Per-edge tangents are precomputed per segment, so the
 per-fix work is arithmetic rather than turf geometry calls.
+
+## The matcher has no idea the network is connected
+
+Measured 2026-09-05, and it is the strongest argument yet for changing the
+matcher's *kind* rather than its thresholds.
+
+Across sessions 62–72, **37 of 365 consecutive run transitions (10.1%) join
+segments that do not touch in the network, and 30 of those happen within 10
+seconds.** They are not routes anyone rode. `matchSamplesToSegments` decides
+each fix on its own — nearest canonical segment, bearing test, a reluctance to
+switch — and nothing anywhere checks that the resulting sequence is a walk a
+bicycle could take.
+
+The Hancock Expressway ride shows it end to end:
+
+```
+Hancock Expressway #17971  ->  (unnamed) #22505            4s
+(unnamed) #22505           ->  (unnamed) #23278            2s
+(unnamed) #23278           ->  Hancock Expressway #17974   1s
+```
+
+Fixes stepped onto two sidewalk segments for a few seconds and back. Those runs
+were too short to clear the gate, so they drew nothing, leaving a 191 m hole in
+the middle of a road that was ridden continuously — between two *drawn* pieces
+of the same carriageway, which is topologically impossible.
+
+**Hancock is a divided highway**, and that part is working: of 19 blank pieces
+with fixes, 14 have a drawn twin 12–13 m away at a bearing delta of 175–180°.
+That is the opposite carriageway and it is correct to leave it blank. Only 5
+pieces (~380 m) are genuinely missing. Do not mistake a dual carriageway for a
+bug — check for a parallel twin at ~180° before investigating.
+
+**Topology is already in the schema and unused.** Every one of the 47,015
+canonical segments carries `start_node_id` and `end_node_id`; 23% are 150 m
+cap-slices that also need `piece_index` to order them. That is a routable graph
+sitting idle — and it is the one thing an external map-matcher would have been
+adopted to provide.
+
+Genuine parallel duplicates, for scale: 10% of cycleway segments carrying data,
+5% of footways, 6% of roads. Of 37 duplicate pairs, 29 are named-vs-named.
+
+**Two earlier measurements on this were wrong, both flattering the map over the
+matcher.** A "87% of segments have a twin" figure counted *connected
+neighbours* as duplicates. An "8 segments ridden both ways" figure compared fix
+headings to the segment **chord** — the quantity this project spent a day
+proving meaningless on switchbacks. Redone by projecting fixes along the
+segment and watching the distance rise and fall, only 3 segments lost a
+direction. Any duplicate or direction test must exclude shared nodes and must
+not use `bearing_deg`.
+
+## Decision: build the matcher's topology in, do not adopt Valhalla
+
+Taken 2026-09-05, against the 10.1%-impossible-transitions measurement above.
+
+**Rejected: Valhalla / Meili** (the mature open-source routing engine and its
+HMM map-matching component). Not on cost. Meili matches against *Valhalla's own*
+graph and answers in OSM way ids, while this model is keyed to the `segments`
+table and everything encoded in it — 19,663 sidewalks folded into parent roads,
+ways split at intersections and capped at 150 m with `piece_index` identity,
+per-direction buckets. **Meili would happily match a ride onto the sidewalk**,
+which is the exact failure `link_canonical.mjs` exists to prevent and which took
+two attempts to get right. Adopting it means writing a translation layer back
+onto our pieces — most of the work it was supposed to save — plus a second
+service wanting a GB or two against a $5/mo box. It answers a different question
+about a different map. Revisit only if the project also wants routing.
+
+**Chosen: add topology to the matcher we have, in two stages.**
+
+- **Stage 1 — connectivity preference.** Build an adjacency graph from
+  `start_node_id`/`end_node_id` (plus `piece_index` for the 23% that are 150 m
+  cap-slices sharing a node pair), and prefer candidates reachable from the
+  segment the run is already on. ~80 lines. This is the same *kind* of change as
+  the chord→tangent fix: it gives the matcher information it does not currently
+  have, rather than retuning how it weighs what it already has. No threshold
+  moves.
+- **Stage 2 — full HMM (Newson–Krumm + Viterbi), only if Stage 1 leaves real
+  damage.** Emission probability from distance (already computed), transition
+  probability from network distance between candidates, Viterbi over the whole
+  ride. Greedy connectivity cannot undo a wrong choice made earlier; Viterbi
+  can. Several hundred lines and a rewrite of the core — and 2026-08-30 showed
+  how quietly that goes wrong, when `nearestAlignedEdge` changed direction
+  assignment on switchbacks and was caught only by accident.
+
+**Success test for Stage 1:** impossible transitions from 10.1% to under 2%,
+with buckets and covered distance not falling. If it gets there, Stage 2 is not
+needed.
 
 ## Open items
 
@@ -633,13 +735,26 @@ per-fix work is arithmetic rather than turf geometry calls.
   of API calls per ride against OpenTopoData's public instance (~1000 calls/day,
   a ride costs ~4). Only OSM centreline coordinates are sent, never ride traces.
   If it ever needs to scale, download the 3DEP tile and sample locally.
-- **Singletrack still discards ~33% of runs** (streets: 16%), after stitching
-  brought it down from 57%. Two causes left, both structural rather than bugs.
-  The bearing test compares your heading against the segment's *straight-line*
-  chord bearing, which on a switchback describes no part of the trail — using
-  the local tangent at the projected point would be strictly more correct, and
-  is not a loosening. And ~31% of session 43's fixes were more than 25m from
-  any mapped way, which is an OpenStreetMap coverage problem, not ours.
+- ~~**Singletrack discards ~33% of runs.**~~ Largely fixed 2026-08-30 by the
+  chord→tangent change: trail discard 31.6% → 27.2% measured across the archive,
+  and on recent rides 5–6 discards against 44–46 merged runs, all 1–2 fixes
+  spanning 0–7 m. What remains is OSM coverage, not matching — ~31% of session
+  43's fixes were more than 25 m from any mapped way.
+- **NEXT: Stage 1 connectivity** — see the decision section above. Build the
+  adjacency graph from `start_node_id`/`end_node_id` plus `piece_index`, prefer
+  candidates reachable from the run's current segment, and re-measure
+  `tmp-impossible.mjs` (10.1% → target under 2%) alongside buckets and covered
+  distance so a gain in one is not paid for by a loss in the other.
+- **Riding a segment both ways can draw only one direction.** Measured
+  2026-09-02 by projecting fixes along the segment over time (no bearings): of 8
+  genuine out-and-back visits, 3 segments lost a direction reproducibly across
+  both rides, while Ridgeway Trail handled its out-and-backs correctly. One case
+  is a genuine duplicate pair — unnamed `6432` beside named Chamberlain `10433`,
+  each drawing the opposite direction, so the two passes split across two ways.
+  Stage 1 should help; a cheaper partial fix is extending `link_canonical.mjs`
+  to fold an *unnamed* path into a parallel named **trail**, not only into a
+  road, which would resolve 8 of the 37 duplicate pairs. The other 29 are
+  named-vs-named and no naming rule can touch them.
 - **Stitched runs can have a hole in the middle.** Rejoined fragments contribute
   only their own samples; whatever was between them matched elsewhere or
   nowhere. Endpoints and coverage are right, but interior buckets may be
@@ -738,31 +853,41 @@ per-fix work is arithmetic rather than turf geometry calls.
 
 ## Committed / deployed
 
-Pushed through `83b57e7` as of 2026-08-29. `origin/main` is current.
+Pushed through `b65d118` as of 2026-09-02. `origin/main` is current.
 
 - `5745ac6` — record which sensor measured each sample's elevation
 - `61e48fa` — least-squares, gap/window, stitching and the trail backlog docs
 - `83b57e7` — document migrations and deploys in the backend README
+- `65450fd` — barometer findings, save-timeout trail, Railway wiring
+- `026c4a9` — stop discarding trails the map marks as bike-legal
+- `6b05b86` — compare a rider's heading against the trail, not the chord
+- `9174a62` — reject impossible fixes, not whole rides
+- `f028d16` — stop a failed map refresh reporting as a failed save
+- `b65d118` — smaller upload chunks, and stop re-asking for the same map
 
-Backend deployed and verified by behaviour, not by status: `builtAt`
-2026-08-29T03:05:53.143Z, plus a round-trip that posted one `barometer` and one
-`gps` sample through the live API and read both back from the database. Test
-sessions cleaned up afterwards.
+**A push now deploys the backend** (GitHub → Railway, root directory `backend`,
+watching `backend/**`). Verified by a real push moving `builtAt` and the access
+log appearing. A `mobile/` or `context/` commit deliberately deploys nothing.
 
-APK rebuilt and installed 2026-08-27 20:51 (release, local Gradle — there is no
-`eas.json`). It carries the elevation-source instrumentation. **Anything in
-Open items that touches `mobile/` needs another APK cycle**; backend-only work
-does not.
+APK rebuilt and installed 2026-09-02 08:41, verified by `lastUpdateTime` on the
+device rather than by `adb` printing Success. It carries: barometer keyed to
+`isTracking`, `expo-keep-awake`, 5 Hz oversampling, the save-path fix and the
+`/segments` request-storm fix. **Anything in Open items that touches `mobile/`
+needs another APK cycle**; backend-only work does not.
 
-Model: **2,460 buckets across 380 segments**, 0 implausible, after Palmer Park
-merged. Note Palmer Park was never missing from `segments` — 3,883 segments were
-already there and 489 of 500 fixes sat within 25 m of one; the absent lines were
-purely a failed save.
+Docs, both published as Artifacts, and **both now behind the code**:
+- `context/architecture.html` — full system walkthrough. Its "Picking the right
+  street" section describes the *chord* bearing test, and its switchback diagram
+  illustrates a bug that has since been fixed; line ~2368's claim about what the
+  matcher compares against is no longer true. It also predates spike rejection,
+  oversampling and the trail import. The largest piece of documentation drift.
+- `context/backlog.html` — six open questions on recording mountain trails. Its
+  slope-window figures hold; its framing of GPS altitude as the weak source is
+  **superseded**.
 
-Docs, both published as Artifacts:
-- `context/architecture.html` — full system walkthrough. Current, including
-  stitching, least-squares, gap/window and the six-bucket correction.
-- `context/backlog.html` — six open questions on recording mountain trails, each
-  measured against the live database. Its slope-window figures are current; its
-  framing of GPS altitude as the weak source is **superseded** by the section
-  above.
+Throwaway diagnostic scripts live in `backend/tmp-*.mjs` (gitignored). Several
+are worth keeping in mind rather than rewriting: `tmp-impossible.mjs` measures
+unconnected run transitions, `tmp-outandback.mjs` detects out-and-back
+traversals without using bearings, `tmp-carriageway.mjs` tells a divided
+highway from a genuine gap, and `tmp-noise.mjs` compares elevation noise across
+every session.
