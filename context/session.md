@@ -75,22 +75,22 @@ the same path as a ride coming off the phone.
 
 ## Current state
 
-*(as of 2026-09-05)*
+*(as of 2026-09-06)*
 
 - **Network**: 66,684 segments over 38.71–38.97 N, −104.90 to −104.75 W —
   central Colorado Springs plus the northwest suburbs and Ute Valley Park.
-  47,015 canonical; 19,663 pavements and unnamed sidepaths folded into parent
-  roads. Every road stays canonical.
-- **Model**: **3,532 buckets across 483 segments**, 0 implausible, 618 coverage
+  47,015 canonical; 17,020 pavements and unnamed sidepaths folded into parent
+  roads. Every road stays canonical. **2,643 more are tagged
+  `is_sidewalk` and were never folded** — see the Stage 1 section.
+- **Model**: **3,503 buckets across 491 segments**, 0 implausible, 628 coverage
   rows. Lines are clipped to what was ridden.
 - **Rides**: 35 sessions, 13,279 samples. **Sessions 5 and 6 are permanently
   corrupt** — `rebuildModel.ts` excludes them by elevation scale. Session 45 is
   excluded for being spikes rather than a ride (20.7% of its steps impossible);
   46 and 50 were restored when the roughness test was replaced.
 - Every saved ride is merged by `/end` as it is saved, so the model is current
-  without a rebuild; the last full rebuild left 2,895 buckets and sessions
-  70–72 took it to 3,532. A rebuild is only needed when the *algorithm*
-  changes.
+  without a rebuild. A rebuild is only needed when the *algorithm* changes; the
+  last one was 2026-09-06 for Stage 1 connectivity.
 - **DB**: was 40 MB of Supabase's 500 MB before the re-import roughly doubled
   the segment count. Not re-measured since.
 - **Cost headroom**: ~55 KB/ride; ~9,200 rides before the storage cap (decades
@@ -660,6 +660,71 @@ about a different map. Revisit only if the project also wants routing.
 with buckets and covered distance not falling. If it gets there, Stage 2 is not
 needed.
 
+## Stage 1 shipped, and the success test was measuring the wrong thing
+
+Built 2026-09-06, commit `48224eb`. It works, it does not reach 2%, and **2%
+was never reachable** — the metric has a floor the matcher cannot touch.
+
+**What shipped.** `buildAdjacency` in `segmentMatcher.ts` builds a segment →
+neighbours map per ride: shared OSM node, except that slices of one capped run
+all carry that run's end nodes, so within such a family adjacency is
+`piece_index ± 1`. A candidate that does not touch where the rider just was is
+charged `DISCONNECT_PENALTY_M`. The anchor is the last matched segment and
+survives an unmatched fix for `ANCHOR_MAX_GAP_S = 15`, because a dropped fix is
+exactly when the next one most needs holding to a route. A penalty, not a veto:
+with no connected candidate every candidate is charged the same and it cancels,
+so the old behaviour stands.
+
+**Measured, on the 32 sessions the model actually uses:**
+
+| penalty | impossible | buckets | covered km |
+|---|---|---|---|
+| 0 (old) | 10.1% | 6285 | 98.78 |
+| **6m (shipped)** | **8.2%** | **6263** | **98.81** |
+| 10m | 7.3% | 6244 | 98.56 |
+| 25m | 6.8% | 6220 | 98.27 |
+
+Live after rebuild: 3532 → 3503 buckets, 483 → **491** segments, 618 → **628**
+coverage rows. Fewer buckets over more ground, the same shape as chord→tangent:
+rides consolidate off parallel duplicates onto the chain they connect to.
+
+**Why 6m and not 10m.** At 10m a descent of Ladders in session 54 loses 23 of
+its fixes to Upper Chutes — a *different* trail that touches Ladders at one end
+and diverges to 90m — turning a clean 110 m traversal into 29 m. Ladders' own
+chain is intact (`#19474↔#19475` by piece, `#19475↔#23848` by node), so this is
+not a graph defect: the matcher takes one wrong turn and connectivity, which
+cannot look back, holds it there. **That is the ceiling of a greedy rule and the
+concrete argument for Viterbi**, should this ever need to go further. At 6m
+Ladders keeps 32 backward / 30 forward against 32 / 31 before.
+
+**The 2% target was measured against the wrong denominator.** `tmp-impossible.mjs`
+reads `session_segment_matches`, which only holds runs that *cleared the
+traversal gate*. Of the 27 residual unconnected transitions, `tmp-residual.mjs`
+shows **14 have a discarded run sitting between them** — the rider did ride a
+connecting segment, the gate threw its run away, and the two survivors look like
+a jump. Genuinely unreachable jumps went **17 → 11**. Any future version of this
+test must separate the two; the raw rate cannot fall below roughly 4% while the
+gate discards intervening runs.
+
+**Hancock's 191 m hole is half closed.** `#17972` now draws `forward:11-100`
+where it was blank. `#17973` stays blank, and **that half is a pipeline bug, not
+a matcher one**: both competing paths (`#23278`, `#22505`) are tagged
+`is_sidewalk = true` yet still canonical, so they compete for fixes when
+`link_canonical.mjs` exists precisely to stop that. **2,643 of 19,663 tagged
+sidewalks were never folded** (13.4%), because the linker's parallel test uses
+`bearing_deg` — the chord — with a 20° tolerance, and `#23278` misses Hancock by
+**one degree**. Forcing the road to win instead needs a 10m+ penalty, which is
+what breaks Ladders. Fix the linker, not the number.
+
+New scripts: `tmp-connect-sweep.mjs` (penalty sweep, reproduces the 10.1%
+baseline at penalty 0 — check that before believing any other row),
+`tmp-residual.mjs` (splits teleports from gate artefacts by hop count),
+`tmp-connect-diff.mjs` (per-line gained/lost), `tmp-connect-detail.mjs`
+(per-session, per-direction, for one street), `tmp-claim.mjs` (which segment
+claimed these fixes, before vs after), `tmp-chain.mjs` (is a street's own chain
+connected). All restrict to the sessions `rebuildModel` uses — measuring over
+every session counts rides the model throws away.
+
 ## Open items
 
 - **Two directions on one path** (deferred). Roads get two ±4 m offset lines,
@@ -740,11 +805,14 @@ needed.
   and on recent rides 5–6 discards against 44–46 merged runs, all 1–2 fixes
   spanning 0–7 m. What remains is OSM coverage, not matching — ~31% of session
   43's fixes were more than 25 m from any mapped way.
-- **NEXT: Stage 1 connectivity** — see the decision section above. Build the
-  adjacency graph from `start_node_id`/`end_node_id` plus `piece_index`, prefer
-  candidates reachable from the run's current segment, and re-measure
-  `tmp-impossible.mjs` (10.1% → target under 2%) alongside buckets and covered
-  distance so a gain in one is not paid for by a loss in the other.
+- **NEXT: fold the 2,643 sidewalks the linker missed.** See the Stage 1 section
+  below — this is now the biggest single lever, and it is a pipeline fix, not a
+  matcher one. `link_canonical.mjs` tests "parallel" with `bearing_deg`, the
+  chord, which this project already proved meaningless on anything that bends.
+  **The risk is documented and severe**: the first geometric attempt at this
+  chopped Shooks Run (−57), Midland (−35) and the Pikes Peak Greenway (−10) into
+  disconnected pieces. Any change here needs the same before/after per-line diff
+  the matcher changes get, and a check that no named trail loses segments.
 - **Riding a segment both ways can draw only one direction.** Measured
   2026-09-02 by projecting fixes along the segment over time (no bearings): of 8
   genuine out-and-back visits, 3 segments lost a direction reproducibly across
@@ -853,7 +921,7 @@ needed.
 
 ## Committed / deployed
 
-Pushed through `b65d118` as of 2026-09-02. `origin/main` is current.
+Pushed through `48224eb` as of 2026-09-06. `origin/main` is current.
 
 - `5745ac6` — record which sensor measured each sample's elevation
 - `61e48fa` — least-squares, gap/window, stitching and the trail backlog docs
@@ -864,6 +932,8 @@ Pushed through `b65d118` as of 2026-09-02. `origin/main` is current.
 - `9174a62` — reject impossible fixes, not whole rides
 - `f028d16` — stop a failed map refresh reporting as a failed save
 - `b65d118` — smaller upload chunks, and stop re-asking for the same map
+- `cee0ad9` — record the connectivity finding and the matcher decision
+- `48224eb` — let the matcher see that the network is connected (Stage 1)
 
 **A push now deploys the backend** (GitHub → Railway, root directory `backend`,
 watching `backend/**`). Verified by a real push moving `builtAt` and the access
