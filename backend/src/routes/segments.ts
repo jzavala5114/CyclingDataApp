@@ -27,6 +27,7 @@ segmentsRouter.get("/", asyncRoute(async (req, res) => {
   const { rows: segmentRows } = await pool.query<Segment>(
     `select id, osm_way_id as "osmWayId", kind, street_name as "streetName",
             start_node_id as "startNodeId", end_node_id as "endNodeId",
+            piece_index as "pieceIndex",
             ST_AsGeoJSON(geom)::json as geom, length_m as "lengthM", bearing_deg as "bearingDeg"
        from segments s
       where s.geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)

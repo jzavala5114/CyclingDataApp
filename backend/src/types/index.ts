@@ -29,6 +29,10 @@ export interface Segment {
   streetName: string | null;
   startNodeId: number;
   endNodeId: number;
+  // Which slice of an over-long run this is. Every slice carries the run's own
+  // end nodes, so this is the only thing telling them apart -- and the only
+  // thing that says which two of them touch. See buildAdjacency.
+  pieceIndex: number;
   geom: GeoJSON.LineString;
   lengthM: number;
   bearingDeg: number;

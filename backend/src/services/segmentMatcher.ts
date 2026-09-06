@@ -51,6 +51,67 @@ const PREFILTER_PAD_DEG = 0.0005;
 // doubling it to 20m moved the bucket count by 4 in 5000.
 export const TANGENT_WINDOW_M = 10;
 
+// The network is a graph, and until now the matcher never looked at it.
+//
+// Every canonical segment already carries the OSM node ids of its two ends, so
+// which segments physically touch is known and was going unread. Each fix was
+// decided on its own -- nearest aligned segment, with a reluctance to leave the
+// current one -- and nothing checked that the resulting sequence was a route a
+// bicycle could take. Measured across sessions 62-72, 37 of 365 consecutive run
+// transitions joined two segments that do not touch, 30 of them within ten
+// seconds of each other.
+//
+// The teleport is not the damage. What it costs is the ground underneath it: a
+// ride down Hancock Expressway stepped onto two unnamed paths beside the road
+// for a few seconds each, so the road pieces under those fixes went unmatched,
+// and the paths' own runs were too short to clear the traversal gate. The
+// result was a 191m hole in a continuously ridden road, with drawn pieces of
+// the same carriageway on both sides of it.
+//
+// Half of that particular hole is not this file's to fix. Both of those paths
+// are tagged footway=sidewalk and should never have been match candidates at
+// all -- link_canonical.mjs missed them, along with 2,643 other tagged
+// sidewalks, because its parallel test compares chord bearings and one of them
+// misses by a single degree. This closes the first 100m, where the road piece
+// is a genuine neighbour and the sidewalk is not. The rest stays open until the
+// sidewalk stops competing.
+//
+// A candidate that does not touch where the rider just was now has to be
+// clearly closer to win, exactly as SWITCH_MARGIN_M makes leaving the current
+// segment cost something. Deliberately a penalty and not a veto: when no
+// candidate is connected -- a real gap in OSM, the first fix of a ride, a rider
+// crossing a car park -- every candidate carries the same penalty, it cancels
+// out of the comparison, and the matcher behaves exactly as it did before.
+//
+// 6m, and the ceiling is what sets it rather than the floor. Swept over every
+// session the model uses, the impossible-transition rate falls 10.1% -> 8.2%
+// by 6m and then stalls; 10m buys another 0.9 points and 25m nothing at all
+// beyond that, because by 25m the penalty exceeds MAX_MATCH_DISTANCE_M and has
+// quietly become the veto this is not supposed to be.
+//
+// What rules out the larger values is the damage above 8m. At 10m a descent of
+// Ladders in session 54 loses 23 of its fixes to Upper Chutes, a different
+// trail that touches it at one end and diverges to 90m: a clean 110m traversal
+// becomes 29m. The matcher takes one wrong turn, and connectivity -- which has
+// no way to look back and see that the turn was wrong -- then holds it there.
+// That is the ceiling of a greedy rule, not a number that wants tuning, and it
+// is the argument for Viterbi if this ever needs to go further.
+//
+// At 6m nothing regresses: Ladders keeps 32 backward and 30 fixes forward
+// against 32 and 31 before, and covered distance across the archive is flat
+// (98.78km -> 98.81km) while buckets move by 0.35%.
+const DISCONNECT_PENALTY_M = 6;
+
+// How long the last matched segment keeps vouching for its neighbours.
+//
+// A fix that matches nothing does not clear the anchor: the rider has not
+// stopped existing, and a dropped fix or a burst of multipath is precisely when
+// the next fix most needs to be held to a route. But after a long silence they
+// really could be anywhere, and a stale anchor would drag the ride back towards
+// a street it left minutes ago. At ~11m fix spacing this is a couple of fixes'
+// worth of gap, which is the shape a dropout has.
+const ANCHOR_MAX_GAP_S = 15;
+
 const M_PER_DEG_LAT = 111320;
 
 function bearingDelta(a: number, b: number): number {
@@ -190,36 +251,116 @@ function nearestAlignedEdge(
   return bestDirection ? { distanceM: bestDistanceM, direction: bestDirection } : null;
 }
 
+// Two segments cut from the same over-long run. The pipeline caps a run at
+// 150m by slicing it, and every slice keeps the *run's* pair of end nodes, so
+// they are distinguished only by piece_index.
+function areCapSlicesOfOneRun(a: Segment, b: Segment): boolean {
+  if (a.osmWayId !== b.osmWayId) return false;
+  return (
+    (a.startNodeId === b.startNodeId && a.endNodeId === b.endNodeId) ||
+    (a.startNodeId === b.endNodeId && a.endNodeId === b.startNodeId)
+  );
+}
+
+// segment id -> the ids of the segments that physically touch it.
+//
+// Sharing an OSM node is the test, with one exception the schema forces. Since
+// every slice of a capped run carries that run's end nodes, node identity alone
+// would call slice 0 and slice 9 neighbours across 1.4km of street. Inside one
+// such family the neighbours are the slices either side, by piece_index.
+//
+// The same quirk leaves a middle slice looking connected to the cross streets
+// at both ends of its run. That is left alone: those streets are hundreds of
+// metres away, and MAX_MATCH_DISTANCE_M has already dropped them long before
+// anything asks whether they are reachable.
+//
+// Built per call from the segments the caller is matching against, which is a
+// box around one ride. Nothing is cached between rides: the graph is cheap
+// beside the per-fix geometry, and a stale one would be a silent wrong answer.
+function buildAdjacency(segments: Segment[]): Map<number, Set<number>> {
+  const byNode = new Map<number, Segment[]>();
+  for (const segment of segments) {
+    for (const node of [segment.startNodeId, segment.endNodeId]) {
+      const touching = byNode.get(node);
+      if (touching) touching.push(segment);
+      else byNode.set(node, [segment]);
+    }
+  }
+
+  const adjacency = new Map<number, Set<number>>();
+  const link = (from: number, to: number) => {
+    const set = adjacency.get(from);
+    if (set) set.add(to);
+    else adjacency.set(from, new Set([to]));
+  };
+
+  for (const touching of byNode.values()) {
+    for (let i = 0; i < touching.length; i++) {
+      for (let j = i + 1; j < touching.length; j++) {
+        const a = touching[i];
+        const b = touching[j];
+        if (areCapSlicesOfOneRun(a, b) && Math.abs(a.pieceIndex - b.pieceIndex) !== 1) continue;
+        link(a.id, b.id);
+        link(b.id, a.id);
+      }
+    }
+  }
+
+  return adjacency;
+}
+
 interface Candidate {
   segment: Segment;
   direction: Direction;
   distanceM: number;
+  // distanceM, plus DISCONNECT_PENALTY_M when this segment does not touch where
+  // the rider just was. Ranking uses this; the 25m gate that admitted the
+  // candidate in the first place used the true distance.
+  scoreM: number;
 }
 
 // Matches each sample to a segment and a direction of travel, then collapses
 // consecutive same segment+direction samples into runs.
 //
 // This is a prototype-grade heuristic (nearest-segment + bearing check +
-// hysteresis), not a full map-matching HMM -- it can still misfire at complex
-// intersections. Good enough to keep one ride on one line; revisit with a
-// proper map-matcher (e.g. Valhalla's Meili) if that stops holding.
-// `tangentWindowM` of 0 or less compares against the segment chord, which is
-// the behaviour this replaced. Kept as a parameter so the two can be measured
-// against each other through this exact code path rather than a reimplementation.
+// connectivity preference + hysteresis), not a full map-matching HMM. It is
+// greedy: each fix is decided once, in order, and a wrong turn taken early
+// cannot be revised in the light of what came after. Viterbi over the whole
+// ride is what would fix that, and is deliberately not here yet.
+//
+// `tangentWindowM` of 0 or less compares against the segment chord, and
+// `disconnectPenaltyM` of 0 ignores the network graph. Both are the behaviour
+// each replaced, kept as options so the alternatives can be measured through
+// this exact code path rather than through a reimplementation of it.
 export function matchSamplesToSegments(
   samples: SessionSample[],
   candidateSegments: Segment[],
-  tangentWindowM: number = TANGENT_WINDOW_M,
+  {
+    tangentWindowM = TANGENT_WINDOW_M,
+    disconnectPenaltyM = DISCONNECT_PENALTY_M,
+  }: { tangentWindowM?: number; disconnectPenaltyM?: number } = {},
 ): MatchedRun[] {
   const geometries = new Map(
     candidateSegments.map((s) => [s.id, buildSegmentGeometry(s, tangentWindowM)]),
   );
+  const adjacency = buildAdjacency(candidateSegments);
   const runs: MatchedRun[] = [];
   let current: MatchedRun | null = null;
+  // The last segment a fix was matched to, and when. Kept separately from
+  // `current` because a fix that matches nothing ends the run but does not tell
+  // us the rider teleported -- the next fix should still be held to a route out
+  // of here.
+  let anchorSegmentId: number | null = null;
+  let anchorAtMs = 0;
 
   for (const sample of samples) {
     if (sample.headingDeg == null || sample.headingDeg < 0) continue;
     if (sample.accuracyM != null && sample.accuracyM > MAX_ACCURACY_M) continue;
+
+    const sampleAtMs = Date.parse(sample.recordedAt);
+    const anchored =
+      anchorSegmentId != null && (sampleAtMs - anchorAtMs) / 1000 <= ANCHOR_MAX_GAP_S;
+    const reachable = anchored ? adjacency.get(anchorSegmentId!) : undefined;
 
     const cosLat = Math.cos((sample.lat * Math.PI) / 180);
     const candidates: Candidate[] = [];
@@ -234,7 +375,16 @@ export function matchSamplesToSegments(
       }
       const hit = nearestAlignedEdge(sample, geometry, cosLat);
       if (!hit) continue;
-      candidates.push({ segment, direction: hit.direction, distanceM: hit.distanceM });
+      // With no usable anchor every candidate is treated as connected, so the
+      // penalty cancels and ranking is by distance alone, as it was before.
+      const connected =
+        !anchored || segment.id === anchorSegmentId || (reachable?.has(segment.id) ?? false);
+      candidates.push({
+        segment,
+        direction: hit.direction,
+        distanceM: hit.distanceM,
+        scoreM: hit.distanceM + (connected ? 0 : disconnectPenaltyM),
+      });
     }
 
     if (candidates.length === 0) {
@@ -244,7 +394,7 @@ export function matchSamplesToSegments(
 
     let best = candidates[0];
     for (const candidate of candidates) {
-      if (candidate.distanceM < best.distanceM) best = candidate;
+      if (candidate.scoreM < best.scoreM) best = candidate;
     }
 
     // Stay on the run's current segment unless something is decisively
@@ -255,14 +405,18 @@ export function matchSamplesToSegments(
       const staying = candidates.find(
         (c) => c.segment.id === current!.segmentId && c.direction === current!.direction,
       );
-      if (staying && staying.distanceM <= best.distanceM + SWITCH_MARGIN_M) {
+      if (staying && staying.scoreM <= best.scoreM + SWITCH_MARGIN_M) {
         current.samples.push(sample);
+        anchorSegmentId = staying.segment.id;
+        anchorAtMs = sampleAtMs;
         continue;
       }
     }
 
     current = { segmentId: best.segment.id, direction: best.direction, samples: [sample] };
     runs.push(current);
+    anchorSegmentId = best.segment.id;
+    anchorAtMs = sampleAtMs;
   }
 
   return runs;
