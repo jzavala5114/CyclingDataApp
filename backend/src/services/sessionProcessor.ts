@@ -10,21 +10,12 @@ import {
 } from "./elevationAggregator.js";
 import { rejectElevationSpikes, smoothElevations } from "./elevationSmoothing.js";
 import { demKey, ensureDemElevations, type DemPosition } from "./demElevation.js";
+import { fitAnchor, MIN_POINTS_FOR_ANCHOR, type AnchorPoint, type Revisit } from "./anchorFit.js";
 import type { Direction, Segment, SessionSample } from "../types/index.js";
 
 // Candidate segments come from a box around the session's own samples. Fine
 // for a prototype where a session is one short ride.
 const BBOX_PAD_DEG = 0.005; // ~500m
-
-// Below this many overlapping points the offset is being fit to noise, so the
-// ride is merged on its own GPS baseline instead -- no worse than before the
-// DEM existed, and better than shifting a whole ride by a bad number.
-const MIN_DEM_POINTS_FOR_ANCHOR = 10;
-
-// A barometer that has drifted, or a GPS baseline taken on a bad first fix,
-// lands tens of metres out. Anything past this is not drift, it is a broken
-// ride, and silently shifting it onto the DEM would hide the fault.
-const MAX_PLAUSIBLE_ANCHOR_OFFSET_M = 60;
 
 // One run the traversal gate rejected, with the measurements behind the
 // decision. A rejection has two very different causes that a bare count cannot
@@ -59,8 +50,16 @@ export interface ProcessResult {
   matchedRuns: number;
   discardedRuns: number;
   // Metres subtracted from this ride to line it up with the terrain model,
-  // or null if it was merged unanchored.
+  // taken at the middle of the measured window, or null if it merged
+  // unanchored.
   demOffsetM: number | null;
+  // How much that correction changed across the stretch of the ride the drift
+  // was measured over -- not the whole ride, since the ramp is held flat
+  // outside that window. Zero when the fit fell back to a single number. This
+  // is the ride disagreeing with itself over time, measured from places it
+  // covered twice, so it owes nothing to the terrain model.
+  demDriftM: number | null;
+  demAnchorShape: "ramp" | "constant" | null;
   demPoints: number;
   // Fixes dropped for claiming a physically impossible height. Reported so a
   // ride that is mostly spikes is visible rather than silently thinned.
@@ -78,37 +77,111 @@ interface QualifyingRun {
   coveredToM: number;
   firstSampleId: number;
   lastSampleId: number;
+  // When this traversal happened, so the anchor can vary through the ride.
+  // The midpoint of the run, not per bucket: a run is one pass over one
+  // segment, ten to thirty seconds, and the weather does not move in that.
+  atMs: number;
 }
 
-function median(values: number[]): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-}
-
-// One scalar for the whole ride, not one per segment: the error being removed
-// is a constant baseline error, and fitting per segment would absorb the real
-// terrain along with it. The median rather than the mean so a bridge, a
-// tunnel or a handful of bad fixes can't drag the whole ride.
-function fitDemOffset(runs: QualifyingRun[], dem: Map<string, number>): number | null {
-  const residuals: number[] = [];
+// Not one scalar per segment: fitting that finely would absorb the real terrain
+// along with the error. These set the ride's overall level only -- the slope
+// comes from the revisits below, for reasons set out in anchorFit.ts.
+function collectAnchorPoints(runs: QualifyingRun[], dem: Map<string, number>): AnchorPoint[] {
+  const points: AnchorPoint[] = [];
   for (const run of runs) {
     for (const bucket of run.buckets) {
       const reference = dem.get(
         demKey({ segmentId: run.segment.id, direction: run.direction, distanceM: bucket.distanceM }),
       );
       if (reference == null) continue;
-      residuals.push(bucket.elevationM - reference);
+      points.push({ atMs: run.atMs, residualM: bucket.elevationM - reference });
+    }
+  }
+  return points;
+}
+
+// Every pair of passes over ground this ride covered twice, and how much its
+// reading moved between them. Same segment, same direction, same 15m cell, so
+// the hill and the terrain model's error at that spot both cancel and most of
+// what is left is the barometer sliding. See anchorFit.ts for how much "most"
+// is: this cancels the ground to within where in the cell each pass sampled and
+// the smoothing's speed-dependent lag, not exactly.
+//
+// **One comparison per pair of passes, not per bucket.** A single out-and-back
+// over one block touches four or five buckets, but they all share the same two
+// moments and the same disagreement. Emitting one revisit per bucket let that
+// single comparison satisfy a quorum meant to need three independent ones, and
+// made a median of four copies of one number look like a robust estimate.
+//
+// **Directions are kept apart, and the second reason is why that is not just
+// an indexing detail somebody should tidy up later.** The first reason is
+// indexing: a bucket's distance is measured along the direction of travel, so
+// forward 30m and backward 30m are opposite ends of the segment and not the
+// same ground at all. That much could be repaired by pairing forward `d`
+// against backward `lengthM - d`.
+//
+// The second cannot be repaired. smoothElevations is a causal EMA, so the
+// height it reports for a spot is really the height a little way BACK along the
+// direction of travel. Two passes the same way round share that displacement,
+// so it cancels except for the difference in their speeds -- the ~0.5m leak
+// anchorFit.ts bounds, and it vanishes entirely when both passes ride at the
+// same speed. Two passes in opposite directions are displaced in OPPOSITE
+// directions along the ground, so the term is 2 x lag x grade and it never
+// cancels: around 1.2m on a 6% street even at identical speeds. That is larger
+// than the floor the drift has to clear to be believed at all, and it is signed
+// by gradient rather than random, so it would not average away across pairs.
+// It would read as drift, on exactly the hilly rides this is meant to help.
+//
+// The cost of that is real and measured: 21 long revisits across the archive
+// are declined for direction against 30 kept. Using them needs the lag removed
+// first, not just the index flipped.
+export function collectRevisits(
+  runs: Array<{ segmentId: number; direction: Direction; atMs: number; buckets: BucketSample[] }>,
+): Revisit[] {
+  const byBucket = new Map<string, Array<{ run: number; elevationM: number }>>();
+  runs.forEach((run, index) => {
+    for (const bucket of run.buckets) {
+      const key = `${run.segmentId}|${run.direction}|${bucket.distanceM}`;
+      const readings = byBucket.get(key);
+      const reading = { run: index, elevationM: bucket.elevationM };
+      if (readings) readings.push(reading);
+      else byBucket.set(key, [reading]);
+    }
+  });
+
+  // Every bucket two passes share contributes one rise to that pair of passes.
+  const risesByPair = new Map<string, number[]>();
+  for (const readings of byBucket.values()) {
+    if (readings.length < 2) continue;
+    for (let i = 0; i < readings.length; i++) {
+      for (let j = i + 1; j < readings.length; j++) {
+        const a = readings[i];
+        const b = readings[j];
+        const [early, late] = runs[a.run].atMs <= runs[b.run].atMs ? [a, b] : [b, a];
+        const key = `${early.run}|${late.run}`;
+        const rise = late.elevationM - early.elevationM;
+        const rises = risesByPair.get(key);
+        if (rises) rises.push(rise);
+        else risesByPair.set(key, [rise]);
+      }
     }
   }
 
-  if (residuals.length < MIN_DEM_POINTS_FOR_ANCHOR) return null;
-  const offset = median(residuals);
-  if (Math.abs(offset) > MAX_PLAUSIBLE_ANCHOR_OFFSET_M) {
-    console.warn(`DEM offset ${offset.toFixed(1)}m is implausible, merging unanchored`);
-    return null;
+  const revisits: Revisit[] = [];
+  for (const [key, rises] of risesByPair) {
+    const [earlyIndex, lateIndex] = key.split("|").map(Number);
+    // The median across the buckets the two passes share, so one bad cell in a
+    // long shared stretch cannot set the comparison.
+    const sorted = [...rises].sort((x, y) => x - y);
+    const mid = Math.floor(sorted.length / 2);
+    revisits.push({
+      earlyAtMs: runs[earlyIndex].atMs,
+      lateAtMs: runs[lateIndex].atMs,
+      riseM: sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid],
+      buckets: rises.length,
+    });
   }
-  return offset;
+  return revisits;
 }
 
 // Map-matches a session's samples against nearby segments and folds the
@@ -135,7 +208,10 @@ export async function processSession(
   );
 
   if (sampleRows.length === 0) {
-    return { matchedRuns: 0, discardedRuns: 0, demOffsetM: null, demPoints: 0, rejectedSpikes: 0, discards: [] };
+    return {
+      matchedRuns: 0, discardedRuns: 0, demOffsetM: null, demDriftM: null,
+      demAnchorShape: null, demPoints: 0, rejectedSpikes: 0, discards: [],
+    };
   }
 
   const lats = sampleRows.map((s) => s.lat);
@@ -225,6 +301,7 @@ export async function processSession(
       coveredToM: profile.coveredToM,
       firstSampleId: run.samples[0].id,
       lastSampleId: run.samples[run.samples.length - 1].id,
+      atMs: (startedMs + endedMs) / 2,
     });
   }
 
@@ -258,17 +335,36 @@ export async function processSession(
     })),
   );
   const dem = await ensureDemElevations(client, positions);
-  const demOffsetM = fitDemOffset(qualifying, dem);
+  const anchor = fitAnchor(
+    collectAnchorPoints(qualifying, dem),
+    collectRevisits(qualifying.map((r) => ({
+      segmentId: r.segment.id, direction: r.direction, atMs: r.atMs, buckets: r.buckets,
+    }))),
+  );
   const demPoints = positions.filter((p) => dem.has(demKey(p))).length;
+  if (anchor == null) {
+    // Distinguish the two causes, because they call for opposite responses: too
+    // little terrain is a coverage problem, an implausible offset is a broken
+    // ride. Carrying the number is what made the old warning actionable.
+    const covered = collectAnchorPoints(qualifying, dem);
+    console.warn(
+      covered.length < MIN_POINTS_FOR_ANCHOR
+        ? `only ${covered.length} DEM points, merging unanchored`
+        : `DEM offset is implausible over ${covered.length} points, merging unanchored`,
+    );
+  }
 
   for (const run of qualifying) {
+    // Evaluated at this run's own moment, so a ride that slid during the hour
+    // is put back on one level instead of being tilted around its average.
+    const correctionM = anchor?.offsetAt(run.atMs);
     await mergeBuckets(
       client,
       run.segment.id,
       run.direction,
-      demOffsetM == null
+      correctionM == null
         ? run.buckets
-        : run.buckets.map((b) => ({ ...b, elevationM: b.elevationM - demOffsetM })),
+        : run.buckets.map((b) => ({ ...b, elevationM: b.elevationM - correctionM })),
     );
     await mergeCoverage(client, run.segment.id, run.direction, run.coveredFromM, run.coveredToM);
     await client.query(
@@ -282,7 +378,9 @@ export async function processSession(
   return {
     matchedRuns: qualifying.length,
     discardedRuns: runs.length - qualifying.length,
-    demOffsetM,
+    demOffsetM: anchor?.midM ?? null,
+    demDriftM: anchor?.driftM ?? null,
+    demAnchorShape: anchor?.shape ?? null,
     demPoints,
     rejectedSpikes: rejectedSpikes.length,
     discards,

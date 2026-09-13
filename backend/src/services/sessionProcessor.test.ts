@@ -1,0 +1,150 @@
+import { strict as assert } from "node:assert";
+import { test } from "node:test";
+import { collectRevisits } from "./sessionProcessor.js";
+import type { Direction } from "../types/index.js";
+
+// collectRevisits is where the drift measurement comes from, so what it counts
+// as "the same ground twice" decides whether the ramp in anchorFit.ts is fitted
+// to evidence or to an illusion. It is pure and takes no database, so it is a
+// gate test.
+
+const MINUTE = 60_000;
+
+function pass(
+  segmentId: number,
+  direction: Direction,
+  atMin: number,
+  buckets: Array<[distanceM: number, elevationM: number]>,
+) {
+  return {
+    segmentId,
+    direction,
+    atMs: atMin * MINUTE,
+    buckets: buckets.map(([distanceM, elevationM]) => ({ distanceM, elevationM })),
+  };
+}
+
+test("one pass over a segment is not a revisit", () => {
+  assert.deepEqual(collectRevisits([pass(1, "forward", 0, [[0, 100], [15, 101], [30, 102]])]), []);
+});
+
+test("two passes over the same ground are ONE comparison, not one per bucket", () => {
+  // The bug this rule exists for. A single out-and-back over one block touches
+  // four or five buckets, but they all share the same two moments and the same
+  // disagreement. Emitting one revisit per bucket let that single comparison
+  // satisfy a quorum meant to need three independent ones, and made a median
+  // of four copies of one number look like a robust estimate.
+  const revisits = collectRevisits([
+    pass(1, "forward", 0, [[0, 100], [15, 101], [30, 102], [45, 103]]),
+    pass(1, "forward", 40, [[0, 103], [15, 104], [30, 105], [45, 106]]),
+  ]);
+  assert.equal(revisits.length, 1);
+  assert.equal(revisits[0].riseM, 3);
+  assert.equal(revisits[0].buckets, 4, "the four shared cells back one comparison");
+  assert.equal(revisits[0].earlyAtMs, 0);
+  assert.equal(revisits[0].lateAtMs, 40 * MINUTE);
+});
+
+test("the rise is the median across the buckets the two passes share", () => {
+  // One cell that caught a bad fix must not set the comparison for the pair.
+  const revisits = collectRevisits([
+    pass(1, "forward", 0, [[0, 100], [15, 100], [30, 100], [45, 100]]),
+    pass(1, "forward", 35, [[0, 101], [15, 101.1], [30, 100.9], [45, 109]]),
+  ]);
+  assert.equal(revisits.length, 1);
+  assert.ok(Math.abs(revisits[0].riseM - 1.05) < 1e-9, `rise ${revisits[0].riseM}`);
+});
+
+test("the same segment ridden the other way is not the same ground", () => {
+  // A bucket's distance is measured along the direction of travel, so forward
+  // 30m and backward 30m are opposite ends of the segment. Comparing them
+  // would read the hill between those ends as barometric drift.
+  assert.deepEqual(
+    collectRevisits([
+      pass(1, "forward", 0, [[0, 100], [15, 105], [30, 110]]),
+      pass(1, "backward", 40, [[0, 100], [15, 105], [30, 110]]),
+    ]),
+    [],
+  );
+});
+
+test("different segments are not a revisit, however alike they read", () => {
+  assert.deepEqual(
+    collectRevisits([
+      pass(1, "forward", 0, [[0, 100], [15, 101]]),
+      pass(2, "forward", 40, [[0, 100], [15, 101]]),
+    ]),
+    [],
+  );
+});
+
+test("buckets only one pass touched are ignored", () => {
+  // A second pass that overshoots the first contributes nothing from the
+  // ground the first never covered -- there is no earlier reading to compare
+  // it against, and using one would compare two different places.
+  const revisits = collectRevisits([
+    pass(1, "forward", 0, [[0, 100], [15, 101]]),
+    pass(1, "forward", 40, [[0, 102], [15, 103], [30, 150], [45, 150]]),
+  ]);
+  assert.equal(revisits.length, 1);
+  assert.equal(revisits[0].buckets, 2);
+  assert.equal(revisits[0].riseM, 2);
+});
+
+test("the earlier pass is the early one, whatever order the runs arrive in", () => {
+  // Runs come off the matcher in the order they were ridden, but nothing in
+  // the type says so, and the sign of every rise depends on getting this right:
+  // reversed, a rising barometer would be corrected as a falling one.
+  const revisits = collectRevisits([
+    pass(1, "forward", 40, [[0, 105]]),
+    pass(1, "forward", 0, [[0, 100]]),
+  ]);
+  assert.equal(revisits.length, 1);
+  assert.equal(revisits[0].earlyAtMs, 0);
+  assert.equal(revisits[0].lateAtMs, 40 * MINUTE);
+  assert.equal(revisits[0].riseM, 5, "the ride read 5m higher the second time");
+});
+
+test("three passes over one block make three comparisons", () => {
+  // Every pair, because each one is a separate observation of how far the
+  // barometer moved between two moments, and they cover different gaps.
+  const revisits = collectRevisits([
+    pass(1, "forward", 0, [[0, 100]]),
+    pass(1, "forward", 30, [[0, 102]]),
+    pass(1, "forward", 60, [[0, 104]]),
+  ]);
+  assert.equal(revisits.length, 3);
+  const spans = revisits
+    .map((r) => [(r.lateAtMs - r.earlyAtMs) / MINUTE, r.riseM] as const)
+    .sort((a, b) => a[0] - b[0]);
+  assert.deepEqual(spans.map(([minutes]) => minutes), [30, 30, 60]);
+  // A steady 4m/h: every pair agrees, which is what lets three of them clear
+  // the sign-agreement test in fitDriftRate.
+  for (const [minutes, rise] of spans) assert.ok(Math.abs(rise / (minutes / 60) - 4) < 1e-9);
+});
+
+test("revisits on different segments both count", () => {
+  // The quorum is about independent comparisons, and two separate streets
+  // crossed twice each are exactly that.
+  const revisits = collectRevisits([
+    pass(1, "forward", 0, [[0, 100]]),
+    pass(2, "forward", 5, [[0, 200]]),
+    pass(1, "forward", 40, [[0, 102]]),
+    pass(2, "forward", 45, [[0, 202]]),
+  ]);
+  assert.equal(revisits.length, 2);
+  for (const r of revisits) assert.equal(r.riseM, 2);
+});
+
+test("a ride that never crosses its own path measures no drift at all", () => {
+  // The common case, and the reason most rides keep the single number: a
+  // straight there-and-somewhere-else ride has nothing to compare.
+  assert.deepEqual(
+    collectRevisits([
+      pass(1, "forward", 0, [[0, 100], [15, 101]]),
+      pass(2, "forward", 10, [[0, 102], [15, 103]]),
+      pass(3, "forward", 20, [[0, 104], [15, 105]]),
+    ]),
+    [],
+  );
+});

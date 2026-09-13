@@ -41,6 +41,34 @@ cyclingdataapp-backend`, which let the running server drift days behind `main`
 without any signal that it had. If `git push` does not move `builtAt`, that
 connection is the first thing to check.
 
+## Tests and evals
+
+```
+npm test              # gate tests: deterministic, no database, well under 2s
+npm run eval:anchor   # eval: replays the archive through the real code path
+```
+
+`npm test` runs Node's built-in test runner through tsx. It needs nothing but
+the source, so it is safe on any checkout.
+
+`npm run eval:anchor` measures whether the elevation model agrees with itself,
+and it reads the live database. Two questions, both asked of buckets rather
+than raw samples, because the anchor correction is applied on the way into a
+bucket and never written back onto the sample rows:
+
+- **self-consistency** — one ride, one bucket, two passes minutes apart. The
+  ground cannot have moved, so any difference is the ride disagreeing with
+  itself. Needs no second ride and no terrain model.
+- **cross-ride** — one bucket, two rides. What actually reaches the map, since
+  the running mean blends them.
+
+It prints a verdict against the population the change reached, and separately
+proves that every untouched bucket came out identical. It also pairs each
+comparison with itself before and after, because a summary median cannot tell
+"helped everything a little" from "helped most and hurt some" — and if a
+quantile ever moves the wrong way, that pairing is what says how many
+comparisons actually got worse instead of leaving it to be waved away.
+
 ## Endpoints
 
 - `POST /sessions` — start a tracking session, returns `{ id, started_at }`

@@ -75,19 +75,22 @@ the same path as a ride coming off the phone.
 
 ## Current state
 
-*(as of 2026-09-06)*
+*(as of 2026-09-13)*
 
 - **Network**: 66,684 segments over 38.71–38.97 N, −104.90 to −104.75 W —
   central Colorado Springs plus the northwest suburbs and Ute Valley Park.
   47,015 canonical; 17,020 pavements and unnamed sidepaths folded into parent
   roads. Every road stays canonical. **2,643 more are tagged
   `is_sidewalk` and were never folded** — see the Stage 1 section.
-- **Model**: **3,503 buckets across 491 segments**, 0 implausible, 628 coverage
-  rows. Lines are clipped to what was ridden.
-- **Rides**: 35 sessions, 13,279 samples. **Sessions 5 and 6 are permanently
-  corrupt** — `rebuildModel.ts` excludes them by elevation scale. Session 45 is
-  excluded for being spikes rather than a ride (20.7% of its steps impossible);
-  46 and 50 were restored when the roughness test was replaced.
+- **Model**: **4,736 buckets across 611 segments**, 806 coverage rows. Lines are
+  clipped to what was ridden. These carry the single-number anchor, and should
+  keep carrying it: the sliding anchor was rejected in review and is not
+  deployed. Do not run a rebuild expecting it.
+- **Rides**: 38 sessions, 17,183 samples; 34 of them usable. **Sessions 5 and 6
+  are permanently corrupt** — `rebuildModel.ts` excludes them by elevation
+  scale. Session 45 is excluded for being spikes rather than a ride (20.7% of
+  its steps impossible); 46 and 50 were restored when the roughness test was
+  replaced.
 - Every saved ride is merged by `/end` as it is saved, so the model is current
   without a rebuild. A rebuild is only needed when the *algorithm* changes; the
   last one was 2026-09-06 for Stage 1 connectivity.
@@ -725,6 +728,179 @@ claimed these fixes, before vs after), `tmp-chain.mjs` (is a street's own chain
 connected). All restrict to the sessions `rebuildModel` uses — measuring over
 every session counts rides the model throws away.
 
+## The sliding anchor: built, measured, and REJECTED in review — do not ship it
+
+**Status 2026-09-13: on branch `jzavala5114/fix-elevation-drift-b7815212`, not
+merged, not deployed, no rebuild run.** It passes 31 gate tests and its eval
+exits 0, and it is still wrong. An adversarial review found defects that the
+tests and the eval were both structurally unable to see. Read this section
+before touching the branch; the numbers below are real but they do not mean what
+they look like.
+
+### The three that block it
+
+**1. The ramp is applied across time nobody observed.** `fitDriftRate` sets the
+window to `min(earlyAtMs)`..`max(lateAtMs)` — the *union* of the pairs, which
+need not overlap or tile. Three 31-minute observations at 0, 100 and 209 minutes
+produce a four-hour ramp. The rate is scale-free, so the per-pair leak is
+multiplied by `window / gap`: rises of 1.6m each (the file's own quoted "median
+disagreement 1.57m") yield a **12.39m** correction spanning −6.17 to +6.22m. The
+code comment claiming the ramp is "linear only between the first and last moment
+the drift was actually observed" is false for disjoint observations. Related: the
+median of per-pair *rates* gives a 31-minute pair and a 4-hour pair equal weight,
+so a pair that directly measured the applied window can be outvoted by short
+ones — constructed case asserts a 15.5m slide over a span its own evidence says
+moved 1.0m.
+
+**2. The quorum of three is not three independent comparisons.** `collectRevisits`
+emits every *pair* of readings in a cell, so N passes over one 15m cell yield
+N(N−1)/2 pairs from only N−1 independent increments. Three passes over a single
+bucket on a single street clear a quorum meant to need three independent
+observations — the exact failure the code's own comment says it prevents, moved
+up one level from buckets to passes. The sign gate is defeated at the boundary
+too: rises of +2, +1, −1 give agreement of exactly 2/3, and `2/3 < 2/3` is false,
+so it is accepted. **`sessionProcessor.test.ts` asserts this as correct
+behaviour**, which is how it survived.
+
+**3. The EMA lag is a same-signed bias that clears the floor on exactly the rides
+this fires on — and the archive is worse than the code assumed.** The lag is
+~2.3 samples; the question is whether it varies with speed. Measured across
+17,092 steps: fixes arrive on a near-fixed **~2s time interval** (2.04s slow,
+1.85s fast), so spacing tracks speed — **median 4.77m under 3 m/s against 11.83m
+at 6 m/s and over**, and the same on both treated rides (73: 4.62/11.69,
+74: 5.14/14.33). So a fast pass and a slow pass over the same ground differ by
+~16m of lag, worth **~0.96m on a 6% grade and ~1.9m on 12%** — at or above
+`MIN_MEANINGFUL_RISE_M`. `MIN_SIGN_AGREEMENT` is no defence because the bias is
+same-signed by construction. And the rides that produce three same-direction
+revisits 30+ minutes apart are hill repeats and loop laps: steep, with the rider
+slowing as they tire. **The leak is maximally correlated with the population the
+feature reaches.** A constructed ride with *zero* real drift, three steep streets
+ridden twice with the rider slower the second time, yields a 6.30m ramp.
+
+Note this also contradicts "Decisions made": the speed-derived GPS interval is
+documented as holding fixes ~11m apart, and it does not — median spacing is
+6.35m and it varies 2.5× with speed.
+
+### The evidence was not evidence
+
+**The headline safety proof is a tautology.** "6,346 of 6,346 untouched buckets
+bit-for-bit identical" compares `fitAnchor(allowRamp:false)` against
+`fitAnchor(allowRamp:true)` *after the latter fell back* — the same `flat()` in
+the same function. It proves `flat() === flat()`, not agreement with the deleted
+`fitDemOffset`. Its float comparison also scores a *missing* after-observation as
+identical, since `Math.abs(x - NaN) > 1e-9` is false.
+
+**The held-out split does not hold out what is fitted.** It splits by bucket key,
+but the rate is learned from *pairs of passes*: the held-out cell and the fitting
+cell are the same two barometer readings minutes apart. It removes cell noise,
+not pass-level signal. `selfDisagreements` then scores the widest pair — the one
+most likely to be ≥30 minutes and therefore in the fit. The "out of sample"
+claim does not hold.
+
+**Neither measure looks at the terrain model.** Both are self-agreement, so a
+ride tilted 12m at its ends by defect 1 moves *away* from the DEM while its
+self-consistency improves, and the eval cannot see it. The level is fitted to the
+DEM and the DEM never grades the result.
+
+Two tests also assert less than they claim: *"a real hill cannot be absorbed"*
+never calls `collectRevisits` and passes against an implementation that pairs
+opposite directions or different segments, and *"every rejection path returns
+exactly the old single number"* compares the new code with itself.
+
+### What is worth keeping regardless
+
+`usableSessions.ts` (so anything measuring the model agrees with the model about
+which rides count), the `npm test` gate lane, `.githooks/pre-commit`, and the
+eval's paired before/after breakdown. Those stand on their own.
+
+### The fork that needs deciding
+
+Defect 3 is not a threshold to retune. Either the lag comes out of the signal —
+a non-causal forward/backward smoothing pass, which changes every number in the
+model and is its own task — or a revisit must require both passes at a similar
+speed, which shrinks a population that is already two rides and may reach zero.
+The measurements below were taken before any of this was known; they are kept
+because they are real, not because they justify shipping.
+
+## What the branch measured, before the review
+
+
+
+Built 2026-09-13. The ride's correction used to be one number for the whole
+ride; it is now a level plus a slope. The level still comes from the DEM. **The
+slope deliberately does not** — see the struck-through open item above for the
+measurement that killed that idea. It comes from *revisits*: places one ride
+covered twice, where the ground and the DEM's error at that spot both cancel and
+most of what is left is the instrument sliding.
+
+`anchorFit.ts` holds the fit, `collectRevisits` in `sessionProcessor.ts` finds
+the pairs, `evalAnchorDrift.ts` measures it, and 31 gate tests cover it in
+0.5 s with no database.
+
+**Measured over the 34 usable sessions:**
+
+| | before | after |
+|---|---|---|
+| treated / self-consistency, median | 1.22 m | **0.89 m** |
+| treated / self-consistency, p90 | 8.12 m | **4.78 m** |
+| treated / cross-ride, median | 2.95 m | **2.63 m** |
+| treated / cross-ride, p90 | 7.23 m | **5.18 m** |
+| whole archive / cross-ride, median | 1.86 m | 1.87 m |
+
+Self-consistency is scored **out of sample**: half of each ride's revisited
+buckets are withheld from its own drift fit, because fitting on revisits and
+then scoring on the same revisits is arithmetic, not evidence.
+
+**Three things in that table need saying rather than glossing.**
+
+**It reaches two rides out of 34.** Sessions 73 and 74, at −4.94 and −1.59 m/h.
+The other 32 keep the single number and 0 are unanchored. That is not timid
+guards, it is how seldom a ride measures its own drift — a revisit must be the
+same segment, same direction and same 15 m cell at least half an hour apart.
+`rebuildModel.ts` now prints the ramp/constant split for exactly this reason: a
+run where nothing ramps is how this change would silently become a no-op.
+
+The eval fits on half of each ride's revisits and scores on the other half, so
+the rides it ramps are a *floor* on the rides production ramps, not the same
+set — and the identical-bucket proof below would then cover less than it looks
+like it does. So the eval reports both: fitting on every revisit the way
+production does gives the same two rides, 73 and 74. Measured, not assumed.
+
+**The whole-archive cross-ride median moved the wrong way, by 0.01 m, and that
+is not noise.** If every changed comparison had weakly improved, no quantile
+could rise — the sorted array would sit pointwise below the old one. A quantile
+that rises is proof that individual comparisons got *worse*. So the eval now
+pairs every comparison with itself before and after instead of leaving that to
+be waved at: **cross-ride 201 improved / 153 worsened, median change −0.22 m,
+worst regression +1.69 m; self-consistency 57 improved / 48 worsened, median
+change −0.42 m, worst regression +3.68 m.** It helps most comparisons and hurts
+some. The median of the *moved* comparisons sitting at −0.42 m rather than near
+zero is what distinguishes real signal from added noise that happened to average
+out favourably; a summary median alone could not have told those apart. Do not
+let this metric acquire an unexplained floor the way the Stage 1 one did.
+
+**Session 54 — the ride this was justified by — is not one of the two.** Its
+7.36 m disagreement over 51 minutes is the number in `anchorFit.ts`'s opening
+comment, and the shipped mechanism cannot see it: session 54's long revisits are
+out-and-backs, 3 opposite-direction returns at up to 72 minutes against 1
+same-direction. That is now written into the code comment rather than left to be
+discovered, and the open item above says what it would take to reach them.
+
+**Blast radius, proved rather than argued.** Every rejection path in `fitAnchor`
+returns exactly the old single number, and the eval checks it: **6,346 of 6,346
+buckets on untreated rides came out bit-for-bit identical.** That is what makes
+"rides the change touched" an honest scope rather than a convenient subset.
+
+Verification: typecheck clean, 31/31 gate tests in 0.53 s, eval exit 0. The
+guards were mutation-tested — removing the ramp clamp, dropping the quorum from
+3 pairs to 1, and zeroing the meaningfulness floor each failed exactly the tests
+written for them, and nothing else.
+
+New: `npm test` (gate tests) and `npm run eval:anchor`, both documented in
+`backend/README.md`, plus `.githooks/pre-commit` running typecheck and gate
+tests on any commit touching `backend/`. It is opt-in per clone:
+`git config core.hooksPath .githooks`.
+
 ## Open items
 
 - **Two directions on one path** (deferred). Roads get two ±4 m offset lines,
@@ -789,10 +965,31 @@ every session counts rides the model throws away.
   *coast* through a screen-off stretch, recording a near-flat climb — a
   different wrong answer. Treating a GPS fix like a bracketing fix (position
   counts, height ignored) reuses an existing precedent and is more honest.
-- **Within-ride barometric drift.** Anchoring fits one offset per session, which
-  leaves the 3.52 m of drift across a ride untouched. A linear drift term fit
-  against the DEM would take most of it, at the risk of absorbing real terrain
-  on a ride that is genuinely uphill throughout.
+- **Within-ride barometric drift.** Still open. An attempt sits on
+  `jzavala5114/fix-elevation-drift-b7815212`, rejected in review — see the
+  section below before restarting, because the obvious approaches are the ones
+  already tried. This bullet's own suggestion, fitting the drift term against
+  the DEM, was built and measured and is dead: it made each ride more consistent with
+  itself and *less* consistent with other rides (cross-ride median 1.86 m →
+  1.93 m), because within one ride where you are is correlated with when you
+  are, so the line absorbs the DEM's own place-dependent error and tilts the
+  ride to match it. Two rides crossing the same ground in opposite order then
+  get opposite tilts. The slope comes from revisits instead. See the sliding
+  anchor section below.
+- **Use the out-and-back revisits too.** The named next lever for the sliding
+  anchor, and it is not a matter of flipping an index. 21 of the archive's 51
+  long revisits are declined because the two passes ran in opposite directions,
+  against 30 kept — and one of the 21 is session 54, the ride the whole change
+  was justified by. Realigning the bucket grid (forward `d` against backward
+  `lengthM - d`) is the easy half. The hard half is that `smoothElevations` is a
+  causal EMA whose lag points backwards along the *direction of travel*, so an
+  out-and-back pair is displaced in opposite directions along the ground: the
+  error is `2 × lag × grade`, about 1.2 m on a 6% street, it does not cancel
+  even at identical speeds, and it is signed by gradient rather than random. It
+  would read as drift on exactly the hilly rides this is meant to help. Using
+  these pairs means removing the lag first — a non-causal (forward-backward)
+  smoothing pass would do it, and would change every existing number in the
+  model, so it is its own task.
 - **A *named* path running beside a road still draws its own line.** That is
   deliberate — it is what keeps Shooks Run and the Greenway intact — but it
   means a named sidepath would double up on its street. None do so far.
