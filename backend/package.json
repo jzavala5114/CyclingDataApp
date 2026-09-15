@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test src/**/*.test.ts",
     "eval:anchor": "tsx src/scripts/evalAnchorDrift.ts",
+    "eval:smoothing": "tsx src/scripts/evalSmoothingLag.ts",
     "rebuild-model": "tsx src/scripts/rebuildModel.ts",
     "prune-sessions": "tsx src/scripts/pruneEmptySessions.ts"
   },
