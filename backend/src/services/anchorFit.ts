@@ -220,6 +220,13 @@ export const MAX_PLAUSIBLE_OFFSET_M = 60;
 // archive was 8.7m/h.
 const MAX_DRIFT_RATE_M_PER_H = 30;
 
+// And a ceiling on the total, because a legal rate over a long window is not a
+// legal correction. See the check itself in fitDriftRate: a rate of 18 m/h held
+// across five and a half hours is inside every other bound here and asks to tilt
+// a ride 96m. The worst drift the archive has ever measured is 8.7 m/h over
+// rides of about an hour, so this is half as much again as anything real.
+const MAX_TOTAL_DRIFT_M = 15;
+
 const MS_PER_HOUR = 3_600_000;
 
 const finite = (n: number) => Number.isFinite(n);
@@ -300,14 +307,142 @@ export function largestCoveredBlock(
   return best;
 }
 
+// How much two intervals must overlap, as a fraction of their union, before
+// they are treated as the same observation seen twice rather than two.
+const SAME_OBSERVATION_OVERLAP = 0.5;
+
+// How close two moments must be, relative to the interval they bound, to count
+// as the same moment when looking for a chain a -> b -> c.
+const SAME_MOMENT_FRACTION = 0.1;
+
+// **One physical comparison, one vote.**
+//
+// A Revisit is a row, and rows are not comparisons. Two sources of inflation,
+// both of which survived the earlier fixes and both of which put a single
+// observation into the quorum several times over:
+//
+//   - One street is many segment rows, because a segments row is an OSM way cut
+//     at every junction. Riding one trail end to end twice produces a row per
+//     piece, all with the same two moments and the same rise. `siteKey` made
+//     them one SITE but left them ten VOTES, so they still set the median rate,
+//     still carried the sign agreement, and still filled the quorum. Session 76
+//     is this shape exactly: fifteen rows, one comparison.
+//   - Adjacent-pass pairing is per cell, so passes that cover overlapping but
+//     unequal stretches of a street still emit a derivable pair. Passes at t1,
+//     t2, t3 where one cell holds t1,t2 and another holds t2,t3 and a third
+//     holds t1,t3 produce all three, and the third is the sum of the first two.
+//
+// So: group by place, collapse rows that observed the same stretch of time into
+// one, then drop any remaining pair that is arithmetically the sum of two
+// others. What is left is one vote per thing actually observed.
+function collapseToObservations(usable: Revisit[]): Revisit[] {
+  const spanOf = (r: Revisit) => r.lateAtMs - r.earlyAtMs;
+
+  // Same place, heavily overlapping in time -> one observation. Overlap is
+  // measured against the union rather than either interval, so a short pair
+  // sitting inside a long one is not swallowed by it: those are genuinely
+  // different observations and the long one has to face the contradiction check.
+  const bySite = new Map<string, Revisit[]>();
+  for (const r of usable) {
+    const list = bySite.get(r.siteKey);
+    if (list) list.push(r);
+    else bySite.set(r.siteKey, [r]);
+  }
+
+  const collapsed: Revisit[] = [];
+  for (const [, rows] of bySite) {
+    const clusters: Revisit[][] = [];
+    for (const r of [...rows].sort((a, b) => a.earlyAtMs - b.earlyAtMs)) {
+      const home = clusters.find((c) =>
+        c.some((other) => {
+          const overlap =
+            Math.min(r.lateAtMs, other.lateAtMs) - Math.max(r.earlyAtMs, other.earlyAtMs);
+          const union =
+            Math.max(r.lateAtMs, other.lateAtMs) - Math.min(r.earlyAtMs, other.earlyAtMs);
+          return union > 0 && overlap / union >= SAME_OBSERVATION_OVERLAP;
+        }),
+      );
+      if (home) home.push(r);
+      else clusters.push([r]);
+    }
+    for (const cluster of clusters) {
+      // Medians throughout, so one bad row in a cluster cannot speak for it.
+      collapsed.push({
+        earlyAtMs: median(cluster.map((r) => r.earlyAtMs)),
+        lateAtMs: median(cluster.map((r) => r.lateAtMs)),
+        riseM: median(cluster.map((r) => r.riseM)),
+        buckets: cluster.reduce((n, r) => n + r.buckets, 0),
+        segmentId: cluster[0].segmentId,
+        siteKey: cluster[0].siteKey,
+      });
+    }
+  }
+
+  // Now drop what is derivable. A pair a->c carries nothing new when a->b and
+  // b->c are both present, wherever they were measured: it is their sum, and
+  // counting it lets two increments vote three times. Moments are matched with a
+  // tolerance because two passes over one junction are seconds apart, not equal.
+  const isDerivable = (p: Revisit) =>
+    collapsed.some((a) => {
+      if (a === p) return false;
+      const tol = spanOf(p) * SAME_MOMENT_FRACTION;
+      if (Math.abs(a.earlyAtMs - p.earlyAtMs) > tol) return false;
+      if (a.lateAtMs >= p.lateAtMs - tol) return false; // must end strictly inside
+      return collapsed.some(
+        (b) =>
+          b !== p &&
+          b !== a &&
+          Math.abs(b.earlyAtMs - a.lateAtMs) <= tol &&
+          Math.abs(b.lateAtMs - p.lateAtMs) <= tol,
+      );
+    });
+
+  return collapsed.filter((p) => !isDerivable(p));
+}
+
+// The net movement the observations themselves report across the whole block,
+// by walking a chain of them from one end to the other.
+//
+// This is what the ramp has to be checked against, and checking a single
+// observation instead was not enough. On a tiled chain the window is many times
+// longer than any one observation, so `rate x longestGap` never sees the total:
+// four abutting forty-minute observations rising +3, +3, +3, -3 report a net +6m
+// over 160 minutes, and a median of the per-pair RATES gives 4.5 m/h -- a 12m
+// ramp, with the single-observation check reporting a contradiction of zero. A
+// pressure ridge is the most ordinary weather there is.
+//
+// Returns null when no chain spans the block, in which case the caller falls
+// back to the longest single observation.
+function netObservedRiseM(block: { fromMs: number; toMs: number; members: Revisit[] }): number | null {
+  const tol = (block.toMs - block.fromMs) * SAME_MOMENT_FRACTION;
+  let atMs = block.fromMs;
+  let total = 0;
+  const used = new Set<Revisit>();
+
+  while (atMs < block.toMs - tol) {
+    // Greedy: from where the chain has reached, take the observation starting
+    // there that reaches furthest. Greedy by reach is what tiles an interval in
+    // the fewest steps, and every step is a real observation.
+    const next = block.members
+      .filter((r) => !used.has(r) && Math.abs(r.earlyAtMs - atMs) <= tol && r.lateAtMs > atMs + tol)
+      .sort((a, b) => b.lateAtMs - a.lateAtMs)[0];
+    if (!next) return null;
+    used.add(next);
+    total += next.riseM;
+    atMs = next.lateAtMs;
+  }
+  return used.size > 0 ? total : null;
+}
+
 // Metres per hour, or null when the ride did not measure its own drift clearly
 // enough to say. Exported so the estimator can be tested on its own.
 export function fitDriftRate(revisits: Revisit[]): DriftEstimate | null {
-  const usable = revisits.filter(
+  const longEnough = revisits.filter(
     (r) =>
       finite(r.earlyAtMs) && finite(r.lateAtMs) && finite(r.riseM) &&
       r.lateAtMs - r.earlyAtMs >= MIN_REVISIT_GAP_S * 1000,
   );
+  const usable = collapseToObservations(longEnough);
   if (usable.length < MIN_REVISIT_PAIRS) return null;
 
   // Everything from here on is judged on the observations inside one gap-free
@@ -348,35 +483,55 @@ export function fitDriftRate(revisits: Revisit[]): DriftEstimate | null {
   // anyway, and the fraction keeps the test from tightening without limit on
   // rides that really did move a long way.
   //
-  // This replaces a cap on the ratio of window length to shortest observation.
-  // That cap punished the best evidence there is: four abutting forty-minute
-  // observations tile a hundred and sixty minutes with no unwatched instant, and
-  // it refused them while accepting three of the same. Adding evidence took the
-  // feature away. A tiled chain contradicts nothing and passes here at any
-  // length, while a short pair setting the slope for a long window is refused
-  // for the reason it should be -- not because of when it was measured, but
-  // because the ride's own best observation says otherwise.
-  // The longest observations, plural, and the median of what they saw.
+  // **Measured over the whole window when the observations tile it**, and over
+  // the longest single observation only when they do not. The first version
+  // checked one observation always, which is silently empty on exactly the input
+  // this design steers towards: a tiled chain, where the window is far longer
+  // than any of its links and `rate x longestGap` never sees the total.
   //
-  // Taking the single longest makes the gate depend on input order whenever two
-  // pairs tie, which on real rides is common -- a loop ridden twice produces a
-  // row of pairs with near-identical gaps. Worse, it let one outlier among the
-  // ties decide: six pairs of equal length, four agreeing and two not, were
-  // refused or accepted purely on which one `reduce` happened to reach first.
-  //
-  // So the veto is held by everything within LONGEST_OBSERVATION_TOLERANCE of
-  // the longest gap, and it speaks with their median rise -- the same robust
-  // statistic used for the rate, for the same reason.
-  const gapOf = (r: Revisit) => r.lateAtMs - r.earlyAtMs;
-  const longestGapMs = Math.max(...members.map(gapOf));
-  const longest = members.filter(
-    (r) => gapOf(r) >= longestGapMs * LONGEST_OBSERVATION_TOLERANCE,
-  );
-  const observedRiseM = median(longest.map((r) => r.riseM));
-  const predictedRiseM = (rateMPerH * longestGapMs) / MS_PER_HOUR;
+  // The ties matter too. Taking the single longest made the gate depend on input
+  // order whenever two pairs matched, which on real rides is the common case --
+  // a loop ridden twice gives a row of pairs with near-identical gaps -- and let
+  // one outlier among them decide. Where there is no chain, everything within
+  // LONGEST_OBSERVATION_TOLERANCE of the longest holds the veto jointly and
+  // speaks with its median.
+  const windowMs = block.toMs - block.fromMs;
+  const chainRiseM = netObservedRiseM(block);
+
+  let observedRiseM: number;
+  let predictedRiseM: number;
+  if (chainRiseM != null) {
+    observedRiseM = chainRiseM;
+    predictedRiseM = (rateMPerH * windowMs) / MS_PER_HOUR;
+  } else {
+    const gapOf = (r: Revisit) => r.lateAtMs - r.earlyAtMs;
+    const longestGapMs = Math.max(...members.map(gapOf));
+    const longest = members.filter((r) => gapOf(r) >= longestGapMs * LONGEST_OBSERVATION_TOLERANCE);
+    observedRiseM = median(longest.map((r) => r.riseM));
+    // Predicted over the same stretch the observation covers, not over the
+    // longest gap in the group -- the two differ by up to the tolerance, which
+    // put a spurious half metre into a number the eval prints as evidence.
+    predictedRiseM = (rateMPerH * median(longest.map(gapOf))) / MS_PER_HOUR;
+  }
+
   const contradictionM = Math.abs(predictedRiseM - observedRiseM);
-  const allowedM = MIN_MEANINGFUL_RISE_M + Math.abs(observedRiseM) * MAX_CONTRADICTION_FRACTION;
+  // The allowance is anchored to what the RAMP claims, not to what the vetoing
+  // observations say. Deriving it from the observed rise let an outlier inside
+  // the tolerance band widen the gate it was supposed to be judged by.
+  const allowedM = MIN_MEANINGFUL_RISE_M + Math.abs(predictedRiseM) * MAX_CONTRADICTION_FRACTION;
   if (!finite(contradictionM) || contradictionM > allowedM) return null;
+
+  // A ceiling on the whole correction, not just on its rate.
+  //
+  // MAX_DRIFT_RATE_M_PER_H bounds m/h and MAX_PLAUSIBLE_OFFSET_M bounds where
+  // the ends land, and between them they still allow an absurd SPAN: eight
+  // abutting forty-minute observations at 12m each tile five and a half hours at
+  // a legal 18 m/h and ask to tilt the ride 96m, ends at -43m and +53m, both
+  // inside the offset bound and contradicting nothing. The worst drift ever
+  // measured in this archive is 8.7 m/h over rides of about an hour, so 15m is
+  // already half as much again as anything real has produced.
+  const totalDriftM = Math.abs((rateMPerH * windowMs) / MS_PER_HOUR);
+  if (totalDriftM > MAX_TOTAL_DRIFT_M) return null;
 
   // Is the movement bigger than the leaks? Judged on the rises themselves, not
   // on the rate, because a small rise over a short gap implies a large rate.
