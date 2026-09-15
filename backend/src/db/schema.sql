@@ -100,9 +100,16 @@ create index session_segment_matches_segment_idx on session_segment_matches (seg
 -- change in altitude well and absolute altitude not at all, so each ride is
 -- anchored to the GPS altitude of its own first fix -- one reading carrying
 -- 10-20m of error, which differed by 3.3m across sessions 11-14 and put an
--- invented step in the road wherever two rides met. Fitting one offset per
+-- invented step in the road wherever two rides met. Fitting an offset per
 -- session against these values removes that without touching the shape of
 -- the profile.
+--
+-- These set a ride's LEVEL only. They do not set its slope over time, even
+-- though the barometer does slide during a ride: within one ride, where you
+-- are is correlated with when you are, so a line fitted against these absorbs
+-- the terrain model's own place-dependent error and tilts the ride. Measured,
+-- that made rides agree with each other worse. The slope comes from places a
+-- ride visited twice instead, where the ground cancels. See anchorFit.ts.
 --
 -- Cached permanently: terrain does not move, and the source is a rate-limited
 -- public API. Direction is part of the key only so lookups line up exactly

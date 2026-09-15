@@ -10,21 +10,12 @@ import {
 } from "./elevationAggregator.js";
 import { rejectElevationSpikes, smoothElevations } from "./elevationSmoothing.js";
 import { demKey, ensureDemElevations, type DemPosition } from "./demElevation.js";
-import type { Direction, Segment, SessionSample } from "../types/index.js";
+import { fitAnchor, MIN_POINTS_FOR_ANCHOR, type AnchorPoint, type Revisit } from "./anchorFit.js";
+import type { Direction, ElevationSource, Segment, SessionSample } from "../types/index.js";
 
 // Candidate segments come from a box around the session's own samples. Fine
 // for a prototype where a session is one short ride.
 const BBOX_PAD_DEG = 0.005; // ~500m
-
-// Below this many overlapping points the offset is being fit to noise, so the
-// ride is merged on its own GPS baseline instead -- no worse than before the
-// DEM existed, and better than shifting a whole ride by a bad number.
-const MIN_DEM_POINTS_FOR_ANCHOR = 10;
-
-// A barometer that has drifted, or a GPS baseline taken on a bad first fix,
-// lands tens of metres out. Anything past this is not drift, it is a broken
-// ride, and silently shifting it onto the DEM would hide the fault.
-const MAX_PLAUSIBLE_ANCHOR_OFFSET_M = 60;
 
 // One run the traversal gate rejected, with the measurements behind the
 // decision. A rejection has two very different causes that a bare count cannot
@@ -59,8 +50,16 @@ export interface ProcessResult {
   matchedRuns: number;
   discardedRuns: number;
   // Metres subtracted from this ride to line it up with the terrain model,
-  // or null if it was merged unanchored.
+  // taken at the middle of the measured window, or null if it merged
+  // unanchored.
   demOffsetM: number | null;
+  // How much that correction changed across the stretch of the ride the drift
+  // was measured over -- not the whole ride, since the ramp is held flat
+  // outside that window. Zero when the fit fell back to a single number. This
+  // is the ride disagreeing with itself over time, measured from places it
+  // covered twice, so it owes nothing to the terrain model.
+  demDriftM: number | null;
+  demAnchorShape: "ramp" | "constant" | null;
   demPoints: number;
   // Fixes dropped for claiming a physically impossible height. Reported so a
   // ride that is mostly spikes is visible rather than silently thinned.
@@ -78,37 +77,189 @@ interface QualifyingRun {
   coveredToM: number;
   firstSampleId: number;
   lastSampleId: number;
+  // When this traversal happened, so the anchor can vary through the ride.
+  // The midpoint of the run, not per bucket: a run is one pass over one
+  // segment, ten to thirty seconds, and the weather does not move in that.
+  atMs: number;
+  // Which instrument measured this pass. See `runElevationSource`.
+  elevationSource: RunElevationSource;
 }
 
-function median(values: number[]): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+// A run's instrument: one source for the whole traversal, or "mixed" when the
+// phone changed sensor part way through it.
+//
+// `null` is its own value rather than an absence, and it matches itself: rides
+// recorded before session_samples.elevation_source existed are all null, and two
+// passes from one such ride did come from the same instrument even though the
+// row cannot say which. Treating null as unknowable would bar every pre-column
+// ride from the drift fit forever, for a difference that does not exist within
+// any one of them.
+type RunElevationSource = ElevationSource | "mixed" | null;
+
+function runElevationSource(samples: SessionSample[]): RunElevationSource {
+  if (samples.length === 0) return "mixed";
+  const first = samples[0].elevationSource ?? null;
+  for (const sample of samples) {
+    if ((sample.elevationSource ?? null) !== first) return "mixed";
+  }
+  return first;
 }
 
-// One scalar for the whole ride, not one per segment: the error being removed
-// is a constant baseline error, and fitting per segment would absorb the real
-// terrain along with it. The median rather than the mean so a bridge, a
-// tunnel or a handful of bad fixes can't drag the whole ride.
-function fitDemOffset(runs: QualifyingRun[], dem: Map<string, number>): number | null {
-  const residuals: number[] = [];
+// Not one scalar per segment: fitting that finely would absorb the real terrain
+// along with the error. These set the ride's overall level only -- the slope
+// comes from the revisits below, for reasons set out in anchorFit.ts.
+function collectAnchorPoints(runs: QualifyingRun[], dem: Map<string, number>): AnchorPoint[] {
+  const points: AnchorPoint[] = [];
   for (const run of runs) {
     for (const bucket of run.buckets) {
       const reference = dem.get(
         demKey({ segmentId: run.segment.id, direction: run.direction, distanceM: bucket.distanceM }),
       );
       if (reference == null) continue;
-      residuals.push(bucket.elevationM - reference);
+      points.push({ atMs: run.atMs, residualM: bucket.elevationM - reference });
+    }
+  }
+  return points;
+}
+
+// Every pair of passes over ground this ride covered twice, and how much its
+// reading moved between them. Same segment, same direction, same 15m cell, so
+// the hill and the terrain model's error at that spot both cancel and most of
+// what is left is the barometer sliding. See anchorFit.ts for how much "most"
+// is: this cancels the ground to within where in the cell each pass sampled and
+// the smoothing's speed-dependent lag, not exactly.
+//
+// **One comparison per pair of passes, not per bucket.** A single out-and-back
+// over one block touches four or five buckets, but they all share the same two
+// moments and the same disagreement. Emitting one revisit per bucket let that
+// single comparison satisfy a quorum meant to need three independent ones, and
+// made a median of four copies of one number look like a robust estimate.
+//
+// **Directions are kept apart, and the second reason is why that is not just
+// an indexing detail somebody should tidy up later.** The first reason is
+// indexing: a bucket's distance is measured along the direction of travel, so
+// forward 30m and backward 30m are opposite ends of the segment and not the
+// same ground at all. That much could be repaired by pairing forward `d`
+// against backward `lengthM - d`.
+//
+// The second cannot be repaired. smoothElevations is a causal EMA, so the
+// height it reports for a spot is really the height a little way BACK along the
+// direction of travel. Two passes the same way round share that displacement,
+// so it cancels except for the difference in their speeds -- the ~0.5m leak
+// anchorFit.ts bounds, and it vanishes entirely when both passes ride at the
+// same speed. Two passes in opposite directions are displaced in OPPOSITE
+// directions along the ground, so the term is 2 x lag x grade and it never
+// cancels: around 1.2m on a 6% street even at identical speeds. That is larger
+// than the floor the drift has to clear to be believed at all, and it is signed
+// by gradient rather than random, so it would not average away across pairs.
+// It would read as drift, on exactly the hilly rides this is meant to help.
+//
+// The cost of that is real and measured: 21 long revisits across the archive
+// are declined for direction against 30 kept. Using them needs the lag removed
+// first, not just the index flipped.
+// **And the same instrument, for the same reason as the same direction.**
+//
+// The rule above says two passes cancel the ground only if they are displaced
+// along it identically. Two passes cancel the *instrument* only if there is one
+// instrument. expo-sensors stops delivering barometer readings when the screen
+// locks, so a ride falls back to GPS altitude mid-way and back again -- the
+// phone records which per sample, and `elevation_source` exists precisely
+// because that swap was otherwise invisible.
+//
+// Comparing a GPS-altitude pass against a barometric one measures the offset
+// between two sensors, not the movement of one. That offset is not a constant
+// either: GPS vertical error moves with satellite geometry and terrain, so it
+// varies along the route, and the comparison reads as a drift that grows with
+// distance rather than with time.
+//
+// Measured, on session 76: two laps of Culebras Trail, lap one inside a GPS
+// stretch and lap two on the barometer, producing rises from -3.49m at the head
+// of the trail to -17.96m at its end while every gap was 31 to 32 minutes. A
+// barometer sliding with the weather gives the SAME rise for every pair with the
+// same gap; a rise that tracks position instead is the tell. The fit called that
+// -25.46 m/h and asked to tilt the ride 20m. Every guard passed it: the pairs
+// agreed on sign, cleared the meaningfulness floor, covered 15 distinct sites
+// and sat inside the rate cap.
+//
+// The cost is the honest kind: rides that switch source lose the revisits that
+// straddle the switch, not the ones on either side of it.
+export function collectRevisits(
+  runs: Array<{
+    segmentId: number;
+    direction: Direction;
+    atMs: number;
+    buckets: BucketSample[];
+    elevationSource?: RunElevationSource;
+  }>,
+): Revisit[] {
+  const byBucket = new Map<string, Array<{ run: number; elevationM: number }>>();
+  runs.forEach((run, index) => {
+    // A run whose own samples disagree cannot be attributed to an instrument at
+    // all, so it is no use as either half of a comparison.
+    if (run.elevationSource === "mixed") return;
+    for (const bucket of run.buckets) {
+      // The source joins segment and direction in the key, so a pass can only
+      // ever be compared against one taken the same way, on the same ground,
+      // with the same sensor. Putting it in the key rather than testing it
+      // afterwards means a mismatched pair is never formed to begin with.
+      const key = `${run.segmentId}|${run.direction}|${bucket.distanceM}|${run.elevationSource ?? "unknown"}`;
+      const readings = byBucket.get(key);
+      const reading = { run: index, elevationM: bucket.elevationM };
+      if (readings) readings.push(reading);
+      else byBucket.set(key, [reading]);
+    }
+  });
+
+  // Every bucket two passes share contributes one rise to that pair of passes.
+  //
+  // **Adjacent passes only, not every pair.** N passes over one cell contain
+  // N-1 independent increments, but there are N(N-1)/2 ways to pair them up and
+  // the extra ones carry no new information: for passes at t1 < t2 < t3, the
+  // t1->t3 rise is exactly the t1->t2 rise plus the t2->t3 rise. Emitting all
+  // three let three passes over a single 15m cell clear a quorum written to
+  // need three independent observations -- two increments wearing three hats.
+  // That is the same defect the comment above says this function prevents, one
+  // level up: fixed there for buckets within a pair, missed here for passes
+  // within a cell. `three passes over one block` in sessionProcessor.test.ts
+  // asserted the broken behaviour as correct, which is how it survived review.
+  //
+  // Sorted by time rather than trusting `runs` order, because the caller builds
+  // runs per segment and nothing guarantees they arrive chronologically.
+  const risesByPair = new Map<string, number[]>();
+  for (const readings of byBucket.values()) {
+    if (readings.length < 2) continue;
+    const inTimeOrder = [...readings].sort((a, b) => runs[a.run].atMs - runs[b.run].atMs);
+    for (let i = 0; i + 1 < inTimeOrder.length; i++) {
+      const early = inTimeOrder[i];
+      const late = inTimeOrder[i + 1];
+      const key = `${early.run}|${late.run}`;
+      const rise = late.elevationM - early.elevationM;
+      const rises = risesByPair.get(key);
+      if (rises) rises.push(rise);
+      else risesByPair.set(key, [rise]);
     }
   }
 
-  if (residuals.length < MIN_DEM_POINTS_FOR_ANCHOR) return null;
-  const offset = median(residuals);
-  if (Math.abs(offset) > MAX_PLAUSIBLE_ANCHOR_OFFSET_M) {
-    console.warn(`DEM offset ${offset.toFixed(1)}m is implausible, merging unanchored`);
-    return null;
+  const revisits: Revisit[] = [];
+  for (const [key, rises] of risesByPair) {
+    const [earlyIndex, lateIndex] = key.split("|").map(Number);
+    // The median across the buckets the two passes share, so one bad cell in a
+    // long shared stretch cannot set the comparison.
+    const sorted = [...rises].sort((x, y) => x - y);
+    const mid = Math.floor(sorted.length / 2);
+    revisits.push({
+      earlyAtMs: runs[earlyIndex].atMs,
+      lateAtMs: runs[lateIndex].atMs,
+      riseM: sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid],
+      buckets: rises.length,
+      // Where the comparison was made. Both runs in a pair necessarily share a
+      // segment and direction -- the cell key they were grouped under contains
+      // both -- so either run names the site. fitDriftRate uses it to insist the
+      // quorum comes from more than one street.
+      segmentId: runs[earlyIndex].segmentId,
+    });
   }
-  return offset;
+  return revisits;
 }
 
 // Map-matches a session's samples against nearby segments and folds the
@@ -135,7 +286,10 @@ export async function processSession(
   );
 
   if (sampleRows.length === 0) {
-    return { matchedRuns: 0, discardedRuns: 0, demOffsetM: null, demPoints: 0, rejectedSpikes: 0, discards: [] };
+    return {
+      matchedRuns: 0, discardedRuns: 0, demOffsetM: null, demDriftM: null,
+      demAnchorShape: null, demPoints: 0, rejectedSpikes: 0, discards: [],
+    };
   }
 
   const lats = sampleRows.map((s) => s.lat);
@@ -225,6 +379,8 @@ export async function processSession(
       coveredToM: profile.coveredToM,
       firstSampleId: run.samples[0].id,
       lastSampleId: run.samples[run.samples.length - 1].id,
+      atMs: (startedMs + endedMs) / 2,
+      elevationSource: runElevationSource(run.samples),
     });
   }
 
@@ -258,17 +414,37 @@ export async function processSession(
     })),
   );
   const dem = await ensureDemElevations(client, positions);
-  const demOffsetM = fitDemOffset(qualifying, dem);
+  const anchor = fitAnchor(
+    collectAnchorPoints(qualifying, dem),
+    collectRevisits(qualifying.map((r) => ({
+      segmentId: r.segment.id, direction: r.direction, atMs: r.atMs, buckets: r.buckets,
+      elevationSource: r.elevationSource,
+    }))),
+  );
   const demPoints = positions.filter((p) => dem.has(demKey(p))).length;
+  if (anchor == null) {
+    // Distinguish the two causes, because they call for opposite responses: too
+    // little terrain is a coverage problem, an implausible offset is a broken
+    // ride. Carrying the number is what made the old warning actionable.
+    const covered = collectAnchorPoints(qualifying, dem);
+    console.warn(
+      covered.length < MIN_POINTS_FOR_ANCHOR
+        ? `only ${covered.length} DEM points, merging unanchored`
+        : `DEM offset is implausible over ${covered.length} points, merging unanchored`,
+    );
+  }
 
   for (const run of qualifying) {
+    // Evaluated at this run's own moment, so a ride that slid during the hour
+    // is put back on one level instead of being tilted around its average.
+    const correctionM = anchor?.offsetAt(run.atMs);
     await mergeBuckets(
       client,
       run.segment.id,
       run.direction,
-      demOffsetM == null
+      correctionM == null
         ? run.buckets
-        : run.buckets.map((b) => ({ ...b, elevationM: b.elevationM - demOffsetM })),
+        : run.buckets.map((b) => ({ ...b, elevationM: b.elevationM - correctionM })),
     );
     await mergeCoverage(client, run.segment.id, run.direction, run.coveredFromM, run.coveredToM);
     await client.query(
@@ -282,7 +458,9 @@ export async function processSession(
   return {
     matchedRuns: qualifying.length,
     discardedRuns: runs.length - qualifying.length,
-    demOffsetM,
+    demOffsetM: anchor?.midM ?? null,
+    demDriftM: anchor?.driftM ?? null,
+    demAnchorShape: anchor?.shape ?? null,
     demPoints,
     rejectedSpikes: rejectedSpikes.length,
     discards,

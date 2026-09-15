@@ -137,6 +137,7 @@ sessionsRouter.post("/:id/end", asyncRoute(async (req, res) => {
       matchedRuns: existing[0].matches,
       discardedRuns: 0,
       demOffsetM: null,
+      demDriftM: null,
       demPoints: 0,
       alreadyProcessed: true,
     });
@@ -151,6 +152,7 @@ sessionsRouter.post("/:id/end", asyncRoute(async (req, res) => {
       matchedRuns: 0,
       discardedRuns: 0,
       demOffsetM: null,
+      demDriftM: null,
       demPoints: 0,
       discarded: true,
     });
@@ -176,6 +178,7 @@ sessionsRouter.post("/:id/end", asyncRoute(async (req, res) => {
     matchedRuns: result.matchedRuns,
     discardedRuns: result.discardedRuns,
     demOffsetM: result.demOffsetM,
+    demDriftM: result.demDriftM,
     demPoints: result.demPoints,
   });
 }));

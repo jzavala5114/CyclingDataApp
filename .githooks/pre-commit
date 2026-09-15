@@ -1,0 +1,26 @@
+#!/bin/sh
+# Gate tests: deterministic, no database, no network, well under two seconds.
+#
+# Opt in once per clone, since git will not enable a versioned hooks directory
+# on its own:
+#
+#   git config core.hooksPath .githooks
+#
+# Only runs when the commit actually touches the backend, so a change to the
+# app or the pipeline is not held up by it.
+set -e
+
+if ! git diff --cached --name-only | grep -q '^backend/'; then
+  exit 0
+fi
+
+if [ ! -d backend/node_modules ]; then
+  echo "pre-commit: backend/node_modules missing, skipping gate tests"
+  exit 0
+fi
+
+echo "pre-commit: backend typecheck"
+(cd backend && npx tsc --noEmit)
+
+echo "pre-commit: backend gate tests"
+(cd backend && npx tsx --test "src/**/*.test.ts")
