@@ -84,8 +84,9 @@ the same path as a ride coming off the phone.
   `is_sidewalk` and were never folded** — see the Stage 1 section.
 - **Model**: **4,736 buckets across 611 segments**, 806 coverage rows. Lines are
   clipped to what was ridden. These carry the single-number anchor, and should
-  keep carrying it: the sliding anchor was rejected in review and is not
-  deployed. Do not run a rebuild expecting it.
+  keep carrying it: the sliding anchor's five review defects are fixed, but the
+  measurement says it does not earn its place, so `allowRamp` defaults to false
+  and production never asks for it. Do not run a rebuild expecting a ramp.
 - **Rides**: 38 sessions, 17,183 samples; 34 of them usable. **Sessions 5 and 6
   are permanently corrupt** — `rebuildModel.ts` excludes them by elevation
   scale. Session 45 is excluded for being spikes rather than a ride (20.7% of
@@ -728,14 +729,53 @@ claimed these fixes, before vs after), `tmp-chain.mjs` (is a street's own chain
 connected). All restrict to the sessions `rebuildModel` uses — measuring over
 every session counts rides the model throws away.
 
-## The sliding anchor: built, measured, and REJECTED in review — do not ship it
+## The sliding anchor: five defects fixed, and it STILL does not ship
 
-**Status 2026-09-13: on branch `jzavala5114/fix-elevation-drift-b7815212`, not
-merged, not deployed, no rebuild run.** It passes 31 gate tests and its eval
-exits 0, and it is still wrong. An adversarial review found defects that the
-tests and the eval were both structurally unable to see. Read this section
-before touching the branch; the numbers below are real but they do not mean what
-they look like.
+**Status 2026-09-14 — read this first, the section below it is history.**
+
+All five defects are fixed on `jzavala5114/fix-elevation-drift-b7815212`, which
+now also contains the zero-phase smoothing fix merged from
+`jzavala5114/fix-elevation-lag-805d4615`. 64 gate tests, every fix mutation
+tested, every guard constant pinned on both sides. `npm run eval:anchor` exits 0.
+
+**And the ramp is switched off.** `allowRamp` defaults to `false` in
+`anchorFit.ts`, and `processSession` calls `fitAnchor` without it, so every ride
+saved through `POST /sessions/:id/end` gets the single number exactly as before.
+That default IS the verdict; a verdict that lived only in prose would have
+shipped the feature on the next ride saved.
+
+Why it is off: with the gates corrected the eval treats **no rides at all**, and
+production would treat **one** (session 74) out of 38. An earlier round, with
+only four of the five fixed, treated two rides and made both worse on all three
+measures. The feature is starved rather than subtly wrong — the evidence it needs
+is close to absent in this archive.
+
+The fifth defect is the one worth carrying forward: **a revisit that compares a
+GPS-altitude pass against a barometric one measures the offset between two
+sensors, not drift.** Session 76 read −3.49m at the head of Culebras Trail and
+−17.96m at its end while every time gap was 31 to 32 minutes, which no drifting
+barometer can produce. Its first lap fell inside a GPS stretch and its second was
+barometric. Every other guard passed it and it asked to tilt the ride 20m.
+
+Two things changed that are true regardless of whether the ramp ever ships:
+`collectRevisits` now requires both passes on the barometer, and "distinct sites"
+counts street names rather than segment ids (a segments row is one OSM way split
+at every junction, so session 76's "15 distinct sites" were 15 pieces of one
+trail).
+
+Next lever, now unblocked by the zero-phase smoother: opposite-direction
+revisits, 21 long ones declined against 30 kept. Needs the bucket index flipped
+and its own measurement.
+
+---
+
+### History: the review that rejected the first version
+
+**Status 2026-09-13 (superseded by the section above).** It passed 31 gate tests
+and its eval exited 0, and it was still wrong. An adversarial review found
+defects that the tests and the eval were both structurally unable to see. The
+numbers below are real but they do not mean what they look like. All of them are
+fixed now; kept because the failure modes are worth recognising again.
 
 ### The three that block it
 

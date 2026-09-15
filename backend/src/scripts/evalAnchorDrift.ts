@@ -11,7 +11,7 @@ import {
   type AnchorFit,
   type AnchorPoint,
 } from "../services/anchorFit.js";
-import { collectRevisits } from "../services/sessionProcessor.js";
+import { collectRevisits, siteKeyFor } from "../services/sessionProcessor.js";
 import { isUsable, loadSessionVerdicts } from "../services/usableSessions.js";
 import type { Direction, Segment, SessionSample } from "../types/index.js";
 
@@ -69,14 +69,30 @@ const MODES: Mode[] = ["before", "after"];
 // to filter -- it built residuals from DEM lookups it had already null-checked.
 // fitAnchor does the same filtering internally, so without it the two would
 // disagree on a malformed ride for a reason that has nothing to do with ramps.
+//
+// **Its own literals, copied from main, NOT imported from anchorFit.ts.**
+//
+// The first version of this imported MIN_POINTS_FOR_ANCHOR and
+// MAX_PLAUSIBLE_OFFSET_M from the module under test, which quietly undid the
+// point of writing it: change either constant and the control changes with the
+// treatment, so "identical to main's fitDemOffset" keeps printing while the
+// shipped behaviour has in fact diverged from main. A control parameterised by
+// the treatment is not a control.
+//
+// From main: MIN_DEM_POINTS_FOR_ANCHOR = 10, MAX_PLAUSIBLE_ANCHOR_OFFSET_M = 60
+// in services/sessionProcessor.ts. If anchorFit.ts changes either, this must
+// stay put and the identical-bucket check is then supposed to fail.
+const MAIN_MIN_DEM_POINTS_FOR_ANCHOR = 10;
+const MAIN_MAX_PLAUSIBLE_ANCHOR_OFFSET_M = 60;
+
 function previousAnchor(points: AnchorPoint[]): AnchorFit | null {
   const clean = points.filter((p) => Number.isFinite(p.atMs) && Number.isFinite(p.residualM));
-  if (clean.length < MIN_POINTS_FOR_ANCHOR) return null;
+  if (clean.length < MAIN_MIN_DEM_POINTS_FOR_ANCHOR) return null;
   const residuals = clean.map((p) => p.residualM).sort((a, b) => a - b);
   const mid = Math.floor(residuals.length / 2);
   const offset =
     residuals.length % 2 === 0 ? (residuals[mid - 1] + residuals[mid]) / 2 : residuals[mid];
-  if (!Number.isFinite(offset) || Math.abs(offset) > MAX_PLAUSIBLE_OFFSET_M) return null;
+  if (!Number.isFinite(offset) || Math.abs(offset) > MAIN_MAX_PLAUSIBLE_ANCHOR_OFFSET_M) return null;
   return {
     offsetAt: () => offset,
     minM: offset,
@@ -87,6 +103,7 @@ function previousAnchor(points: AnchorPoint[]): AnchorFit | null {
     shape: "constant",
     points: clean.length,
     revisits: 0,
+    revisitsUsed: 0,
   };
 }
 
@@ -164,6 +181,7 @@ for (const session of usable) {
     segmentId: number; direction: Direction; atMs: number;
     buckets: Array<{ distanceM: number; elevationM: number }>;
     elevationSource: "barometer" | "gps" | "mixed" | null;
+    siteKey: string;
   }> = [];
 
   for (const run of stitchFragmentedRuns(matchSamplesToSegments(smoothed, segmentRows))) {
@@ -188,6 +206,10 @@ for (const session of usable) {
       atMs: (startedMs + endedMs) / 2,
       buckets: assessment.profile.buckets,
       elevationSource: sources.size === 1 ? ([...sources][0] as "barometer" | "gps" | null) : "mixed",
+      // Mirrors `siteKeyFor` in sessionProcessor.ts: the PLACE, not the segment.
+      // Segment rows split at every junction, so counting them as sites lets one
+      // street form a quorum by itself.
+      siteKey: siteKeyFor(segment),
     });
   }
   if (qualifying.length === 0) continue;
@@ -219,10 +241,31 @@ for (const session of usable) {
   // revisited buckets by a stable hash of their key puts the fit on one half
   // and the measurement on the other, and the two halves are the same ride, so
   // a real drift correction still has to generalise across them.
+  //
+  // **What this split does NOT control for, stated because the comment above
+  // overclaims on its own.** It is a split by BUCKET, and both halves come from
+  // the same two passes of the same pair of runs. It controls for per-bucket
+  // noise and nothing else. Every failure mode this fit actually has -- wrong
+  // direction, mismatched instrument, speed-dependent lag, satellite geometry --
+  // is a property of the run, and appears identically in both halves. Session 76
+  // is the proof: its fabricated 20m tilt improved self-consistency on every
+  // bucket of the ride, held out or not, and it took a fifth guard to catch
+  // rather than this split. Treat a held-out gain as evidence against bucket
+  // noise, not as evidence the correction generalises.
+  //
+  // The mixing below is a real hash, not the parity check it used to be. With
+  // `h * 31` and 31 odd, the low bit of the accumulator is just the running sum
+  // of the character codes mod 2, so testing `h & 1` reduced exactly to "is the
+  // sum of the key's character codes odd" -- which put "1|forward|30" and
+  // "1|forward|03" in the same half and made the split a function of a digit
+  // sum. Multiplying by an even factor and reading a high bit avoids both.
   const heldOut = (key: string) => {
-    let h = 0;
-    for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) | 0;
-    return (h & 1) === 1;
+    let h = 0x811c9dc5;
+    for (let i = 0; i < key.length; i++) {
+      h ^= key.charCodeAt(i);
+      h = Math.imul(h, 0x01000193);
+    }
+    return ((h >>> 16) & 1) === 1;
   };
   const forFitting = qualifying.map((run) => ({
     ...run,
@@ -239,7 +282,7 @@ for (const session of usable) {
   // count alone would understate the change's reach and quietly mis-state its
   // blast radius, since the identical-bucket proof below covers only the rides
   // the EVAL left alone.
-  if (fitAnchor(points, collectRevisits(qualifying))?.shape === "ramp") {
+  if (fitAnchor(points, collectRevisits(qualifying), { allowRamp: true })?.shape === "ramp") {
     productionRamped.add(session.id);
   }
   heldOutKeys.set(
@@ -267,7 +310,12 @@ for (const session of usable) {
     // `previousAnchor` below is an independent transcription of `fitDemOffset`
     // as it stands on main, so "identical" now means the new fitter reproduces
     // the shipped behaviour, which is the claim actually being made.
-    const fit = mode === "before" ? previousAnchor(points) : fitAnchor(points, revisits);
+    // `allowRamp` is explicit because it now defaults to OFF -- that default is
+    // the shipped verdict, and this eval is the thing that re-measures it. An
+    // eval that inherited the default would silently compare the single number
+    // against itself, which is the tautology described above wearing new clothes.
+    const fit =
+      mode === "before" ? previousAnchor(points) : fitAnchor(points, revisits, { allowRamp: true });
     if (fit == null) unanchored.set(mode, unanchored.get(mode)! + 1);
     else if (fit.shape === "ramp") {
       ramped.set(mode, ramped.get(mode)! + 1);
@@ -586,6 +634,21 @@ for (const scope of ["whole archive", "rides the change touched"] as const) {
     const before = results.get(`${scope}|before|${label}`)!;
     const after = results.get(`${scope}|after|${label}`)!;
     const moved = before.median - after.median;
+
+    // Nothing to judge is not a failure, and saying FAIL here would be a lie in
+    // the direction that looks rigorous. An empty treated set used to print
+    // "median NaNm -> NaNm (+NaNm)" and count as a regression, because
+    // `NaN <= NaN` is false. That reads as "the change made things worse" when
+    // what happened is that the change reached no ride at all -- a different
+    // finding, and on this feature the important one.
+    if (before.n === 0 && after.n === 0) {
+      console.log(
+        `NONE  ${scope} / ${label}: no comparisons -- the fit treated no rides, ` +
+          `so there is nothing here to improve or regress`,
+      );
+      continue;
+    }
+
     // The verdict rides on the treated population, for the reason proved
     // above. The whole-archive line is printed either way, because hiding the
     // diluted number would be the bar-lowering this is trying not to do.

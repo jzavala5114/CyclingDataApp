@@ -44,30 +44,45 @@ connection is the first thing to check.
 ## Tests and evals
 
 ```
-npm test              # gate tests: deterministic, no database, well under 2s
-npm run eval:anchor   # eval: replays the archive through the real code path
+npm test                # gate tests: deterministic, no database, well under 2s
+npm run eval:anchor     # eval: the drift anchor, against the live archive
+npm run eval:smoothing  # eval: the zero-phase elevation smoother
 ```
 
 `npm test` runs Node's built-in test runner through tsx. It needs nothing but
-the source, so it is safe on any checkout.
+the source, so it is safe on any checkout. Both evals read the live database and
+write nothing.
 
 `npm run eval:anchor` measures whether the elevation model agrees with itself,
-and it reads the live database. Two questions, both asked of buckets rather
-than raw samples, because the anchor correction is applied on the way into a
-bucket and never written back onto the sample rows:
+and with the ground. Three questions, all asked of buckets rather than raw
+samples, because the anchor correction is applied on the way into a bucket and
+never written back onto the sample rows:
 
 - **self-consistency** — one ride, one bucket, two passes minutes apart. The
   ground cannot have moved, so any difference is the ride disagreeing with
   itself. Needs no second ride and no terrain model.
 - **cross-ride** — one bucket, two rides. What actually reaches the map, since
   the running mean blends them.
+- **terrain shape** — each held-out bucket against the terrain model, with the
+  ride's own median residual removed first so it measures shape rather than
+  level. The only one of the three with a referent outside the archive, and the
+  reason it exists: the other two are both forms of the data agreeing with
+  itself, and a correction that tilts a ride can improve both while walking the
+  ride away from the ground. One did, by up to 12.39m, and scored better for it.
 
 It prints a verdict against the population the change reached, and separately
-proves that every untouched bucket came out identical. It also pairs each
-comparison with itself before and after, because a summary median cannot tell
-"helped everything a little" from "helped most and hurt some" — and if a
-quantile ever moves the wrong way, that pairing is what says how many
-comparisons actually got worse instead of leaving it to be waved away.
+proves that every untouched bucket came out identical — against an independent
+transcription of `main`'s `fitDemOffset`, carrying its own literal constants, not
+against the fitter under test. It also pairs each comparison with itself before
+and after, because a summary median cannot tell "helped everything a little"
+from "helped most and hurt some" — and if a quantile ever moves the wrong way,
+that pairing is what says how many comparisons actually got worse instead of
+leaving it to be waved away.
+
+A note on the hold-out split it reports as out-of-sample: it splits by bucket,
+and both halves come from the same two passes of the same runs. It controls for
+per-bucket noise and nothing else. Every failure mode this fit actually has is a
+property of the run and appears in both halves identically.
 
 ## Endpoints
 

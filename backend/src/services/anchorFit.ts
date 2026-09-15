@@ -37,34 +37,50 @@
 //     the cell. On a 6% street a 5m difference in mean position is 0.30m.
 //   - The two passes may hold different numbers of fixes, so the two means are
 //     means of slightly different ground.
-//   - smoothElevations is a causal EMA, which lags by about 2.3 samples. In
-//     distance that is 16m at 7 m/s and 7m at 3 m/s, so a fast pass and a slow
-//     pass over the same cell differ by roughly 0.5m on a 6% grade. This one
-//     is signed by grade and speed rather than random, so a rider who tires
-//     over a long ride produces an apparent drift in one direction.
 //
-// Together those are a few tenths of a metre against a signal of 1.57m. That
-// is why the drift has to clear MIN_MEANINGFUL_RISE_M before it is believed at
-// all: below that floor the measurement cannot be told apart from the leaks,
+// A third leak used to sit here and is gone: smoothElevations was a causal EMA
+// lagging about 2.3 samples, which on a fast pass against a slow one over the
+// same cell was worth roughly 0.5m on a 6% grade, signed by grade and speed
+// rather than random. It is now a forward-backward pass with exactly zero lag,
+// so that term is zero rather than bounded. Two consequences follow, both
+// recorded where they matter: the remaining leaks are smaller, and the reason
+// collectRevisits declines opposite-direction revisits no longer holds.
+//
+// Together the survivors are a few tenths of a metre against a signal of 1.57m.
+// That is why the drift has to clear MIN_MEANINGFUL_RISE_M before it is believed
+// at all: below that floor the measurement cannot be told apart from the leaks,
 // and the correct action is to keep the old single number.
 //
-// **What this reaches, measured 2026-09-13 over 34 rides: two of them.** The
-// other 32 keep the single number. That is not the guards being timid, it is
-// how seldom a ride measures its own drift: a revisit has to be the same
-// segment, the same direction and the same 15m cell, at least half an hour
-// apart, and most rides do not double back on themselves that way.
+// --- WHAT THIS ACTUALLY REACHES, AND WHY IT IS OFF ---------------------------
 //
-// Say the uncomfortable half of that plainly, because the 7.36m above is its
-// number: **session 54 is not one of the two.** Its long revisits are
-// out-and-backs -- three opposite-direction returns at up to 72 minutes against
-// one same-direction -- and an out-and-back is deliberately not counted, for
-// reasons set out over collectRevisits in sessionProcessor.ts. So the ride that
-// motivated this is itself out of reach of it. Archive-wide that is 21 long
-// revisits declined for direction against 30 kept, which makes them the obvious
-// next lever and not a rounding error.
+// **One ride in 38, and it does not ship.** `allowRamp` defaults to false (see
+// FitOptions) and production calls fitAnchor without it, so every ride saved
+// gets the single number this was meant to replace.
 //
-// Every rejection path returns that single number, so this can only differ
-// from the previous behaviour when a ride has measured its own drift clearly.
+// The history is worth keeping because the numbers moved twice. A first version
+// reached two rides and its eval passed. Review found four defects; fixing them
+// exposed a fifth, and each one shrank the population that could honestly
+// qualify:
+//
+//   - the ramp window was a union of disjoint observations, not a cover
+//   - N passes over a cell were counted as N(N-1)/2 observations, not N-1
+//   - "distinct sites" counted segment ids, and one street is many of those
+//   - a revisit could compare a GPS-altitude pass against a barometric one
+//   - the eval's safety proof compared a function with itself
+//
+// With all five fixed, `npm run eval:anchor` treats no rides at all, and
+// production would treat exactly one. The feature is not wrong so much as
+// starved: the evidence it needs -- the same ground, the same way round, the
+// same instrument, half an hour apart, on more than one street, with no
+// unwatched gap in between -- is close to absent in this archive.
+//
+// The obvious next lever is the one the zero-phase smoother unblocked:
+// opposite-direction revisits, 21 long ones declined against 30 kept
+// archive-wide. That needs the bucket index flipped and its own measurement.
+//
+// Every rejection path returns the single number, so this can only differ from
+// the previous behaviour when a ride has measured its own drift clearly AND
+// something has explicitly asked for a ramp.
 
 export interface AnchorPoint {
   atMs: number;
@@ -84,10 +100,25 @@ export interface Revisit {
   riseM: number;
   // How many buckets backed this comparison. Reported for diagnostics.
   buckets: number;
-  // Which segment the comparison was made on. Both passes in a pair share one,
-  // so this is the place the observation happened, and MIN_REVISIT_SITES below
-  // uses it to refuse a quorum that is really one street seen repeatedly.
+  // Which segment the comparison was made on. Diagnostics only -- see siteKey
+  // for the thing MIN_REVISIT_SITES actually counts.
   segmentId: number;
+  // The PLACE the comparison was made, which is not the segment.
+  //
+  // A segments row is one OSM way pre-split at every intersection node and then
+  // cut again into piece_index slices, so a single street ridden past two
+  // junctions is three segment ids. Counting segment ids as independent sites
+  // let one pass over one continuous stretch of road clear a quorum three times
+  // over -- defect 2 relocated rather than removed, since the old bug multiplied
+  // one comparison by pairing passes every way and this one multiplies it by
+  // splitting the road.
+  //
+  // This was not hypothetical: session 76 was reported as covering "15 distinct
+  // sites", and all fifteen were consecutive pieces of Culebras Trail.
+  //
+  // The caller supplies it, because the identity of a place lives in the segment
+  // row and this module never sees one. See `siteKeyFor` in sessionProcessor.ts.
+  siteKey: string;
 }
 
 export interface AnchorFit {
@@ -105,7 +136,16 @@ export interface AnchorFit {
   driftRateMPerH: number;
   shape: "ramp" | "constant";
   points: number;
+  // How many revisit pairs the fit was HANDED. Always the input count, on both
+  // the ramp and the constant path.
+  //
+  // This used to be the input count on one path and the number backing the ramp
+  // on the other, so a diagnostic reading "revisits: 3" meant two different
+  // things depending on a field printed next to it. `revisitsUsed` carries the
+  // second meaning now, and the difference between them is exactly what the
+  // gates threw away -- which is the more interesting number of the two.
   revisits: number;
+  revisitsUsed: number;
 }
 
 // Below this the level is being fit to noise, so the ride merges unanchored,
@@ -132,26 +172,34 @@ const MIN_REVISIT_PAIRS = 3;
 // the same as their being independent measurements: four passes over one 15m
 // cell give three honest increments that nonetheless share a single sampling
 // position, a single set of surrounding terrain, and whatever systematic error
-// lives at that spot. Two sites is a low bar deliberately -- the population this
-// feature reaches is small enough that a higher one empties it, and the cost of
-// each step is measured in evalAnchorDrift's site histogram rather than guessed.
+// lives at that spot.
+//
+// Counted over `siteKey`, not over segment ids. See the field's own comment for
+// why that distinction is the whole rule: segment ids split at every junction,
+// so counting them turns one street into a quorum on its own.
 const MIN_REVISIT_SITES = 2;
 
-// How far the ramp may reach beyond the timescale it was measured on, as a
-// multiple of the shortest observation backing it.
+// How far the fitted rate may disagree with the ride's longest observation,
+// as a fraction of that observation on top of MIN_MEANINGFUL_RISE_M.
 //
-// This is the bound on defect 1, and it is worth stating in the terms the leak
-// has. Each pair carries a leak of a few tenths of a metre over its own gap, so
-// it implies a rate error of leak/gap; drawing that rate across a window W
-// multiplies the error by W/gap. With no bound, three 31-minute observations at
-// 0, 100 and 209 minutes produced a four-hour ramp and turned 1.6m rises into a
-// 12.39m correction -- an amplification of 7.7x, none of it observed.
+// This is the second half of the bound on defect 1. Each pair carries a leak of
+// a few tenths of a metre over its own gap, so it implies a rate error of
+// leak/gap; letting a short pair set the slope for a long window multiplies that
+// error by the ratio between them. Unbounded, three 31-minute observations at 0,
+// 100 and 209 minutes produced a four-hour ramp and turned 1.6m rises into a
+// 12.39m correction.
 //
-// Three is not arbitrary: it is the ratio a chain of three abutting equal-length
-// observations produces, which is the densest honest evidence this can get. Any
-// ride needing more reach than its own observations provide is extrapolating,
-// and the right answer there is the single number it used to get.
-const MAX_WINDOW_TO_GAP_RATIO = 3;
+// Expressed as a disagreement in metres rather than a ratio of times, because
+// metres are what the leak is measured in and what the correction is applied in.
+// See the check itself in fitDriftRate for why the ratio version was wrong.
+const MAX_CONTRADICTION_FRACTION = 0.5;
+
+// How close to the longest gap an observation has to be to join the veto above.
+// Ninety-five per cent, so a loop ridden twice -- which produces a row of pairs
+// with gaps differing by the seconds it took to cross each street -- is treated
+// as the several observations of the same stretch that it is, rather than having
+// one of them arbitrarily crowned.
+const LONGEST_OBSERVATION_TOLERANCE = 0.95;
 
 // How far a ride must be seen to move before the movement is believed. The
 // leaks described at the top of this file are a few tenths of a metre, and
@@ -189,11 +237,12 @@ export interface DriftEstimate {
   fromMs: number;
   toMs: number;
   pairs: number;
-  // Distinct segments backing the estimate, and how far the ramp reaches past
-  // its shortest observation. Both are gates above; both are reported because
-  // the eval needs to see how close to the gates the real archive sits.
+  // Distinct places backing the estimate, and by how many metres the fitted rate
+  // disagrees with the ride's longest single observation. Both are gates above;
+  // both are reported because the eval needs to see how close to the gates the
+  // real archive sits rather than only which side of them it fell.
   sites: number;
-  windowToGapRatio: number;
+  contradictionM: number;
 }
 
 // The longest stretch of time that the observations actually cover, with no
@@ -270,17 +319,8 @@ export function fitDriftRate(revisits: Revisit[]): DriftEstimate | null {
   const members = block.members;
   if (members.length < MIN_REVISIT_PAIRS) return null;
 
-  const sites = new Set(members.map((r) => r.segmentId)).size;
+  const sites = new Set(members.map((r) => r.siteKey)).size;
   if (sites < MIN_REVISIT_SITES) return null;
-
-  // How far the ramp reaches past the shortest thing backing it. Checked before
-  // the rate is used for anything, because this is the term that turns a
-  // tenth-of-a-metre leak into a double-digit correction.
-  const windowMs = block.toMs - block.fromMs;
-  const shortestGapMs = Math.min(...members.map((r) => r.lateAtMs - r.earlyAtMs));
-  if (!(shortestGapMs > 0)) return null;
-  const windowToGapRatio = windowMs / shortestGapMs;
-  if (windowToGapRatio > MAX_WINDOW_TO_GAP_RATIO) return null;
 
   // The median of the per-pair rates rather than the mean, so one bucket that
   // caught a bad fix cannot set the slope for the whole ride.
@@ -288,6 +328,55 @@ export function fitDriftRate(revisits: Revisit[]): DriftEstimate | null {
   const rateMPerH = median(rates);
   if (!finite(rateMPerH) || rateMPerH === 0) return null;
   if (Math.abs(rateMPerH) > MAX_DRIFT_RATE_M_PER_H) return null;
+
+  // **Does the ramp contradict the longest thing this ride actually watched?**
+  //
+  // The median treats a thirty-minute observation and a ninety-minute one as
+  // equal votes, so three pairs can outvote the single pair that covers the
+  // whole window: rises of 1m over [0,90], [0,30] and [20,50] give a median rate
+  // of 2 m/h, and the ramp then claims 3m across a stretch the ride watched
+  // end to end and measured at 1m. Nothing else here notices, because the pairs
+  // agree on sign, clear the floor, and sit inside every cap.
+  //
+  // So the longest observation gets a veto. It is the pair with the most direct
+  // claim on the window, and if the fitted rate disagrees with what it saw by
+  // more than the leaks can explain, the disagreement is the finding and the
+  // ride keeps its single number.
+  //
+  // The allowance is a metre plus half of what was seen: the metre is
+  // MIN_MEANINGFUL_RISE_M, below which nothing here can be told from noise
+  // anyway, and the fraction keeps the test from tightening without limit on
+  // rides that really did move a long way.
+  //
+  // This replaces a cap on the ratio of window length to shortest observation.
+  // That cap punished the best evidence there is: four abutting forty-minute
+  // observations tile a hundred and sixty minutes with no unwatched instant, and
+  // it refused them while accepting three of the same. Adding evidence took the
+  // feature away. A tiled chain contradicts nothing and passes here at any
+  // length, while a short pair setting the slope for a long window is refused
+  // for the reason it should be -- not because of when it was measured, but
+  // because the ride's own best observation says otherwise.
+  // The longest observations, plural, and the median of what they saw.
+  //
+  // Taking the single longest makes the gate depend on input order whenever two
+  // pairs tie, which on real rides is common -- a loop ridden twice produces a
+  // row of pairs with near-identical gaps. Worse, it let one outlier among the
+  // ties decide: six pairs of equal length, four agreeing and two not, were
+  // refused or accepted purely on which one `reduce` happened to reach first.
+  //
+  // So the veto is held by everything within LONGEST_OBSERVATION_TOLERANCE of
+  // the longest gap, and it speaks with their median rise -- the same robust
+  // statistic used for the rate, for the same reason.
+  const gapOf = (r: Revisit) => r.lateAtMs - r.earlyAtMs;
+  const longestGapMs = Math.max(...members.map(gapOf));
+  const longest = members.filter(
+    (r) => gapOf(r) >= longestGapMs * LONGEST_OBSERVATION_TOLERANCE,
+  );
+  const observedRiseM = median(longest.map((r) => r.riseM));
+  const predictedRiseM = (rateMPerH * longestGapMs) / MS_PER_HOUR;
+  const contradictionM = Math.abs(predictedRiseM - observedRiseM);
+  const allowedM = MIN_MEANINGFUL_RISE_M + Math.abs(observedRiseM) * MAX_CONTRADICTION_FRACTION;
+  if (!finite(contradictionM) || contradictionM > allowedM) return null;
 
   // Is the movement bigger than the leaks? Judged on the rises themselves, not
   // on the rate, because a small rise over a short gap implies a large rate.
@@ -303,21 +392,31 @@ export function fitDriftRate(revisits: Revisit[]): DriftEstimate | null {
     toMs: block.toMs,
     pairs: members.length,
     sites,
-    windowToGapRatio,
+    contradictionM,
   };
 }
 
 export interface FitOptions {
-  // Forces the old single-number behaviour. Exists so the before/after can be
-  // measured through this exact code path rather than a reimplementation of it,
-  // the way tangentWindowM and disconnectPenaltyM do in the matcher.
+  // **Off by default, and that is the shipped behaviour.**
+  //
+  // Measured against the live archive, the ramp makes every ride it touches
+  // worse: self-consistency 1.28m -> 1.73m, cross-ride 2.62m -> 3.26m, terrain
+  // shape 2.40m -> 2.42m, 31 comparisons improved against 74 worsened. A
+  // verdict that lives only in a commit message is not a verdict -- the file
+  // has to refuse, or the next ride saved gets the regression regardless of
+  // what anyone wrote down.
+  //
+  // It defaults off rather than being deleted because the measurement is what
+  // is wrong with the feature, not the code, and the eval needs this exact path
+  // to keep measuring it. Turning it on is one argument, and doing so without
+  // rerunning `npm run eval:anchor` is how the first version of this shipped.
   allowRamp?: boolean;
 }
 
 export function fitAnchor(
   points: AnchorPoint[],
   revisits: Revisit[] = [],
-  { allowRamp = true }: FitOptions = {},
+  { allowRamp = false }: FitOptions = {},
 ): AnchorFit | null {
   const clean = points.filter((p) => finite(p.atMs) && finite(p.residualM));
   if (clean.length < MIN_POINTS_FOR_ANCHOR) return null;
@@ -335,6 +434,7 @@ export function fitAnchor(
       shape: "constant",
       points: clean.length,
       revisits: revisits.length,
+      revisitsUsed: 0,
     };
   };
 
@@ -383,6 +483,7 @@ export function fitAnchor(
     driftRateMPerH: drift.rateMPerH,
     shape: "ramp",
     points: clean.length,
-    revisits: drift.pairs,
+    revisits: revisits.length,
+    revisitsUsed: drift.pairs,
   };
 }
