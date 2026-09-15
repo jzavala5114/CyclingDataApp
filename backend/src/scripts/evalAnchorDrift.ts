@@ -4,7 +4,13 @@ import { matchSamplesToSegments, stitchFragmentedRuns } from "../services/segmen
 import { assessRun } from "../services/elevationAggregator.js";
 import { rejectElevationSpikes, smoothElevations } from "../services/elevationSmoothing.js";
 import { demKey } from "../services/demElevation.js";
-import { fitAnchor, type AnchorPoint } from "../services/anchorFit.js";
+import {
+  fitAnchor,
+  MAX_PLAUSIBLE_OFFSET_M,
+  MIN_POINTS_FOR_ANCHOR,
+  type AnchorFit,
+  type AnchorPoint,
+} from "../services/anchorFit.js";
 import { collectRevisits } from "../services/sessionProcessor.js";
 import { isUsable, loadSessionVerdicts } from "../services/usableSessions.js";
 import type { Direction, Segment, SessionSample } from "../types/index.js";
@@ -44,10 +50,59 @@ const MIN_REVISIT_GAP_S = 300;
 type Mode = "before" | "after";
 const MODES: Mode[] = ["before", "after"];
 
+// The shipped behaviour, transcribed from `fitDemOffset` in
+// services/sessionProcessor.ts on main: the median terrain residual for the
+// whole ride, refused when there are too few points to fit or when the answer
+// is too large to be weather.
+//
+// Deliberately a second implementation rather than a call into anchorFit.ts.
+// The eval's job here is to prove the new fitter reproduces the old one on every
+// ride it does not treat, and a "before" that calls the new fitter cannot
+// establish that -- it is the thing being tested. Duplicating thirty characters
+// of median is the price of a control that is actually independent.
+//
+// Returns a full AnchorFit so the two are interchangeable at every use below.
+// A constant correction has a well-defined value for each field: no drift, no
+// rate, and the same offset at both ends and in the middle.
+//
+// Filtering non-finite points first, because main's fitDemOffset never had any
+// to filter -- it built residuals from DEM lookups it had already null-checked.
+// fitAnchor does the same filtering internally, so without it the two would
+// disagree on a malformed ride for a reason that has nothing to do with ramps.
+function previousAnchor(points: AnchorPoint[]): AnchorFit | null {
+  const clean = points.filter((p) => Number.isFinite(p.atMs) && Number.isFinite(p.residualM));
+  if (clean.length < MIN_POINTS_FOR_ANCHOR) return null;
+  const residuals = clean.map((p) => p.residualM).sort((a, b) => a - b);
+  const mid = Math.floor(residuals.length / 2);
+  const offset =
+    residuals.length % 2 === 0 ? (residuals[mid - 1] + residuals[mid]) / 2 : residuals[mid];
+  if (!Number.isFinite(offset) || Math.abs(offset) > MAX_PLAUSIBLE_OFFSET_M) return null;
+  return {
+    offsetAt: () => offset,
+    minM: offset,
+    maxM: offset,
+    driftM: 0,
+    midM: offset,
+    driftRateMPerH: 0,
+    shape: "constant",
+    points: clean.length,
+    revisits: 0,
+  };
+}
+
 interface Observation {
   sessionId: number;
   atMs: number;
   elevationM: number;
+  // What the terrain model says this spot is, or null where it has no value.
+  //
+  // Carried so the eval can ask a question neither of its original measures
+  // could. Self-consistency and cross-ride agreement are both measures of the
+  // archive agreeing with itself, and a correction that tilts a ride can improve
+  // both while moving the ride away from the ground: the two passes still match
+  // each other, and every ride tilts the same way. Defect 1 did exactly that --
+  // it fabricated up to 12.39m of slope and the eval's score went up.
+  demM: number | null;
 }
 
 // mode -> "segment|direction|distance" -> observations from every ride
@@ -73,7 +128,11 @@ console.log(`measuring ${usable.length} sessions\n`);
 
 for (const session of usable) {
   const { rows: samples } = await pool.query<SessionSample>(
+    // elevation_source is selected because collectRevisits refuses to compare a
+    // GPS-altitude pass against a barometric one. An eval that did not carry it
+    // would measure a fitter with a guard production has and this does not.
     `select id, recorded_at as "recordedAt", lat, lon, elevation_m as "elevationM",
+            elevation_source as "elevationSource",
             heading_deg as "headingDeg", speed_mps as "speedMps", accuracy_m as "accuracyM"
        from session_samples where session_id = $1 order by recorded_at`,
     [session.id],
@@ -104,6 +163,7 @@ for (const session of usable) {
   const qualifying: Array<{
     segmentId: number; direction: Direction; atMs: number;
     buckets: Array<{ distanceM: number; elevationM: number }>;
+    elevationSource: "barometer" | "gps" | "mixed" | null;
   }> = [];
 
   for (const run of stitchFragmentedRuns(matchSamplesToSegments(smoothed, segmentRows))) {
@@ -118,11 +178,16 @@ for (const session of usable) {
     if (!assessment.qualified) continue;
     const startedMs = Date.parse(run.samples[0].recordedAt);
     const endedMs = Date.parse(run.samples[run.samples.length - 1].recordedAt);
+    // Mirrors `runElevationSource` in sessionProcessor.ts. One source for the
+    // whole pass, or "mixed" when the phone swapped sensor inside it; null is
+    // its own value and matches itself, for rides older than the column.
+    const sources = new Set(run.samples.map((s) => s.elevationSource ?? null));
     qualifying.push({
       segmentId: segment.id,
       direction: run.direction,
       atMs: (startedMs + endedMs) / 2,
       buckets: assessment.profile.buckets,
+      elevationSource: sources.size === 1 ? ([...sources][0] as "barometer" | "gps" | null) : "mixed",
     });
   }
   if (qualifying.length === 0) continue;
@@ -189,7 +254,20 @@ for (const session of usable) {
   );
 
   for (const mode of MODES) {
-    const fit = fitAnchor(points, revisits, { allowRamp: mode === "after" });
+    // `before` no longer goes through the code under test.
+    //
+    // It used to be `fitAnchor(..., { allowRamp: false })`, which meant that for
+    // any ride the change did not treat, `before` and `after` were the same
+    // `flat()` branch of the same function reached by two routes. The eval then
+    // announced that every untouched bucket was bit-for-bit identical, and that
+    // sentence was reported upwards as proof the change was safe. It proved
+    // `flat() === flat()`. A control that shares an implementation with the
+    // treatment is not a control.
+    //
+    // `previousAnchor` below is an independent transcription of `fitDemOffset`
+    // as it stands on main, so "identical" now means the new fitter reproduces
+    // the shipped behaviour, which is the claim actually being made.
+    const fit = mode === "before" ? previousAnchor(points) : fitAnchor(points, revisits);
     if (fit == null) unanchored.set(mode, unanchored.get(mode)! + 1);
     else if (fit.shape === "ramp") {
       ramped.set(mode, ramped.get(mode)! + 1);
@@ -219,6 +297,13 @@ for (const session of usable) {
         const list = target.get(key);
         const observation = {
           sessionId: session.id, atMs: run.atMs, elevationM: bucket.elevationM - correctionM,
+          demM: dem.get(
+            demKey({
+              segmentId: run.segmentId,
+              direction: run.direction,
+              distanceM: bucket.distanceM,
+            }),
+          ) ?? null,
         };
         if (list) list.push(observation);
         else target.set(key, [observation]);
@@ -299,6 +384,45 @@ function crossRideDisagreements(
   return out;
 }
 
+// How far the ride sits from the terrain model, per held-out bucket.
+//
+// The measure the review said was missing, and the only one here that consults
+// anything outside the archive. Both other measures ask whether the data agrees
+// with itself, which a tilt can satisfy while walking away from the ground; this
+// one has an external referent and a tilt shows up in it immediately.
+//
+// The absolute level is not the question -- that is what the anchor sets, and a
+// whole-ride offset is legitimate. What matters is that the SHAPE stays put, so
+// each ride's own median residual is removed before scoring. What is left is how
+// far each bucket sits from terrain relative to the rest of its own ride, which
+// a ramp changes and a constant offset cannot.
+function terrainDisagreements(
+  observations: Map<string, Observation[]>,
+  only?: Set<number>,
+): Map<string, number> {
+  const residualsBySession = new Map<number, Array<{ key: string; residualM: number }>>();
+  for (const [key, list] of observations) {
+    for (const o of list) {
+      if (only && !only.has(o.sessionId)) continue;
+      if (o.demM == null) continue;
+      if (!heldOutKeys.get(o.sessionId)?.has(key)) continue;
+      const seen = residualsBySession.get(o.sessionId);
+      const entry = { key: `${key}|${o.sessionId}|${o.atMs}`, residualM: o.elevationM - o.demM };
+      if (seen) seen.push(entry);
+      else residualsBySession.set(o.sessionId, [entry]);
+    }
+  }
+
+  const out = new Map<string, number>();
+  for (const entries of residualsBySession.values()) {
+    const sorted = entries.map((e) => e.residualM).sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    const level = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+    for (const e of entries) out.set(e.key, Math.abs(e.residualM - level));
+  }
+  return out;
+}
+
 console.log("=== per ride ===");
 console.table(perRide);
 
@@ -312,6 +436,7 @@ for (const scope of ["whole archive", "rides the change touched"] as const) {
     for (const [label, values] of [
       ["self-consistency", selfDisagreements(observations, only)],
       ["cross-ride", crossRideDisagreements(observations, only)],
+      ["terrain shape", terrainDisagreements(observations, only)],
     ] as const) {
       const s = summarise([...values.values()]);
       results.set(`${scope}|${mode}|${label}`, s);
@@ -345,7 +470,7 @@ console.table(table);
 console.log("\n=== paired, comparison by comparison ===");
 const paired: Record<string, unknown>[] = [];
 for (const scope of ["whole archive", "rides the change touched"] as const) {
-  for (const label of ["self-consistency", "cross-ride"] as const) {
+  for (const label of ["self-consistency", "cross-ride", "terrain shape"] as const) {
     const before = measured.get(`${scope}|before|${label}`)!;
     const after = measured.get(`${scope}|after|${label}`)!;
     const deltas: number[] = [];
@@ -411,30 +536,53 @@ let failed = false;
 // this project ended up with a floor nobody could explain.
 let untouchedChecked = 0;
 let untouchedMoved = 0;
+let untouchedMissing = 0;
 {
   const before = byMode.get("before")!;
   const after = byMode.get("after")!;
   for (const [key, beforeList] of before) {
     if (beforeList.some((o) => treated.has(o.sessionId))) continue;
-    const afterList = after.get(key) ?? [];
-    for (let i = 0; i < beforeList.length; i++) {
+    // Matched on the observation's own identity rather than on position in the
+    // list. Both lists are built in the same loop order today, so indexing works
+    // by luck; a reordering anywhere upstream would silently start comparing one
+    // ride's bucket against another's and still report agreement.
+    const afterByObservation = new Map(
+      (after.get(key) ?? []).map((o) => [`${o.sessionId}|${o.atMs}`, o]),
+    );
+    for (const beforeObservation of beforeList) {
       untouchedChecked += 1;
-      if (Math.abs(beforeList[i].elevationM - (afterList[i]?.elevationM ?? NaN)) > 1e-9) {
+      const afterObservation = afterByObservation.get(
+        `${beforeObservation.sessionId}|${beforeObservation.atMs}`,
+      );
+      // An explicit presence test, because the arithmetic one cannot do it.
+      // This read `Math.abs(before - (after?.elevationM ?? NaN)) > 1e-9`, and
+      // every comparison against NaN is false -- so a bucket the new code
+      // dropped entirely scored as identical and counted towards the proof.
+      // The one failure the check existed to catch was the one it could not see.
+      if (afterObservation == null) {
+        untouchedMissing += 1;
         untouchedMoved += 1;
+        continue;
       }
+      const delta = beforeObservation.elevationM - afterObservation.elevationM;
+      if (!Number.isFinite(delta) || Math.abs(delta) > 1e-9) untouchedMoved += 1;
     }
   }
 }
 console.log(
-  `\nuntouched buckets verified identical: ${untouchedChecked - untouchedMoved}/${untouchedChecked}`,
+  `\nuntouched buckets verified identical: ${untouchedChecked - untouchedMoved}/${untouchedChecked}` +
+    ` (against an independent transcription of main's fitDemOffset)`,
 );
 if (untouchedMoved > 0) {
   failed = true;
   console.log(`FAIL  ${untouchedMoved} buckets moved on rides that kept a single number`);
+  if (untouchedMissing > 0) {
+    console.log(`FAIL  ${untouchedMissing} of those are missing from "after" entirely`);
+  }
 }
 
 for (const scope of ["whole archive", "rides the change touched"] as const) {
-  for (const label of ["self-consistency", "cross-ride"] as const) {
+  for (const label of ["self-consistency", "cross-ride", "terrain shape"] as const) {
     const before = results.get(`${scope}|before|${label}`)!;
     const after = results.get(`${scope}|after|${label}`)!;
     const moved = before.median - after.median;

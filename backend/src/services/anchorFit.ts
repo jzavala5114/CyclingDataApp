@@ -84,6 +84,10 @@ export interface Revisit {
   riseM: number;
   // How many buckets backed this comparison. Reported for diagnostics.
   buckets: number;
+  // Which segment the comparison was made on. Both passes in a pair share one,
+  // so this is the place the observation happened, and MIN_REVISIT_SITES below
+  // uses it to refuse a quorum that is really one street seen repeatedly.
+  segmentId: number;
 }
 
 export interface AnchorFit {
@@ -117,7 +121,37 @@ const MIN_REVISIT_GAP_S = 1800;
 // touches several buckets, but they all share the same two moments and the
 // same disagreement, so counting buckets would let one comparison masquerade
 // as a quorum.
+//
+// collectRevisits now emits only time-adjacent passes, so N passes over a cell
+// arrive as the N-1 increments they actually contain rather than N(N-1)/2
+// restatements of them. Before that fix three passes over a single cell cleared
+// this quorum with two increments.
 const MIN_REVISIT_PAIRS = 3;
+
+// ...and from more than one street. The pairs being independent in time is not
+// the same as their being independent measurements: four passes over one 15m
+// cell give three honest increments that nonetheless share a single sampling
+// position, a single set of surrounding terrain, and whatever systematic error
+// lives at that spot. Two sites is a low bar deliberately -- the population this
+// feature reaches is small enough that a higher one empties it, and the cost of
+// each step is measured in evalAnchorDrift's site histogram rather than guessed.
+const MIN_REVISIT_SITES = 2;
+
+// How far the ramp may reach beyond the timescale it was measured on, as a
+// multiple of the shortest observation backing it.
+//
+// This is the bound on defect 1, and it is worth stating in the terms the leak
+// has. Each pair carries a leak of a few tenths of a metre over its own gap, so
+// it implies a rate error of leak/gap; drawing that rate across a window W
+// multiplies the error by W/gap. With no bound, three 31-minute observations at
+// 0, 100 and 209 minutes produced a four-hour ramp and turned 1.6m rises into a
+// 12.39m correction -- an amplification of 7.7x, none of it observed.
+//
+// Three is not arbitrary: it is the ratio a chain of three abutting equal-length
+// observations produces, which is the densest honest evidence this can get. Any
+// ride needing more reach than its own observations provide is extrapolating,
+// and the right answer there is the single number it used to get.
+const MAX_WINDOW_TO_GAP_RATIO = 3;
 
 // How far a ride must be seen to move before the movement is believed. The
 // leaks described at the top of this file are a few tenths of a metre, and
@@ -155,6 +189,66 @@ export interface DriftEstimate {
   fromMs: number;
   toMs: number;
   pairs: number;
+  // Distinct segments backing the estimate, and how far the ramp reaches past
+  // its shortest observation. Both are gates above; both are reported because
+  // the eval needs to see how close to the gates the real archive sits.
+  sites: number;
+  windowToGapRatio: number;
+}
+
+// The longest stretch of time that the observations actually cover, with no
+// gaps, together with every observation lying inside it.
+//
+// This is defect 1's fix, and the distinction it turns on is narrow enough to
+// state twice. `fitDriftRate` used to take the union of the pair intervals --
+// min of the starts to max of the ends -- and call that the measured window.
+// A union is not a cover: three observations at 0-31, 100-131 and 209-240
+// minutes have a union of 0-240 and cover 93 minutes of it. The ramp was then
+// drawn across 147 minutes nobody watched, and the file's own comment claiming
+// it was "linear only between the first and last moment the drift was actually
+// observed" was false for exactly the disjoint case that does the damage.
+//
+// Merging overlapping and abutting intervals and keeping the largest resulting
+// block makes that comment true. A block is gap-free by construction, so its
+// length can never exceed the total time observed.
+//
+// Ties go to the longer block, so a ride whose evidence splits evenly keeps the
+// stretch it can say the most about.
+export function largestCoveredBlock(
+  pairs: Revisit[],
+): { fromMs: number; toMs: number; members: Revisit[] } | null {
+  if (pairs.length === 0) return null;
+  const sorted = [...pairs].sort((a, b) => a.earlyAtMs - b.earlyAtMs);
+
+  let best: { fromMs: number; toMs: number; members: Revisit[] } | null = null;
+  let fromMs = sorted[0].earlyAtMs;
+  let toMs = sorted[0].lateAtMs;
+  let members: Revisit[] = [sorted[0]];
+
+  const keepIfBest = () => {
+    const better =
+      best == null ||
+      members.length > best.members.length ||
+      (members.length === best.members.length && toMs - fromMs > best.toMs - best.fromMs);
+    if (better) best = { fromMs, toMs, members: [...members] };
+  };
+
+  for (let i = 1; i < sorted.length; i++) {
+    const r = sorted[i];
+    // `<=` so abutting observations join: a pass at t2 ending one interval and
+    // starting the next leaves no unobserved instant between them.
+    if (r.earlyAtMs <= toMs) {
+      toMs = Math.max(toMs, r.lateAtMs);
+      members.push(r);
+    } else {
+      keepIfBest();
+      fromMs = r.earlyAtMs;
+      toMs = r.lateAtMs;
+      members = [r];
+    }
+  }
+  keepIfBest();
+  return best;
 }
 
 // Metres per hour, or null when the ride did not measure its own drift clearly
@@ -167,26 +261,49 @@ export function fitDriftRate(revisits: Revisit[]): DriftEstimate | null {
   );
   if (usable.length < MIN_REVISIT_PAIRS) return null;
 
+  // Everything from here on is judged on the observations inside one gap-free
+  // block, not on the whole set. A pair outside the block is real evidence about
+  // its own stretch of time and no evidence at all about this one, so it must
+  // not vote on the rate, the sign, or the quorum.
+  const block = largestCoveredBlock(usable);
+  if (block == null) return null;
+  const members = block.members;
+  if (members.length < MIN_REVISIT_PAIRS) return null;
+
+  const sites = new Set(members.map((r) => r.segmentId)).size;
+  if (sites < MIN_REVISIT_SITES) return null;
+
+  // How far the ramp reaches past the shortest thing backing it. Checked before
+  // the rate is used for anything, because this is the term that turns a
+  // tenth-of-a-metre leak into a double-digit correction.
+  const windowMs = block.toMs - block.fromMs;
+  const shortestGapMs = Math.min(...members.map((r) => r.lateAtMs - r.earlyAtMs));
+  if (!(shortestGapMs > 0)) return null;
+  const windowToGapRatio = windowMs / shortestGapMs;
+  if (windowToGapRatio > MAX_WINDOW_TO_GAP_RATIO) return null;
+
   // The median of the per-pair rates rather than the mean, so one bucket that
   // caught a bad fix cannot set the slope for the whole ride.
-  const rates = usable.map((r) => r.riseM / ((r.lateAtMs - r.earlyAtMs) / MS_PER_HOUR));
+  const rates = members.map((r) => r.riseM / ((r.lateAtMs - r.earlyAtMs) / MS_PER_HOUR));
   const rateMPerH = median(rates);
   if (!finite(rateMPerH) || rateMPerH === 0) return null;
   if (Math.abs(rateMPerH) > MAX_DRIFT_RATE_M_PER_H) return null;
 
   // Is the movement bigger than the leaks? Judged on the rises themselves, not
   // on the rate, because a small rise over a short gap implies a large rate.
-  if (median(usable.map((r) => Math.abs(r.riseM))) < MIN_MEANINGFUL_RISE_M) return null;
+  if (median(members.map((r) => Math.abs(r.riseM))) < MIN_MEANINGFUL_RISE_M) return null;
 
   // Do the pairs agree on direction?
-  const agreeing = usable.filter((r) => Math.sign(r.riseM) === Math.sign(rateMPerH)).length;
-  if (agreeing / usable.length < MIN_SIGN_AGREEMENT) return null;
+  const agreeing = members.filter((r) => Math.sign(r.riseM) === Math.sign(rateMPerH)).length;
+  if (agreeing / members.length < MIN_SIGN_AGREEMENT) return null;
 
   return {
     rateMPerH,
-    fromMs: Math.min(...usable.map((r) => r.earlyAtMs)),
-    toMs: Math.max(...usable.map((r) => r.lateAtMs)),
-    pairs: usable.length,
+    fromMs: block.fromMs,
+    toMs: block.toMs,
+    pairs: members.length,
+    sites,
+    windowToGapRatio,
   };
 }
 

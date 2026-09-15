@@ -11,7 +11,7 @@ import {
 import { rejectElevationSpikes, smoothElevations } from "./elevationSmoothing.js";
 import { demKey, ensureDemElevations, type DemPosition } from "./demElevation.js";
 import { fitAnchor, MIN_POINTS_FOR_ANCHOR, type AnchorPoint, type Revisit } from "./anchorFit.js";
-import type { Direction, Segment, SessionSample } from "../types/index.js";
+import type { Direction, ElevationSource, Segment, SessionSample } from "../types/index.js";
 
 // Candidate segments come from a box around the session's own samples. Fine
 // for a prototype where a session is one short ride.
@@ -81,6 +81,28 @@ interface QualifyingRun {
   // The midpoint of the run, not per bucket: a run is one pass over one
   // segment, ten to thirty seconds, and the weather does not move in that.
   atMs: number;
+  // Which instrument measured this pass. See `runElevationSource`.
+  elevationSource: RunElevationSource;
+}
+
+// A run's instrument: one source for the whole traversal, or "mixed" when the
+// phone changed sensor part way through it.
+//
+// `null` is its own value rather than an absence, and it matches itself: rides
+// recorded before session_samples.elevation_source existed are all null, and two
+// passes from one such ride did come from the same instrument even though the
+// row cannot say which. Treating null as unknowable would bar every pre-column
+// ride from the drift fit forever, for a difference that does not exist within
+// any one of them.
+type RunElevationSource = ElevationSource | "mixed" | null;
+
+function runElevationSource(samples: SessionSample[]): RunElevationSource {
+  if (samples.length === 0) return "mixed";
+  const first = samples[0].elevationSource ?? null;
+  for (const sample of samples) {
+    if ((sample.elevationSource ?? null) !== first) return "mixed";
+  }
+  return first;
 }
 
 // Not one scalar per segment: fitting that finely would absorb the real terrain
@@ -135,13 +157,52 @@ function collectAnchorPoints(runs: QualifyingRun[], dem: Map<string, number>): A
 // The cost of that is real and measured: 21 long revisits across the archive
 // are declined for direction against 30 kept. Using them needs the lag removed
 // first, not just the index flipped.
+// **And the same instrument, for the same reason as the same direction.**
+//
+// The rule above says two passes cancel the ground only if they are displaced
+// along it identically. Two passes cancel the *instrument* only if there is one
+// instrument. expo-sensors stops delivering barometer readings when the screen
+// locks, so a ride falls back to GPS altitude mid-way and back again -- the
+// phone records which per sample, and `elevation_source` exists precisely
+// because that swap was otherwise invisible.
+//
+// Comparing a GPS-altitude pass against a barometric one measures the offset
+// between two sensors, not the movement of one. That offset is not a constant
+// either: GPS vertical error moves with satellite geometry and terrain, so it
+// varies along the route, and the comparison reads as a drift that grows with
+// distance rather than with time.
+//
+// Measured, on session 76: two laps of Culebras Trail, lap one inside a GPS
+// stretch and lap two on the barometer, producing rises from -3.49m at the head
+// of the trail to -17.96m at its end while every gap was 31 to 32 minutes. A
+// barometer sliding with the weather gives the SAME rise for every pair with the
+// same gap; a rise that tracks position instead is the tell. The fit called that
+// -25.46 m/h and asked to tilt the ride 20m. Every guard passed it: the pairs
+// agreed on sign, cleared the meaningfulness floor, covered 15 distinct sites
+// and sat inside the rate cap.
+//
+// The cost is the honest kind: rides that switch source lose the revisits that
+// straddle the switch, not the ones on either side of it.
 export function collectRevisits(
-  runs: Array<{ segmentId: number; direction: Direction; atMs: number; buckets: BucketSample[] }>,
+  runs: Array<{
+    segmentId: number;
+    direction: Direction;
+    atMs: number;
+    buckets: BucketSample[];
+    elevationSource?: RunElevationSource;
+  }>,
 ): Revisit[] {
   const byBucket = new Map<string, Array<{ run: number; elevationM: number }>>();
   runs.forEach((run, index) => {
+    // A run whose own samples disagree cannot be attributed to an instrument at
+    // all, so it is no use as either half of a comparison.
+    if (run.elevationSource === "mixed") return;
     for (const bucket of run.buckets) {
-      const key = `${run.segmentId}|${run.direction}|${bucket.distanceM}`;
+      // The source joins segment and direction in the key, so a pass can only
+      // ever be compared against one taken the same way, on the same ground,
+      // with the same sensor. Putting it in the key rather than testing it
+      // afterwards means a mismatched pair is never formed to begin with.
+      const key = `${run.segmentId}|${run.direction}|${bucket.distanceM}|${run.elevationSource ?? "unknown"}`;
       const readings = byBucket.get(key);
       const reading = { run: index, elevationM: bucket.elevationM };
       if (readings) readings.push(reading);
@@ -150,20 +211,32 @@ export function collectRevisits(
   });
 
   // Every bucket two passes share contributes one rise to that pair of passes.
+  //
+  // **Adjacent passes only, not every pair.** N passes over one cell contain
+  // N-1 independent increments, but there are N(N-1)/2 ways to pair them up and
+  // the extra ones carry no new information: for passes at t1 < t2 < t3, the
+  // t1->t3 rise is exactly the t1->t2 rise plus the t2->t3 rise. Emitting all
+  // three let three passes over a single 15m cell clear a quorum written to
+  // need three independent observations -- two increments wearing three hats.
+  // That is the same defect the comment above says this function prevents, one
+  // level up: fixed there for buckets within a pair, missed here for passes
+  // within a cell. `three passes over one block` in sessionProcessor.test.ts
+  // asserted the broken behaviour as correct, which is how it survived review.
+  //
+  // Sorted by time rather than trusting `runs` order, because the caller builds
+  // runs per segment and nothing guarantees they arrive chronologically.
   const risesByPair = new Map<string, number[]>();
   for (const readings of byBucket.values()) {
     if (readings.length < 2) continue;
-    for (let i = 0; i < readings.length; i++) {
-      for (let j = i + 1; j < readings.length; j++) {
-        const a = readings[i];
-        const b = readings[j];
-        const [early, late] = runs[a.run].atMs <= runs[b.run].atMs ? [a, b] : [b, a];
-        const key = `${early.run}|${late.run}`;
-        const rise = late.elevationM - early.elevationM;
-        const rises = risesByPair.get(key);
-        if (rises) rises.push(rise);
-        else risesByPair.set(key, [rise]);
-      }
+    const inTimeOrder = [...readings].sort((a, b) => runs[a.run].atMs - runs[b.run].atMs);
+    for (let i = 0; i + 1 < inTimeOrder.length; i++) {
+      const early = inTimeOrder[i];
+      const late = inTimeOrder[i + 1];
+      const key = `${early.run}|${late.run}`;
+      const rise = late.elevationM - early.elevationM;
+      const rises = risesByPair.get(key);
+      if (rises) rises.push(rise);
+      else risesByPair.set(key, [rise]);
     }
   }
 
@@ -179,6 +252,11 @@ export function collectRevisits(
       lateAtMs: runs[lateIndex].atMs,
       riseM: sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid],
       buckets: rises.length,
+      // Where the comparison was made. Both runs in a pair necessarily share a
+      // segment and direction -- the cell key they were grouped under contains
+      // both -- so either run names the site. fitDriftRate uses it to insist the
+      // quorum comes from more than one street.
+      segmentId: runs[earlyIndex].segmentId,
     });
   }
   return revisits;
@@ -302,6 +380,7 @@ export async function processSession(
       firstSampleId: run.samples[0].id,
       lastSampleId: run.samples[run.samples.length - 1].id,
       atMs: (startedMs + endedMs) / 2,
+      elevationSource: runElevationSource(run.samples),
     });
   }
 
@@ -339,6 +418,7 @@ export async function processSession(
     collectAnchorPoints(qualifying, dem),
     collectRevisits(qualifying.map((r) => ({
       segmentId: r.segment.id, direction: r.direction, atMs: r.atMs, buckets: r.buckets,
+      elevationSource: r.elevationSource,
     }))),
   );
   const demPoints = positions.filter((p) => dem.has(demKey(p))).length;

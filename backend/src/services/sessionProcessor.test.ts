@@ -15,12 +15,14 @@ function pass(
   direction: Direction,
   atMin: number,
   buckets: Array<[distanceM: number, elevationM: number]>,
+  elevationSource: "barometer" | "gps" | "mixed" | null = "barometer",
 ) {
   return {
     segmentId,
     direction,
     atMs: atMin * MINUTE,
     buckets: buckets.map(([distanceM, elevationM]) => ({ distanceM, elevationM })),
+    elevationSource,
   };
 }
 
@@ -105,22 +107,110 @@ test("the earlier pass is the early one, whatever order the runs arrive in", () 
   assert.equal(revisits[0].riseM, 5, "the ride read 5m higher the second time");
 });
 
-test("three passes over one block make three comparisons", () => {
-  // Every pair, because each one is a separate observation of how far the
-  // barometer moved between two moments, and they cover different gaps.
+test("REGRESSION: three passes over one block are TWO increments, not three", () => {
+  // This test previously asserted three, with a comment calling each pair "a
+  // separate observation". That is false, and it is how the defect reached
+  // review: the 0->60 rise is arithmetically the 0->30 rise plus the 30->60
+  // rise, so it is a restatement of the other two and carries no new
+  // information about the barometer. N passes hold N-1 increments; pairing them
+  // every way produces N(N-1)/2 numbers, and the extra ones exist only to pad a
+  // quorum. Three passes over a single 15m cell used to clear a quorum of three.
   const revisits = collectRevisits([
     pass(1, "forward", 0, [[0, 100]]),
     pass(1, "forward", 30, [[0, 102]]),
     pass(1, "forward", 60, [[0, 104]]),
   ]);
-  assert.equal(revisits.length, 3);
+  assert.equal(revisits.length, 2);
   const spans = revisits
     .map((r) => [(r.lateAtMs - r.earlyAtMs) / MINUTE, r.riseM] as const)
     .sort((a, b) => a[0] - b[0]);
-  assert.deepEqual(spans.map(([minutes]) => minutes), [30, 30, 60]);
-  // A steady 4m/h: every pair agrees, which is what lets three of them clear
-  // the sign-agreement test in fitDriftRate.
+  assert.deepEqual(spans.map(([minutes]) => minutes), [30, 30]);
+  // A steady 4m/h, and now both observations are of disjoint, abutting stretches
+  // of time -- which is what makes them independent.
   for (const [minutes, rise] of spans) assert.ok(Math.abs(rise / (minutes / 60) - 4) < 1e-9);
+  const starts = revisits.map((r) => r.earlyAtMs / MINUTE).sort((a, b) => a - b);
+  assert.deepEqual(starts, [0, 30], "the increments chain rather than overlap");
+});
+
+test("passes are paired in time order, not in arrival order", () => {
+  // collectRevisits is handed runs grouped per segment, and nothing promises
+  // they arrive chronologically. Adjacency has to be decided on the clock, or a
+  // shuffled input pairs passes that are not neighbours and silently invents the
+  // overlapping comparisons the rule above exists to remove.
+  const revisits = collectRevisits([
+    pass(1, "forward", 60, [[0, 104]]),
+    pass(1, "forward", 0, [[0, 100]]),
+    pass(1, "forward", 30, [[0, 102]]),
+  ]);
+  assert.equal(revisits.length, 2);
+  const spans = revisits
+    .map((r) => [r.earlyAtMs / MINUTE, r.lateAtMs / MINUTE])
+    .sort((a, b) => a[0] - b[0]);
+  assert.deepEqual(spans, [[0, 30], [30, 60]]);
+});
+
+test("REGRESSION: a GPS pass and a barometric pass are not a revisit", () => {
+  // Session 76, in miniature. Two laps of one trail, the first recorded on GPS
+  // altitude because the screen was locked and expo-sensors had stopped
+  // delivering, the second on the barometer. The difference between them is the
+  // offset between two sensors, and because GPS vertical error moves with
+  // satellite geometry it varies along the route -- so it reads as a drift that
+  // grows with distance instead of with time. On the real ride that produced
+  // rises from -3.49m to -17.96m across gaps that were all 31 to 32 minutes, and
+  // a -25.46 m/h fit asking to tilt the ride by 20m.
+  assert.deepEqual(
+    collectRevisits([
+      pass(1, "forward", 0, [[0, 100], [15, 101]], "gps"),
+      pass(1, "forward", 40, [[0, 102], [15, 103]], "barometer"),
+    ]),
+    [],
+  );
+
+  // The same two passes on one instrument are a revisit, so this is measuring
+  // the source rule and not something else that also refuses.
+  assert.equal(
+    collectRevisits([
+      pass(1, "forward", 0, [[0, 100], [15, 101]], "barometer"),
+      pass(1, "forward", 40, [[0, 102], [15, 103]], "barometer"),
+    ]).length,
+    1,
+  );
+});
+
+test("a pass that changed sensor part way through is not usable either", () => {
+  // Nothing can be attributed to an instrument here, so it is no use as either
+  // half of a comparison -- and it must not silently pair with the run beside it.
+  assert.deepEqual(
+    collectRevisits([
+      pass(1, "forward", 0, [[0, 100]], "mixed"),
+      pass(1, "forward", 40, [[0, 102]], "barometer"),
+      pass(1, "forward", 80, [[0, 104]], "mixed"),
+    ]),
+    [],
+  );
+});
+
+test("rides older than the elevation_source column still measure drift", () => {
+  // Every row is null on rides recorded before the column existed. They came
+  // from one instrument even though nothing says which, so null matches null.
+  // Treating it as unknowable would bar the whole pre-column archive forever.
+  const revisits = collectRevisits([
+    pass(1, "forward", 0, [[0, 100]], null),
+    pass(1, "forward", 40, [[0, 102]], null),
+  ]);
+  assert.equal(revisits.length, 1);
+  assert.equal(revisits[0].riseM, 2);
+});
+
+test("a revisit records the street it was measured on", () => {
+  // fitDriftRate refuses a quorum that is one street seen repeatedly, so the
+  // site has to survive the trip out of here.
+  const revisits = collectRevisits([
+    pass(7, "forward", 0, [[0, 100]]),
+    pass(7, "forward", 40, [[0, 102]]),
+  ]);
+  assert.equal(revisits.length, 1);
+  assert.equal(revisits[0].segmentId, 7);
 });
 
 test("revisits on different segments both count", () => {

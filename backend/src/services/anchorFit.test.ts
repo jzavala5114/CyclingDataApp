@@ -3,6 +3,7 @@ import { test } from "node:test";
 import {
   fitAnchor,
   fitDriftRate,
+  largestCoveredBlock,
   MAX_PLAUSIBLE_OFFSET_M,
   MIN_POINTS_FOR_ANCHOR,
   type AnchorPoint,
@@ -43,9 +44,13 @@ function ride(
 // quietly handed over three. And the default gap sits above that floor rather
 // than on it, so no test here depends on which way the boundary is decided --
 // the tests that mean to probe it say so and carry their own timestamps.
+// `site` defaults to a different segment per pair, because the ordinary case
+// this helper stands for is a ride crossing several streets twice. Pass a fixed
+// number to put every pair on one street, which is what MIN_REVISIT_SITES
+// refuses -- only the test for that rule does.
 function revisitsAt(
   rateMPerH: number,
-  { count = 4, gapMin = 35, fromMin = 0, toMin = 59 } = {},
+  { count = 4, gapMin = 35, fromMin = 0, toMin = 59, site = null as number | null } = {},
 ): Revisit[] {
   const lastStart = toMin - gapMin;
   return Array.from({ length: count }, (_, i) => {
@@ -56,6 +61,7 @@ function revisitsAt(
       lateAtMs: earlyAtMs + gapMin * MINUTE,
       riseM: (rateMPerH * gapMin) / 60,
       buckets: 3,
+      segmentId: site ?? i + 1,
     };
   });
 }
@@ -127,9 +133,9 @@ test("SAFETY: a movement smaller than the known leaks is not believed", () => {
   // manufacture on their own, and MAX_PLAUSIBLE_OFFSET_M is no guard against
   // something this small. Believing it would tilt rides on noise.
   const fit = fitAnchor(ride(60, 6, () => 12), [
-    { earlyAtMs: 0, lateAtMs: 35 * MINUTE, riseM: 0.5, buckets: 3 },
-    { earlyAtMs: 5 * MINUTE, lateAtMs: 45 * MINUTE, riseM: 0.4, buckets: 2 },
-    { earlyAtMs: 10 * MINUTE, lateAtMs: 55 * MINUTE, riseM: 0.6, buckets: 4 },
+    { earlyAtMs: 0, lateAtMs: 35 * MINUTE, riseM: 0.5, buckets: 3, segmentId: 1 },
+    { earlyAtMs: 5 * MINUTE, lateAtMs: 45 * MINUTE, riseM: 0.4, buckets: 2, segmentId: 2 },
+    { earlyAtMs: 10 * MINUTE, lateAtMs: 55 * MINUTE, riseM: 0.6, buckets: 4, segmentId: 3 },
   ]);
   assert.ok(fit);
   assert.equal(fit.shape, "constant");
@@ -140,10 +146,10 @@ test("SAFETY: revisits that disagree on direction are measuring noise", () => {
   // Weather moves one way at a time. A set of comparisons split evenly on sign
   // is not a front passing, it is bucket noise, and its median is meaningless.
   const fit = fitAnchor(ride(60, 6, () => 12), [
-    { earlyAtMs: 0, lateAtMs: 35 * MINUTE, riseM: 3, buckets: 3 },
-    { earlyAtMs: 2 * MINUTE, lateAtMs: 40 * MINUTE, riseM: -3.2, buckets: 3 },
-    { earlyAtMs: 5 * MINUTE, lateAtMs: 45 * MINUTE, riseM: 2.9, buckets: 3 },
-    { earlyAtMs: 8 * MINUTE, lateAtMs: 55 * MINUTE, riseM: -3.1, buckets: 3 },
+    { earlyAtMs: 0, lateAtMs: 35 * MINUTE, riseM: 3, buckets: 3, segmentId: 1 },
+    { earlyAtMs: 2 * MINUTE, lateAtMs: 40 * MINUTE, riseM: -3.2, buckets: 3, segmentId: 2 },
+    { earlyAtMs: 5 * MINUTE, lateAtMs: 45 * MINUTE, riseM: 2.9, buckets: 3, segmentId: 3 },
+    { earlyAtMs: 8 * MINUTE, lateAtMs: 55 * MINUTE, riseM: -3.1, buckets: 3, segmentId: 4 },
   ]);
   assert.ok(fit);
   assert.equal(fit.shape, "constant");
@@ -190,11 +196,11 @@ test("the level is read after the slope is taken out", () => {
 
 test("outliers in the revisits do not set the slope", () => {
   const fit = fitAnchor(ride(60, 6, () => 20), [
-    { earlyAtMs: 0, lateAtMs: 30 * MINUTE, riseM: 2, buckets: 3 },
-    { earlyAtMs: 5 * MINUTE, lateAtMs: 35 * MINUTE, riseM: 2.1, buckets: 3 },
-    { earlyAtMs: 10 * MINUTE, lateAtMs: 40 * MINUTE, riseM: 1.9, buckets: 3 },
-    { earlyAtMs: 15 * MINUTE, lateAtMs: 45 * MINUTE, riseM: -14, buckets: 1 },
-    { earlyAtMs: 20 * MINUTE, lateAtMs: 50 * MINUTE, riseM: 15, buckets: 1 },
+    { earlyAtMs: 0, lateAtMs: 30 * MINUTE, riseM: 2, buckets: 3, segmentId: 1 },
+    { earlyAtMs: 5 * MINUTE, lateAtMs: 35 * MINUTE, riseM: 2.1, buckets: 3, segmentId: 2 },
+    { earlyAtMs: 10 * MINUTE, lateAtMs: 40 * MINUTE, riseM: 1.9, buckets: 3, segmentId: 3 },
+    { earlyAtMs: 15 * MINUTE, lateAtMs: 45 * MINUTE, riseM: -14, buckets: 1, segmentId: 4 },
+    { earlyAtMs: 20 * MINUTE, lateAtMs: 50 * MINUTE, riseM: 15, buckets: 1, segmentId: 5 },
   ]);
   assert.ok(fit);
   assert.ok(Math.abs(fit.driftRateMPerH - 4) < 0.5, `rate ${fit.driftRateMPerH}`);
@@ -232,10 +238,10 @@ test("revisits too close together in time are ignored", () => {
   // Minutes apart, so a few tenths of bucket noise would imply several metres
   // an hour. Not a measurement of the weather.
   const fit = fitAnchor(ride(60, 6, () => 12), [
-    { earlyAtMs: 0, lateAtMs: 5 * MINUTE, riseM: 2.4, buckets: 3 },
-    { earlyAtMs: 10 * MINUTE, lateAtMs: 14 * MINUTE, riseM: 2.5, buckets: 3 },
-    { earlyAtMs: 20 * MINUTE, lateAtMs: 23 * MINUTE, riseM: 2.3, buckets: 3 },
-    { earlyAtMs: 30 * MINUTE, lateAtMs: 32 * MINUTE, riseM: 2.6, buckets: 3 },
+    { earlyAtMs: 0, lateAtMs: 5 * MINUTE, riseM: 2.4, buckets: 3, segmentId: 1 },
+    { earlyAtMs: 10 * MINUTE, lateAtMs: 14 * MINUTE, riseM: 2.5, buckets: 3, segmentId: 2 },
+    { earlyAtMs: 20 * MINUTE, lateAtMs: 23 * MINUTE, riseM: 2.3, buckets: 3, segmentId: 3 },
+    { earlyAtMs: 30 * MINUTE, lateAtMs: 32 * MINUTE, riseM: 2.6, buckets: 3, segmentId: 4 },
   ]);
   assert.ok(fit);
   assert.equal(fit.shape, "constant");
@@ -289,6 +295,156 @@ test("outside the stretch the drift was measured on, the correction is held flat
   }
 });
 
+// --- Defect 1: the ramp may only span time that was actually observed --------
+//
+// These four carry the review's own numbers. Each one passed the suite that
+// shipped with the original PR, which is the point: the guards were mutation
+// tested and the eval exited 0, and none of it could see a window built by
+// taking the union of disjoint observations.
+
+test("REGRESSION: disjoint observations do not license a ramp across the gaps", () => {
+  // The review's example, exactly. Three 31-minute observations at 0, 100 and
+  // 209 minutes. Their union is 0..240, and they cover 93 minutes of it; the
+  // ramp used to be drawn across all 240, inventing a slope for 147 minutes
+  // nobody watched. Each rise is 1.6m, the file's own quoted median
+  // disagreement, and the correction that produced was 12.39m.
+  const disjoint: Revisit[] = [
+    { earlyAtMs: 0, lateAtMs: 31 * MINUTE, riseM: 1.6, buckets: 3, segmentId: 1 },
+    { earlyAtMs: 100 * MINUTE, lateAtMs: 131 * MINUTE, riseM: 1.6, buckets: 3, segmentId: 2 },
+    { earlyAtMs: 209 * MINUTE, lateAtMs: 240 * MINUTE, riseM: 1.6, buckets: 3, segmentId: 3 },
+  ];
+  assert.equal(fitDriftRate(disjoint), null, "no gap-free block holds a quorum");
+
+  const fit = fitAnchor(ride(240, 3, () => 10), disjoint);
+  assert.ok(fit);
+  assert.equal(fit.shape, "constant");
+  assert.equal(fit.driftM, 0);
+  // The number the defect produced, named so a regression is unmistakable.
+  assert.ok(
+    Math.abs(fit.maxM - fit.minM) < 1e-9,
+    `correction spans ${(fit.maxM - fit.minM).toFixed(2)}m; the defect produced 12.39m`,
+  );
+});
+
+test("REGRESSION: a short observation may not set the slope for a long window", () => {
+  // The same leak by a different route, and the one a gap-free window alone
+  // does not catch. Here the observations overlap, so they do form one block --
+  // but two of them span half an hour and the block runs four hours. The median
+  // rate is then the short pairs' rate, applied over eight times the stretch it
+  // was measured on, which multiplies their leak by the same factor.
+  const stackedShort: Revisit[] = [
+    { earlyAtMs: 0, lateAtMs: 240 * MINUTE, riseM: 1.6, buckets: 3, segmentId: 1 },
+    { earlyAtMs: 0, lateAtMs: 31 * MINUTE, riseM: 1.6, buckets: 3, segmentId: 2 },
+    { earlyAtMs: 20 * MINUTE, lateAtMs: 51 * MINUTE, riseM: 1.6, buckets: 3, segmentId: 3 },
+  ];
+  assert.equal(fitDriftRate(stackedShort), null, "reach past the evidence is refused");
+
+  const fit = fitAnchor(ride(240, 3, () => 10), stackedShort);
+  assert.ok(fit);
+  assert.equal(fit.shape, "constant");
+});
+
+test("observations that tile a stretch DO license a ramp across it", () => {
+  // The other half of the rule, and the reason it is a ratio rather than a ban.
+  // Three abutting 40-minute observations cover 0..120 with no gap, so the ramp
+  // reaches exactly three times its shortest observation and no further. This
+  // is the densest honest evidence the feature can get, and it must survive.
+  const chained: Revisit[] = [
+    { earlyAtMs: 0, lateAtMs: 40 * MINUTE, riseM: 2, buckets: 3, segmentId: 1 },
+    { earlyAtMs: 40 * MINUTE, lateAtMs: 80 * MINUTE, riseM: 2, buckets: 3, segmentId: 2 },
+    { earlyAtMs: 80 * MINUTE, lateAtMs: 120 * MINUTE, riseM: 2, buckets: 3, segmentId: 3 },
+  ];
+  const drift = fitDriftRate(chained);
+  assert.ok(drift, "abutting observations leave no unobserved instant");
+  assert.equal(drift.fromMs, 0);
+  assert.equal(drift.toMs, 120 * MINUTE);
+  assert.ok(Math.abs(drift.rateMPerH - 3) < 1e-9, `rate ${drift.rateMPerH}`);
+  assert.ok(Math.abs(drift.windowToGapRatio - 3) < 1e-9, `ratio ${drift.windowToGapRatio}`);
+});
+
+test("the window is the largest covered block, not the span of everything", () => {
+  // A ride with a dense hour and one stray observation hours later. The stray is
+  // real evidence about its own stretch and no evidence at all about the hour,
+  // so it must neither stretch the window nor vote on the rate.
+  const mixed: Revisit[] = [
+    { earlyAtMs: 0, lateAtMs: 35 * MINUTE, riseM: 2, buckets: 3, segmentId: 1 },
+    { earlyAtMs: 10 * MINUTE, lateAtMs: 45 * MINUTE, riseM: 2, buckets: 3, segmentId: 2 },
+    { earlyAtMs: 20 * MINUTE, lateAtMs: 55 * MINUTE, riseM: 2, buckets: 3, segmentId: 3 },
+    { earlyAtMs: 400 * MINUTE, lateAtMs: 440 * MINUTE, riseM: 30, buckets: 3, segmentId: 4 },
+  ];
+  const drift = fitDriftRate(mixed);
+  assert.ok(drift);
+  assert.equal(drift.fromMs, 0);
+  assert.equal(drift.toMs, 55 * MINUTE, "the stray must not stretch the window");
+  assert.equal(drift.pairs, 3, "nor vote on the rate");
+  assert.ok(Math.abs(drift.rateMPerH - (2 / (35 / 60))) < 1e-9, `rate ${drift.rateMPerH}`);
+});
+
+test("largestCoveredBlock merges what touches and splits what does not", () => {
+  const at = (fromMin: number, toMin: number, segmentId = 1): Revisit => ({
+    earlyAtMs: fromMin * MINUTE,
+    lateAtMs: toMin * MINUTE,
+    riseM: 1,
+    buckets: 1,
+    segmentId,
+  });
+
+  assert.equal(largestCoveredBlock([]), null);
+
+  const overlapping = largestCoveredBlock([at(0, 30), at(20, 50), at(45, 70)]);
+  assert.ok(overlapping);
+  assert.equal(overlapping.fromMs, 0);
+  assert.equal(overlapping.toMs, 70 * MINUTE);
+  assert.equal(overlapping.members.length, 3);
+
+  // Abutting exactly: the instant they share was observed by both, so there is
+  // no gap between them.
+  const abutting = largestCoveredBlock([at(0, 30), at(30, 60)]);
+  assert.ok(abutting);
+  assert.equal(abutting.toMs, 60 * MINUTE);
+  assert.equal(abutting.members.length, 2);
+
+  // One minute apart is a gap, and the bigger side wins.
+  const split = largestCoveredBlock([at(0, 30), at(31, 60), at(55, 90)]);
+  assert.ok(split);
+  assert.equal(split.fromMs, 31 * MINUTE);
+  assert.equal(split.toMs, 90 * MINUTE);
+  assert.equal(split.members.length, 2);
+
+  // Equal-sized blocks: the longer one, so the ride keeps the stretch it can
+  // say the most about.
+  const tied = largestCoveredBlock([at(0, 10), at(100, 160)]);
+  assert.ok(tied);
+  assert.equal(tied.fromMs, 100 * MINUTE);
+  assert.equal(tied.toMs, 160 * MINUTE);
+
+  // Unsorted input must not change the answer.
+  const shuffled = largestCoveredBlock([at(45, 70), at(0, 30), at(20, 50)]);
+  assert.ok(shuffled);
+  assert.equal(shuffled.fromMs, 0);
+  assert.equal(shuffled.toMs, 70 * MINUTE);
+});
+
+// --- Defect 2: a quorum has to be independent evidence -----------------------
+
+test("REGRESSION: a quorum may not come from a single street", () => {
+  // Three pairs, all on segment 1. Time-wise they are impeccable: gap-free,
+  // well separated, in agreement. They are still one place, one line through
+  // one 15m cell, and whatever systematic error lives there is present in all
+  // three. The review's phrasing was "two increments wearing three hats"; this
+  // is the hats after the increments were fixed.
+  const oneStreet = revisitsAt(6, { site: 1 });
+  assert.equal(fitDriftRate(oneStreet), null);
+
+  const fit = fitAnchor(ride(60, 6, (m) => (6 * m) / 59), oneStreet);
+  assert.ok(fit);
+  assert.equal(fit.shape, "constant");
+
+  // The identical evidence spread over two streets is believed, so this test is
+  // measuring the site rule and not something else that happens to also refuse.
+  assert.ok(fitDriftRate(revisitsAt(6)));
+});
+
 test("every rejection path returns exactly the old single number", () => {
   // The safety property that bounds the blast radius: this can only differ from
   // the previous behaviour when a ride has measured its own drift.
@@ -299,9 +455,9 @@ test("every rejection path returns exactly the old single number", () => {
     revisitsAt(90),
     revisitsAt(0),
     [
-      { earlyAtMs: 0, lateAtMs: 5 * MINUTE, riseM: 2.4, buckets: 3 },
-      { earlyAtMs: 10 * MINUTE, lateAtMs: 14 * MINUTE, riseM: 2.5, buckets: 3 },
-      { earlyAtMs: 20 * MINUTE, lateAtMs: 23 * MINUTE, riseM: 2.3, buckets: 3 },
+      { earlyAtMs: 0, lateAtMs: 5 * MINUTE, riseM: 2.4, buckets: 3, segmentId: 1 },
+      { earlyAtMs: 10 * MINUTE, lateAtMs: 14 * MINUTE, riseM: 2.5, buckets: 3, segmentId: 2 },
+      { earlyAtMs: 20 * MINUTE, lateAtMs: 23 * MINUTE, riseM: 2.3, buckets: 3, segmentId: 3 },
     ],
   ];
   for (const revisits of cases) {
@@ -328,9 +484,9 @@ test("the correction is evaluated at the moment asked for", () => {
 
 test("fitDriftRate reads a rate out of pairs of different lengths", () => {
   const drift = fitDriftRate([
-    { earlyAtMs: 0, lateAtMs: 60 * MINUTE, riseM: 5, buckets: 3 },
-    { earlyAtMs: 20 * MINUTE, lateAtMs: 50 * MINUTE, riseM: 2.5, buckets: 2 },
-    { earlyAtMs: 30 * MINUTE, lateAtMs: 75 * MINUTE, riseM: 3.75, buckets: 4 },
+    { earlyAtMs: 0, lateAtMs: 60 * MINUTE, riseM: 5, buckets: 3, segmentId: 1 },
+    { earlyAtMs: 20 * MINUTE, lateAtMs: 50 * MINUTE, riseM: 2.5, buckets: 2, segmentId: 2 },
+    { earlyAtMs: 30 * MINUTE, lateAtMs: 75 * MINUTE, riseM: 3.75, buckets: 4, segmentId: 3 },
   ]);
   assert.ok(drift != null);
   assert.ok(Math.abs(drift.rateMPerH - 5) < 0.01, `expected 5 m/h, got ${drift.rateMPerH}`);
@@ -344,9 +500,9 @@ test("fitDriftRate reads a rate out of pairs of different lengths", () => {
 test("fitDriftRate refuses when the pairs are all short", () => {
   assert.equal(
     fitDriftRate([
-      { earlyAtMs: 0, lateAtMs: MINUTE, riseM: 1, buckets: 2 },
-      { earlyAtMs: 5 * MINUTE, lateAtMs: 6.5 * MINUTE, riseM: 1, buckets: 2 },
-      { earlyAtMs: 9 * MINUTE, lateAtMs: 11 * MINUTE, riseM: 1, buckets: 2 },
+      { earlyAtMs: 0, lateAtMs: MINUTE, riseM: 1, buckets: 2, segmentId: 1 },
+      { earlyAtMs: 5 * MINUTE, lateAtMs: 6.5 * MINUTE, riseM: 1, buckets: 2, segmentId: 2 },
+      { earlyAtMs: 9 * MINUTE, lateAtMs: 11 * MINUTE, riseM: 1, buckets: 2, segmentId: 3 },
     ]),
     null,
   );
@@ -358,9 +514,9 @@ test("a short pair does not count towards the quorum of three", () => {
   // reach the quorum on comparisons that were explicitly ruled out.
   assert.equal(
     fitDriftRate([
-      { earlyAtMs: 0, lateAtMs: 35 * MINUTE, riseM: 3, buckets: 3 },
-      { earlyAtMs: 10 * MINUTE, lateAtMs: 50 * MINUTE, riseM: 3.4, buckets: 3 },
-      { earlyAtMs: 20 * MINUTE, lateAtMs: 24 * MINUTE, riseM: 0.3, buckets: 3 },
+      { earlyAtMs: 0, lateAtMs: 35 * MINUTE, riseM: 3, buckets: 3, segmentId: 1 },
+      { earlyAtMs: 10 * MINUTE, lateAtMs: 50 * MINUTE, riseM: 3.4, buckets: 3, segmentId: 2 },
+      { earlyAtMs: 20 * MINUTE, lateAtMs: 24 * MINUTE, riseM: 0.3, buckets: 3, segmentId: 3 },
     ]),
     null,
   );
