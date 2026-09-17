@@ -383,13 +383,26 @@ function summarise(values: number[]) {
 // the before and the after run and the two paired up. Summary statistics alone
 // cannot tell "helped everything a little" from "helped most and hurt some",
 // and those call for different decisions.
+// **Scoped per RIDE, not per bucket.** This read
+// `if (only && !list.some((o) => only.has(o.sessionId))) continue;` -- admit the
+// whole bucket if ANY ride in it was treated -- and then measured every ride in
+// that bucket, treated or not. So "rides the change touched" quietly included
+// comparisons from rides the change did not touch, whose before and after values
+// are identical by construction. Each of those contributes a pair that cannot
+// move, which drags both medians towards each other and makes any real effect
+// look smaller than it is. It is dilution of exactly the kind the treated scope
+// exists to remove, reintroduced inside the function that implements it.
+//
+// The measure's unit is one ride's own disagreement with itself at one bucket,
+// so the unit belongs to a single session and the filter belongs beside it.
+// `terrainDisagreements` already filters this way; `crossRideDisagreements`
+// deliberately cannot, and says why.
 function selfDisagreements(
   observations: Map<string, Observation[]>,
   only?: Set<number>,
 ): Map<string, number> {
   const out = new Map<string, number>();
   for (const [key, list] of observations) {
-    if (only && !list.some((o) => only.has(o.sessionId))) continue;
     const bySession = new Map<number, Observation[]>();
     for (const o of list) {
       const seen = bySession.get(o.sessionId);
@@ -397,6 +410,7 @@ function selfDisagreements(
       else bySession.set(o.sessionId, [o]);
     }
     for (const [sessionId, passes] of bySession) {
+      if (only && !only.has(sessionId)) continue;
       if (passes.length < 2) continue;
       // Out of sample only.
       if (!heldOutKeys.get(sessionId)?.has(key)) continue;
@@ -412,6 +426,19 @@ function selfDisagreements(
 
 // One bucket, two rides. Each ride collapses to its own mean first, so a ride
 // that passed three times counts once.
+//
+// **The one measure whose treated scope is per BUCKET, and it has to be.** The
+// other two measure something that belongs to a single ride, so they filter per
+// ride. This one measures the spread BETWEEN rides at one bucket, and that
+// number has no owner: it exists only as a relation among every ride that
+// touched the bucket. Dropping the untreated rides from the spread would not
+// narrow the scope, it would measure a different quantity -- the spread among
+// treated rides only -- which is not what lands on the map.
+//
+// So a bucket is in scope when at least one contributing ride was treated, and
+// the value is then the full spread including untreated rides, because that is
+// the number a rider sees. The asymmetry with `selfDisagreements` is deliberate
+// and is the reason that function's filter sits in a different place.
 function crossRideDisagreements(
   observations: Map<string, Observation[]>,
   only?: Set<number>,
@@ -576,6 +603,24 @@ if (driftSeen.length > 0) {
 // a gain in one paid for by a loss in the other is not a win.
 let failed = false;
 
+// **And an eval that measured nothing does not pass.**
+//
+// Every treated-scope measure printed NONE and `continue`d when the fit reached
+// no ride, so `failed` was never set, and the script exited 0 while having
+// certified precisely nothing. That is the worst possible reading to give: the
+// one number that decides whether this feature is safe was reported as "fine"
+// by a run that could not have detected any amount of harm.
+//
+// It is a third outcome rather than a FAIL, because it is a different finding.
+// FAIL means the change made the archive worse. This means the change is not
+// reachable by any ride here, so the archive cannot say. Both are non-zero;
+// only a measured improvement exits 0.
+//
+//   0  measured, and every measure improved or held
+//   1  measured, and something got worse
+//   2  not measured -- no ride qualified, so there is no verdict to give
+let inconclusive = false;
+
 // Before reading any verdict: prove that the rides which kept a single number
 // came out bit-for-bit identical. If that holds, "rides the change touched" is
 // not a convenient subset, it is every comparison that could have moved, and
@@ -646,6 +691,13 @@ for (const scope of ["whole archive", "rides the change touched"] as const) {
         `NONE  ${scope} / ${label}: no comparisons -- the fit treated no rides, ` +
           `so there is nothing here to improve or regress`,
       );
+      // Nothing to judge is still not a pass. Saying FAIL here would be a lie in
+      // the direction that looks rigorous -- an empty treated set used to print
+      // "median NaNm -> NaNm" and count as a regression, because `NaN <= NaN` is
+      // false, which reads as "the change made things worse" when the change
+      // reached no ride at all. Exiting 0 is the opposite lie, in the direction
+      // that looks reassuring. It is neither: the run has no verdict to give.
+      if (scope === "rides the change touched") inconclusive = true;
       continue;
     }
 
@@ -663,5 +715,18 @@ for (const scope of ["whole archive", "rides the change touched"] as const) {
   }
 }
 
+if (inconclusive) {
+  console.log(
+    `\nINCONCLUSIVE  the fit treated ${treated.size} of ${usable.length} usable rides, so the ` +
+      `treated-scope measures have no comparisons.\n` +
+      `              The archive cannot say whether the ramp helps or harms. Exit 2 rather ` +
+      `than 0: a run that could not have detected harm must not read as a pass.\n` +
+      `              Production would ramp ${productionRamped.size} of ${usable.length} ` +
+      `(it fits on every revisit; this eval withholds half).`,
+  );
+}
+
 await pool.end();
-process.exit(failed ? 1 : 0);
+// 1 beats 2: if something measurable got worse, that is the headline, and an
+// empty scope elsewhere does not soften it.
+process.exit(failed ? 1 : inconclusive ? 2 : 0);

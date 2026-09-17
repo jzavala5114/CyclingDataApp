@@ -98,7 +98,13 @@ interface QualifyingRun {
 // any one of them.
 type RunElevationSource = ElevationSource | "mixed" | null;
 
-function runElevationSource(samples: SessionSample[]): RunElevationSource {
+// Exported for its tests, not for callers. Every test in sessionProcessor.test.ts
+// hands `collectRevisits` a literal `elevationSource` and `siteKey`, so the two
+// functions that PRODUCE those values in production had no coverage at all: a
+// review mutated both and the suite stayed green. The instrument rule is the
+// guard that caught session 76 -- the one defect in this feature that was
+// actively corrupting a real ride -- and it was resting on an untested mapping.
+export function runElevationSource(samples: SessionSample[]): RunElevationSource {
   if (samples.length === 0) return "mixed";
   const first = samples[0].elevationSource ?? null;
   for (const sample of samples) {

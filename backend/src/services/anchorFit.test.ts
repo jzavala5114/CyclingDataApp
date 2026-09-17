@@ -245,12 +245,57 @@ test("outliers in the terrain points do not move the level", () => {
   assert.ok(Math.abs(a.midM - b.midM) < 0.5, `${a.midM.toFixed(2)} vs ${b.midM.toFixed(2)}`);
 });
 
-test("too few points is unanchored, not a guess", () => {
-  assert.equal(fitRamp(ride(MIN_POINTS_FOR_ANCHOR - 1, 1, () => 5), revisitsAt(5)), null);
+// A control parameterised by the treatment is not a control.
+//
+// Both tests below used to build their fixture out of the constant they were
+// checking -- `ride(MIN_POINTS_FOR_ANCHOR - 1, ...)` and
+// `() => MAX_PLAUSIBLE_OFFSET_M + 10` -- so the constant could be set to any
+// value at all and the suite stayed green: the fixture moved with it. That is
+// the same defect the eval was fixed for one level up, and it left the two
+// constants free to be anything.
+//
+// The literals below are deliberate duplication. The point of a boundary test is
+// to fail when the number moves, which it cannot do if it reads the number.
+
+test("BOUNDARY: MIN_POINTS_FOR_ANCHOR is 10 points, and it bites", () => {
+  assert.equal(fitRamp(ride(9, 1, () => 5), revisitsAt(5)), null, "nine points is a guess");
+  assert.ok(fitRamp(ride(10, 1, () => 5), revisitsAt(5)), "ten is enough to read a level from");
+  // And the constant still says what the test assumes, so a change to it shows
+  // up here as a failure with a clear cause rather than as two silent passes.
+  assert.equal(MIN_POINTS_FOR_ANCHOR, 10);
 });
 
-test("an implausible offset stays unanchored", () => {
-  assert.equal(fitRamp(ride(60, 6, () => MAX_PLAUSIBLE_OFFSET_M + 10), revisitsAt(3)), null);
+test("BOUNDARY: MAX_PLAUSIBLE_OFFSET_M is 60m, and it bites on the shipped path", () => {
+  // Checked with the ramp OFF, because that is the path every saved ride takes
+  // and the bound is the same one the single number always had.
+  const at = (residualM: number) => fitAnchor(ride(60, 6, () => residualM), [], { allowRamp: false });
+  assert.ok(at(59), "59m off is a bad terrain lookup we still correct for");
+  assert.equal(at(61), null, "61m off is a broken ride");
+  assert.equal(MAX_PLAUSIBLE_OFFSET_M, 60);
+});
+
+test("BOUNDARY: MAX_PLAUSIBLE_OFFSET_M bounds the ramp's ENDS, not just its middle", () => {
+  // The check that had no test at all. `a ramp plausible in the middle but
+  // absurd at one end is refused` names this rule, but its revisits are disjoint
+  // so it is refused by the covered-block rule long before the ends are read --
+  // a test passing for a reason other than the one it states cannot fail when
+  // that reason breaks.
+  //
+  // These revisits do form one block: rate 10 m/h across 59 minutes, so the ramp
+  // reaches 4.92m either side of the level. A level of 55 puts the far end at
+  // 59.92m and is allowed; 56 puts it at 60.92m and is not, even though 56m is
+  // itself well inside the band. The ride then keeps its single number.
+  const atLevel = (levelM: number) => fitRamp(ride(60, 6, () => levelM), revisitsAt(10));
+
+  const inside = atLevel(55);
+  assert.ok(inside);
+  assert.equal(inside.shape, "ramp", "both ends inside the band, so the ramp stands");
+  assert.ok(Math.abs(inside.maxM) < 60);
+
+  const overhanging = atLevel(56);
+  assert.ok(overhanging, "and the ride is never thrown away for it");
+  assert.equal(overhanging.shape, "constant", "one end past 60m takes the ramp away");
+  assert.equal(overhanging.driftM, 0);
 });
 
 test("fewer than three revisits keeps the single number", () => {
@@ -507,6 +552,113 @@ test("largestCoveredBlock merges what touches and splits what does not", () => {
   assert.equal(shuffled.toMs, 70 * MINUTE);
 });
 
+test("BOUNDARY: the largest block is largest in TIME, not in member count", () => {
+  const at = (fromMin: number, toMin: number, segmentId: number): Revisit => ({
+    earlyAtMs: fromMin * MINUTE,
+    lateAtMs: toMin * MINUTE,
+    riseM: 1,
+    buckets: 1,
+    segmentId,
+    siteKey: `street-${segmentId}`,
+  });
+
+  // Three observations packed into 33 minutes against two spread across 70. The
+  // two win, because the block is the stretch the ramp will be drawn over and
+  // its currency is time.
+  //
+  // This is the currency question the second review raised, and it mattered most
+  // before `collapseToObservations` existed: member count was then a count of
+  // segment ROWS, so the "densest" block was whichever street had been cut into
+  // the most pieces by junctions. Time cannot be inflated by splitting a road.
+  const block = largestCoveredBlock([
+    at(0, 31, 1),
+    at(1, 32, 2),
+    at(2, 33, 3),
+    at(100, 160, 4),
+    at(110, 170, 5),
+  ]);
+  assert.ok(block);
+  assert.equal(block.fromMs, 100 * MINUTE, "the 70-minute block wins");
+  assert.equal(block.toMs, 170 * MINUTE);
+  assert.equal(block.members.length, 2, "even though the 33-minute one holds three");
+
+  // And the consequence is accepted on purpose: the chosen block then fails the
+  // quorum re-check and the whole ride keeps its single number, rather than a
+  // ramp being drawn over a window picked for density.
+  assert.equal(
+    fitDriftRate([at(0, 31, 1), at(1, 32, 2), at(2, 33, 3), at(100, 160, 4), at(110, 170, 5)]),
+    null,
+    "a two-observation window is refused rather than swapped for a denser one",
+  );
+
+  // Ties -- equal duration -- go to the block with more observations behind it.
+  const tied = largestCoveredBlock([at(0, 30, 1), at(10, 40, 2), at(100, 140, 3)]);
+  assert.ok(tied);
+  assert.equal(tied.fromMs, 0, "two 40-minute spans, so the one with two members wins");
+  assert.equal(tied.members.length, 2);
+});
+
+test("REGRESSION: the fit is shift-invariant, because production clocks are epoch ms", () => {
+  // Every other fixture in this file starts its ride at atMs 0, and that shared
+  // convenience hides a whole class of defect: any rule written as a RATIO of
+  // two timestamps is meaningful at zero and meaningless at 1.7e12, where every
+  // value is within a thousandth of every other and every ratio rounds to 1.
+  //
+  // `netObservedRiseM` had exactly that shape. It selected the observations that
+  // jointly hold the veto by `lateAtMs >= furthest * LONGEST_OBSERVATION_TOLERANCE`
+  // using absolute timestamps, so at epoch time the 5% band spanned 85 years and
+  // admitted every candidate, including short ones that must not be in it. At
+  // atMs 0 the same line is correct. No test here could have seen it.
+  //
+  // The fixture below is built so that admitting the short observation changes
+  // the verdict rather than merely the arithmetic: the two hour-long passes read
+  // 1m and 9m, so their joint median is 5m and the ramp's 9m claim is refused,
+  // while letting the 35-minute 9m pass into the band moves the median to 9m and
+  // the ramp certifies itself.
+  const shape = (baseMs: number): Revisit[] => [
+    { earlyAtMs: baseMs, lateAtMs: baseMs + 60 * MINUTE, riseM: 1, buckets: 3, segmentId: 1, siteKey: "street-1" },
+    { earlyAtMs: baseMs, lateAtMs: baseMs + 60 * MINUTE, riseM: 9, buckets: 3, segmentId: 2, siteKey: "street-2" },
+    { earlyAtMs: baseMs, lateAtMs: baseMs + 35 * MINUTE, riseM: 9, buckets: 3, segmentId: 3, siteKey: "street-3" },
+  ];
+  assert.equal(fitDriftRate(shape(0)), null, "refused at the origin");
+  assert.equal(
+    fitDriftRate(shape(Date.UTC(2026, 8, 15, 14, 0, 0))),
+    null,
+    "and refused on a real clock -- the two must not disagree",
+  );
+
+  // The general property, on evidence that IS believed, so the invariance is
+  // checked on the accepting path too and not only on a refusal that could be
+  // arrived at for different reasons at different offsets.
+  const believable = (baseMs: number): Revisit[] =>
+    [0, 1, 2].map((i) => ({
+      earlyAtMs: baseMs + i * 40 * MINUTE,
+      lateAtMs: baseMs + (i + 1) * 40 * MINUTE,
+      riseM: 2,
+      buckets: 3,
+      segmentId: i + 1,
+      siteKey: `street-${i + 1}`,
+    }));
+  const origin = fitDriftRate(believable(0));
+  assert.ok(origin);
+  for (const baseMs of [Date.UTC(2026, 8, 15, 14, 0, 0), Date.UTC(1999, 11, 31, 23, 59, 0), 1]) {
+    const shifted = fitDriftRate(believable(baseMs));
+    assert.ok(shifted, `no fit at base ${baseMs}`);
+    assert.equal(shifted.fromMs - baseMs, origin.fromMs, `window start moved at base ${baseMs}`);
+    assert.equal(shifted.toMs - baseMs, origin.toMs, `window end moved at base ${baseMs}`);
+    assert.ok(
+      Math.abs(shifted.rateMPerH - origin.rateMPerH) < 1e-9,
+      `rate ${shifted.rateMPerH} vs ${origin.rateMPerH} at base ${baseMs}`,
+    );
+    assert.ok(
+      Math.abs(shifted.contradictionM - origin.contradictionM) < 1e-9,
+      `contradiction ${shifted.contradictionM} vs ${origin.contradictionM} at base ${baseMs}`,
+    );
+    assert.equal(shifted.pairs, origin.pairs);
+    assert.equal(shifted.sites, origin.sites);
+  }
+});
+
 // --- Defect 2: a quorum has to be independent evidence -----------------------
 
 test("REGRESSION: a quorum may not come from a single street", () => {
@@ -586,17 +738,50 @@ test("BOUNDARY: MIN_SIGN_AGREEMENT is two thirds, and it bites", () => {
 });
 
 test("BOUNDARY: MAX_DRIFT_RATE_M_PER_H is 30, and it bites", () => {
+  // The fixture sits at the SHORTEST window this file admits -- three pairs all
+  // spanning the same half hour -- and it has to, because MAX_TOTAL_DRIFT_M
+  // subsumes the rate cap at every longer window. See that constant's comment
+  // for the arithmetic; the short version is that a window is at least half an
+  // hour, so a rate over 30 m/h always implies a total over 15m.
+  //
+  // An earlier version of this test staggered the starts by two minutes, giving
+  // a 39-minute window in which 29 m/h is 18.85m of total drift. It was
+  // measuring the total cap while naming the rate cap, and it went red the day
+  // the total cap was added -- correctly.
   const atRate = (rateMPerH: number): Revisit[] =>
     [0, 1, 2].map((i) => ({
-      earlyAtMs: i * 2 * MINUTE,
-      lateAtMs: i * 2 * MINUTE + 35 * MINUTE,
-      riseM: (rateMPerH * 35) / 60,
+      earlyAtMs: 0,
+      lateAtMs: 30 * MINUTE,
+      riseM: (rateMPerH * 30) / 60,
       buckets: 3,
       segmentId: i + 1,
       siteKey: `street-${i + 1}`,
     }));
+  // 14.5m of total drift at 29 m/h, inside the total cap, so the rate is the
+  // only thing this asks about.
   assert.ok(fitDriftRate(atRate(29)), "29 m/h is a brisk front");
   assert.equal(fitDriftRate(atRate(31)), null, "31 m/h is a broken ride");
+});
+
+test("BOUNDARY: MAX_TOTAL_DRIFT_M is 15, and it bites independently of the rate", () => {
+  // The cap the rate cap cannot stand in for. Three abutting 40-minute
+  // observations tile two hours, so a rate well inside MAX_DRIFT_RATE_M_PER_H
+  // still asks to tilt the ride by twice its hourly figure. A legal 18 m/h held
+  // across five and a half hours was asking for 96m.
+  const tiledAt = (rateMPerH: number): Revisit[] =>
+    [0, 1, 2].map((i) => ({
+      earlyAtMs: i * 40 * MINUTE,
+      lateAtMs: (i + 1) * 40 * MINUTE,
+      riseM: (rateMPerH * 40) / 60,
+      buckets: 3,
+      segmentId: i + 1,
+      siteKey: `street-${i + 1}`,
+    }));
+  // 7.4 m/h over two hours is 14.8m. Nothing else here objects: the rate is a
+  // quarter of its cap, the chain contradicts nothing, and the sites are three.
+  assert.ok(fitDriftRate(tiledAt(7.4)), "14.8m of total correction is allowed");
+  // 7.6 m/h over the same two hours is 15.2m, and only the total cap can see it.
+  assert.equal(fitDriftRate(tiledAt(7.6)), null, "15.2m is not");
 });
 
 test("BOUNDARY: MAX_CONTRADICTION_FRACTION is half the longest rise, and it bites", () => {
@@ -612,6 +797,44 @@ test("BOUNDARY: MAX_CONTRADICTION_FRACTION is half the longest rise, and it bite
   assert.ok(fitDriftRate(withShortRate(3.9)), "a disagreement the leaks can explain is allowed");
   // Median rate 4.2 m/h predicts 4.2m: 2.2m of disagreement, outside 2m.
   assert.equal(fitDriftRate(withShortRate(4.2)), null, "one the leaks cannot is refused");
+});
+
+test("BOUNDARY: the contradiction allowance is set by the SMALLER of claim and observation", () => {
+  // The other half of the allowance rule, and the half a mutation sweep found
+  // unpinned. `REGRESSION: the ride's longest observation can veto the median`
+  // pins it against being anchored to the ramp's own claim; this pins it against
+  // being anchored to the observation, which is what round one did.
+  //
+  // Two passes watched the whole hour and both read 9m. Three short passes imply
+  // a much gentler 4 m/h, and being three of five they carry the median. So the
+  // ramp claims 4m across an hour the ride twice measured at 9m: a 5m
+  // disagreement, and the question is only what it is allowed to be.
+  //
+  //   anchored to the observation   1m + 0.5 x 9m = 5.5m   accepted
+  //   anchored to the smaller       1m + 0.5 x 4m = 3.0m   refused
+  //
+  // Letting the observation set it means the ride buys 4.5m of tolerance by
+  // having measured a big number, which is the same self-certification as the
+  // other direction wearing the other hat.
+  const longPassesDisagree: Revisit[] = [
+    { earlyAtMs: 0, lateAtMs: 60 * MINUTE, riseM: 9, buckets: 3, segmentId: 1, siteKey: "street-1" },
+    { earlyAtMs: 0, lateAtMs: 60 * MINUTE, riseM: 9, buckets: 3, segmentId: 2, siteKey: "street-2" },
+    { earlyAtMs: 0, lateAtMs: 35 * MINUTE, riseM: 7 / 3, buckets: 3, segmentId: 3, siteKey: "street-3" },
+    { earlyAtMs: 0, lateAtMs: 35 * MINUTE, riseM: 7 / 3, buckets: 3, segmentId: 4, siteKey: "street-4" },
+    { earlyAtMs: 0, lateAtMs: 35 * MINUTE, riseM: 7 / 3, buckets: 3, segmentId: 5, siteKey: "street-5" },
+  ];
+  assert.equal(fitDriftRate(longPassesDisagree), null, "a 5m disagreement is not bought with a 9m reading");
+
+  // The same five intervals with the long passes reading what the rate implies
+  // are believed, so this is measuring the allowance and not the shape of the
+  // input. 4 m/h over the hour is 4m, and the short passes already say 4 m/h.
+  const longPassesAgree = longPassesDisagree.map((r) =>
+    r.lateAtMs === 60 * MINUTE ? { ...r, riseM: 4 } : r,
+  );
+  const drift = fitDriftRate(longPassesAgree);
+  assert.ok(drift, "long passes that agree with the short ones are believed");
+  assert.ok(Math.abs(drift.rateMPerH - 4) < 1e-9, `rate ${drift.rateMPerH}`);
+  assert.ok(drift.contradictionM < 1e-9, `contradiction ${drift.contradictionM}`);
 });
 
 test("BOUNDARY: the quorum is rechecked AFTER the block is chosen", () => {
@@ -655,15 +878,75 @@ test("REGRESSION: consecutive blocks of ONE street are ONE site", () => {
   }));
   assert.equal(fitDriftRate(oneStreet), null, "three pieces of one trail are not three sites");
 
-  // The same three comparisons with one of them on a different street clear the
-  // quorum -- so this pins MIN_REVISIT_SITES at exactly two as well: raise it and
-  // this half fails, lower it and the half above does.
-  const twoStreets = [
+  // And it is refused TWICE OVER now, which is the point of this fixture and
+  // the reason the rest of the test had to be rebuilt. These three rows share
+  // two moments as well as one street: they are one physical comparison, so
+  // `collapseToObservations` folds them into a single observation and the quorum
+  // of three is missed before the site rule is even consulted. Putting the third
+  // row on a different street -- what this test used to do -- therefore does NOT
+  // restore a quorum, because two rows of one comparison plus one of another is
+  // two observations, not three.
+  const relabelled = [
     ...oneStreet.slice(0, 2),
     { ...oneStreet[2], segmentId: 200, siteKey: "name:Ute Valley Regional Trail" },
   ];
-  const drift = fitDriftRate(twoStreets);
+  assert.equal(
+    fitDriftRate(relabelled),
+    null,
+    "relabelling one row of a single comparison does not manufacture evidence",
+  );
+});
+
+test("REGRESSION: MIN_REVISIT_SITES counts places, on evidence that is otherwise clean", () => {
+  // The site rule, pinned on three observations that are independent in every
+  // other respect: they overlap by minutes rather than hours, so the collapse
+  // leaves them as three, and none is derivable from the other two. All that
+  // varies between the halves is how many streets they sit on.
+  const onOneStreet: Revisit[] = [
+    { earlyAtMs: 0, lateAtMs: 35 * MINUTE, riseM: 1.75, buckets: 3, segmentId: 101, siteKey: "name:Culebras Trail" },
+    { earlyAtMs: 30 * MINUTE, lateAtMs: 65 * MINUTE, riseM: 1.75, buckets: 3, segmentId: 102, siteKey: "name:Culebras Trail" },
+    { earlyAtMs: 60 * MINUTE, lateAtMs: 95 * MINUTE, riseM: 1.75, buckets: 3, segmentId: 103, siteKey: "name:Culebras Trail" },
+  ];
+  assert.equal(fitDriftRate(onOneStreet), null, "one street cannot be its own quorum");
+
+  // Move one observation to a second street and the identical arithmetic is
+  // believed. This pins MIN_REVISIT_SITES at exactly two: raise it and this half
+  // fails, lower it and the half above does.
+  const onTwoStreets = [
+    ...onOneStreet.slice(0, 2),
+    { ...onOneStreet[2], segmentId: 200, siteKey: "name:Ute Valley Regional Trail" },
+  ];
+  const drift = fitDriftRate(onTwoStreets);
   assert.ok(drift, "two streets is a quorum");
+  assert.equal(drift.sites, 2);
+  assert.equal(drift.pairs, 3, "and all three observations survived the collapse");
+});
+
+test("BOUNDARY: SAME_OBSERVATION_OVERLAP is half the union, and it bites both ways", () => {
+  // The threshold that decides whether two rows of one street are one
+  // observation seen twice or two observations. `REGRESSION: consecutive blocks
+  // of ONE street are ONE site` pins the tightening direction: raise it towards
+  // 1 and session 76's fifteen rows stop collapsing. This pins the other one.
+  //
+  // Two passes over the same street, [0,35] and [25,60], share ten minutes out of
+  // the sixty they span between them -- an overlap of 0.167 of their union. That
+  // is two observations of different stretches of the ride which happen to touch,
+  // not one observation counted twice, and with a third elsewhere they are a
+  // quorum. Lower the threshold to 0.1 and they fold into one, the quorum falls
+  // to two, and a ride with honest evidence is refused.
+  //
+  // Losing evidence is the quiet direction to be wrong in, which is exactly why
+  // it needs a test: every other failure in this file made the fit too willing,
+  // so a change that only ever refuses more looks safe while it silently takes
+  // the feature further from working.
+  const touchingOnOneStreet: Revisit[] = [
+    { earlyAtMs: 0, lateAtMs: 35 * MINUTE, riseM: 1.75, buckets: 3, segmentId: 101, siteKey: "name:Shooks Run" },
+    { earlyAtMs: 25 * MINUTE, lateAtMs: 60 * MINUTE, riseM: 1.75, buckets: 3, segmentId: 102, siteKey: "name:Shooks Run" },
+    { earlyAtMs: 30 * MINUTE, lateAtMs: 65 * MINUTE, riseM: 1.75, buckets: 3, segmentId: 200, siteKey: "name:Pikes Peak Ave" },
+  ];
+  const drift = fitDriftRate(touchingOnOneStreet);
+  assert.ok(drift, "two passes sharing a sixth of their span are two observations");
+  assert.equal(drift.pairs, 3, "all three survive the collapse");
   assert.equal(drift.sites, 2);
 });
 
