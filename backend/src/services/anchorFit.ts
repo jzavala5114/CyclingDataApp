@@ -174,7 +174,13 @@ export const MIN_POINTS_FOR_ANCHOR = 10;
 // A revisit closer together than this divides bucket noise by too small a
 // number: a few tenths of a metre over ten minutes already implies several
 // metres an hour. Thirty minutes puts the same noise under 1 m/h.
-const MIN_REVISIT_GAP_S = 1800;
+//
+// Exported for the eval harness to CROSS-CHECK against, not to consume. The
+// eval keeps its own literal, for the reason set out at the top of
+// evalAnchorDrift.ts: a threshold that tracks the module under test moves
+// silently when that module moves. A test asserts the two are equal, so a
+// divergence fails loudly instead of being absorbed.
+export const MIN_REVISIT_GAP_S = 1800;
 
 // Distinct pairs of passes, not buckets. One out-and-back over a single block
 // touches several buckets, but they all share the same two moments and the
@@ -259,7 +265,10 @@ const MAX_DRIFT_RATE_M_PER_H = 30;
 // across five and a half hours is inside every other bound here and asks to tilt
 // a ride 96m. The worst drift the archive has ever measured is 8.7 m/h over
 // rides of about an hour, so this is half as much again as anything real.
-const MAX_TOTAL_DRIFT_M = 15;
+//
+// Exported on the same terms as MIN_REVISIT_GAP_S above: the eval's
+// worst-regression gate is derived from this number but does not import it.
+export const MAX_TOTAL_DRIFT_M = 15;
 
 const MS_PER_HOUR = 3_600_000;
 

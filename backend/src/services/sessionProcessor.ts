@@ -96,7 +96,7 @@ interface QualifyingRun {
 // row cannot say which. Treating null as unknowable would bar every pre-column
 // ride from the drift fit forever, for a difference that does not exist within
 // any one of them.
-type RunElevationSource = ElevationSource | "mixed" | null;
+export type RunElevationSource = ElevationSource | "mixed" | null;
 
 // Exported for its tests, not for callers. Every test in sessionProcessor.test.ts
 // hands `collectRevisits` a literal `elevationSource` and `siteKey`, so the two

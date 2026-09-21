@@ -4,15 +4,33 @@ import { matchSamplesToSegments, stitchFragmentedRuns } from "../services/segmen
 import { assessRun } from "../services/elevationAggregator.js";
 import { rejectElevationSpikes, smoothElevations } from "../services/elevationSmoothing.js";
 import { demKey } from "../services/demElevation.js";
+// **`MAX_PLAUSIBLE_OFFSET_M` and `MIN_POINTS_FOR_ANCHOR` are deliberately NOT
+// imported.** They were, and referenced nowhere in code -- only in the prose
+// below, which argues at length that importing them is exactly what makes the
+// control track the treatment. A reader checking whether `previousAnchor` is
+// independent reads the import list first and found the two names the comment
+// says must not be there.
+import { fitAnchor, type AnchorFit, type AnchorPoint } from "../services/anchorFit.js";
 import {
-  fitAnchor,
-  MAX_PLAUSIBLE_OFFSET_M,
-  MIN_POINTS_FOR_ANCHOR,
-  type AnchorFit,
-  type AnchorPoint,
-} from "../services/anchorFit.js";
-import { collectRevisits, siteKeyFor } from "../services/sessionProcessor.js";
+  collectRevisits,
+  runElevationSource,
+  siteKeyFor,
+  type RunElevationSource,
+} from "../services/sessionProcessor.js";
 import { isUsable, loadSessionVerdicts } from "../services/usableSessions.js";
+import {
+  MEASURES,
+  judgeMeasure,
+  measure,
+  pairedChange,
+  summarise,
+  verifyUntouched,
+  type HeldOutKeys,
+  type Observation,
+  type Observations,
+  type PairedChange,
+  type Summary,
+} from "../services/evalMeasures.js";
 import type { Direction, Segment, SessionSample } from "../types/index.js";
 
 // Does the elevation model agree with itself?
@@ -23,29 +41,59 @@ import type { Direction, Segment, SessionSample } from "../types/index.js";
 // says on synthetic rides; this proves it helps on the real archive, which is
 // the only place the failure was ever visible.
 //
-// Two questions, both asked at bucket level, because buckets are what the map
+// Three questions, all asked at bucket level, because buckets are what the map
 // draws. Asking them of raw session_samples measures the uncorrected data and
 // would not move no matter what the anchor did -- the correction is applied on
 // the way into a bucket, never back onto the sample rows.
 //
-//   Self-consistency  one ride, one bucket, two passes minutes apart. The rider
-//                     cannot have changed the height of the ground between
-//                     them, so any difference is the ride disagreeing with
-//                     itself. This is the closest thing to a ground truth here
-//                     because it needs no second ride and no terrain model.
+// (This said "two questions" and listed two, for as long as there have been
+// three. The verdict block carried the same stale count in its own words. A
+// count that drifts out of step with the list beside it is worth fixing on
+// sight: it is how a reader comes away believing the harness asks less than it
+// does, or the reverse.)
 //
-//   Cross-ride        one bucket, two rides. What actually lands on the map,
-//                     since the running mean blends them and a neighbouring
-//                     bucket fed by a different mix lands somewhere else.
+//   Self-consistency  one ride, one bucket, two passes at least half an hour
+//                     apart. The rider cannot have changed the height of the
+//                     ground between them, so any difference is the ride
+//                     disagreeing with itself. The closest thing to a ground
+//                     truth here, because it needs no second ride and no
+//                     terrain model. Half an hour because that is the gap the
+//                     FIT believes; see MIN_REVISIT_GAP_S in evalMeasures.ts.
+//
+//   Cross-ride        one bucket, several passes from two or more rides. What
+//                     actually lands on the map, since the running mean blends
+//                     them and a neighbouring bucket fed by a different mix
+//                     lands somewhere else.
+//
+//   Terrain shape     one ride against the terrain model, with the ride's own
+//                     level removed. The only one with an external referent:
+//                     the other two ask whether the archive agrees with itself,
+//                     which a tilt can satisfy while walking away from the
+//                     ground.
+//
+// The measures, the untouched-bucket proof and the verdict rule live in
+// services/evalMeasures.ts, with their own gate tests. They used to be inline
+// here, closing over a module-level `heldOutKeys` beneath a top-level `await`
+// against the database, which made every one of them untestable -- and the
+// fourth round of review found three "a check that cannot fail, reported as a
+// check that passed" defects living in exactly that blind spot. This file now
+// loads rides, fits anchors and prints; it decides nothing.
 //
 // Reads only. Writes nothing, and fetches no terrain: it uses the DEM values
-// already cached in segment_dem_elevations, so a ride whose terrain was never
-// fetched simply contributes fewer points, exactly as it would in a rebuild.
+// already cached in segment_dem_elevations.
+//
+// **That makes the eval's terrain coverage strictly poorer than production's,
+// and the bias has a direction.** An earlier version of this comment said a
+// ride whose terrain was never fetched "contributes fewer points, exactly as it
+// would in a rebuild". It would not: a rebuild goes through `processSession`,
+// which calls `ensureDemElevations`, and that function FETCHES the missing
+// points. So rides that production would anchor and ramp, this eval refuses for
+// want of the ten points `MIN_POINTS_FOR_ANCHOR` requires. `treated` is biased
+// down, which makes the vacuous-proof and inconclusive paths more likely here
+// than they are in production -- read a small `treated` as partly an artefact of
+// this script, not only as the feature's reach.
 
 const BBOX_PAD_DEG = 0.005;
-// Two passes closer together than this are really one traversal seen twice,
-// and the barometer has had no time to move between them.
-const MIN_REVISIT_GAP_S = 300;
 
 type Mode = "before" | "after";
 const MODES: Mode[] = ["before", "after"];
@@ -107,23 +155,8 @@ function previousAnchor(points: AnchorPoint[]): AnchorFit | null {
   };
 }
 
-interface Observation {
-  sessionId: number;
-  atMs: number;
-  elevationM: number;
-  // What the terrain model says this spot is, or null where it has no value.
-  //
-  // Carried so the eval can ask a question neither of its original measures
-  // could. Self-consistency and cross-ride agreement are both measures of the
-  // archive agreeing with itself, and a correction that tilts a ride can improve
-  // both while moving the ride away from the ground: the two passes still match
-  // each other, and every ride tilts the same way. Defect 1 did exactly that --
-  // it fabricated up to 12.39m of slope and the eval's score went up.
-  demM: number | null;
-}
-
 // mode -> "segment|direction|distance" -> observations from every ride
-const byMode = new Map<Mode, Map<string, Observation[]>>(MODES.map((m) => [m, new Map()]));
+const byMode = new Map<Mode, Observations>(MODES.map((m) => [m, new Map()]));
 const ramped = new Map<Mode, number>(MODES.map((m) => [m, 0]));
 const unanchored = new Map<Mode, number>(MODES.map((m) => [m, 0]));
 const driftSeen: number[] = [];
@@ -135,9 +168,16 @@ const treated = new Set<number>();
 // half this eval keeps. Always a superset of `treated`.
 const productionRamped = new Set<number>();
 const perRide: Record<string, unknown>[] = [];
-// session -> the bucket keys withheld from that session's drift fit. Self
-// consistency is scored only on these, so it is out of sample.
-const heldOutKeys = new Map<number, Set<string>>();
+// session -> the bucket keys withheld from that session's drift RATE fit.
+//
+// **Only the rate.** The heading this once carried, "hold half the ride's
+// revisited ground out of the fit", overclaimed: `points` is built from every
+// bucket of every qualifying run and both modes consume it unfiltered, so the
+// LEVEL is fit on everything. What is withheld is the revisit set that
+// `fitDriftRate` consumes. That does not bias before against after -- both fit
+// the level the same way on the same points -- so the live question is the
+// rate, and the rate is what this holds back.
+const heldOutKeys: HeldOutKeys = new Map();
 
 const verdicts = await loadSessionVerdicts(pool);
 const usable = verdicts.filter(isUsable);
@@ -180,7 +220,7 @@ for (const session of usable) {
   const qualifying: Array<{
     segmentId: number; direction: Direction; atMs: number;
     buckets: Array<{ distanceM: number; elevationM: number }>;
-    elevationSource: "barometer" | "gps" | "mixed" | null;
+    elevationSource: RunElevationSource;
     siteKey: string;
   }> = [];
 
@@ -196,19 +236,27 @@ for (const session of usable) {
     if (!assessment.qualified) continue;
     const startedMs = Date.parse(run.samples[0].recordedAt);
     const endedMs = Date.parse(run.samples[run.samples.length - 1].recordedAt);
-    // Mirrors `runElevationSource` in sessionProcessor.ts. One source for the
-    // whole pass, or "mixed" when the phone swapped sensor inside it; null is
-    // its own value and matches itself, for rides older than the column.
-    const sources = new Set(run.samples.map((s) => s.elevationSource ?? null));
     qualifying.push({
       segmentId: segment.id,
       direction: run.direction,
       atMs: (startedMs + endedMs) / 2,
       buckets: assessment.profile.buckets,
-      elevationSource: sources.size === 1 ? ([...sources][0] as "barometer" | "gps" | null) : "mixed",
-      // Mirrors `siteKeyFor` in sessionProcessor.ts: the PLACE, not the segment.
-      // Segment rows split at every junction, so counting them as sites lets one
-      // street form a quorum by itself.
+      // **Production's function, not a copy of it.** This re-derived the same
+      // answer with a `Set` over `elevationSource`, under a comment saying it
+      // "mirrors runElevationSource". The copy was correct, including the empty
+      // run -- and that is not the point. The argument for duplicating
+      // `previousAnchor` below inverts here: a duplicated CONTROL is deliberate
+      // independence, a duplicated TREATMENT means the eval goes on measuring
+      // correct behaviour after production's has diverged. This is the guard
+      // that caught session 76 asking to tilt a real ride 20m, so it is the last
+      // one that should be measured in effigy.
+      //
+      // (The neighbouring `siteKeyFor` call was always the real function, under
+      // a comment that also said "mirrors". A reader could not tell which of the
+      // two was wired to production. Now both are, and neither comment lies.)
+      elevationSource: runElevationSource(run.samples),
+      // The PLACE, not the segment. Segment rows split at every junction, so
+      // counting them as sites lets one street form a quorum by itself.
       siteKey: siteKeyFor(segment),
     });
   }
@@ -343,7 +391,7 @@ for (const session of usable) {
       for (const bucket of run.buckets) {
         const key = `${run.segmentId}|${run.direction}|${bucket.distanceM}`;
         const list = target.get(key);
-        const observation = {
+        const observation: Observation = {
           sessionId: session.id, atMs: run.atMs, elevationM: bucket.elevationM - correctionM,
           demM: dem.get(
             demKey({
@@ -362,157 +410,18 @@ for (const session of usable) {
 }
 console.log("\n");
 
-function summarise(values: number[]) {
-  if (values.length === 0) return { n: 0, median: NaN, mean: NaN, p90: NaN, worst: NaN };
-  const sorted = [...values].sort((a, b) => a - b);
-  const at = (q: number) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))];
-  return {
-    n: sorted.length,
-    median: at(0.5),
-    mean: sorted.reduce((a, b) => a + b, 0) / sorted.length,
-    p90: at(0.9),
-    worst: sorted[sorted.length - 1],
-  };
-}
-
-// One ride, one bucket, two passes far enough apart in time to be a revisit.
-// Scored only on buckets withheld from that ride's drift fit, so a shrinking
-// number is the correction generalising rather than the fit reciting its own
-// training data back.
-// Keyed rather than a bare list, so the same comparison can be found in both
-// the before and the after run and the two paired up. Summary statistics alone
-// cannot tell "helped everything a little" from "helped most and hurt some",
-// and those call for different decisions.
-// **Scoped per RIDE, not per bucket.** This read
-// `if (only && !list.some((o) => only.has(o.sessionId))) continue;` -- admit the
-// whole bucket if ANY ride in it was treated -- and then measured every ride in
-// that bucket, treated or not. So "rides the change touched" quietly included
-// comparisons from rides the change did not touch, whose before and after values
-// are identical by construction. Each of those contributes a pair that cannot
-// move, which drags both medians towards each other and makes any real effect
-// look smaller than it is. It is dilution of exactly the kind the treated scope
-// exists to remove, reintroduced inside the function that implements it.
-//
-// The measure's unit is one ride's own disagreement with itself at one bucket,
-// so the unit belongs to a single session and the filter belongs beside it.
-// `terrainDisagreements` already filters this way; `crossRideDisagreements`
-// deliberately cannot, and says why.
-function selfDisagreements(
-  observations: Map<string, Observation[]>,
-  only?: Set<number>,
-): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const [key, list] of observations) {
-    const bySession = new Map<number, Observation[]>();
-    for (const o of list) {
-      const seen = bySession.get(o.sessionId);
-      if (seen) seen.push(o);
-      else bySession.set(o.sessionId, [o]);
-    }
-    for (const [sessionId, passes] of bySession) {
-      if (only && !only.has(sessionId)) continue;
-      if (passes.length < 2) continue;
-      // Out of sample only.
-      if (!heldOutKeys.get(sessionId)?.has(key)) continue;
-      const sorted = [...passes].sort((a, b) => a.atMs - b.atMs);
-      const first = sorted[0];
-      const last = sorted[sorted.length - 1];
-      if ((last.atMs - first.atMs) / 1000 < MIN_REVISIT_GAP_S) continue;
-      out.set(`${key}|${sessionId}`, Math.abs(last.elevationM - first.elevationM));
-    }
-  }
-  return out;
-}
-
-// One bucket, two rides. Each ride collapses to its own mean first, so a ride
-// that passed three times counts once.
-//
-// **The one measure whose treated scope is per BUCKET, and it has to be.** The
-// other two measure something that belongs to a single ride, so they filter per
-// ride. This one measures the spread BETWEEN rides at one bucket, and that
-// number has no owner: it exists only as a relation among every ride that
-// touched the bucket. Dropping the untreated rides from the spread would not
-// narrow the scope, it would measure a different quantity -- the spread among
-// treated rides only -- which is not what lands on the map.
-//
-// So a bucket is in scope when at least one contributing ride was treated, and
-// the value is then the full spread including untreated rides, because that is
-// the number a rider sees. The asymmetry with `selfDisagreements` is deliberate
-// and is the reason that function's filter sits in a different place.
-function crossRideDisagreements(
-  observations: Map<string, Observation[]>,
-  only?: Set<number>,
-): Map<string, number> {
-  const out = new Map<string, number>();
-  for (const [key, list] of observations) {
-    if (only && !list.some((o) => only.has(o.sessionId))) continue;
-    const perSession = new Map<number, number[]>();
-    for (const o of list) {
-      const seen = perSession.get(o.sessionId);
-      if (seen) seen.push(o.elevationM);
-      else perSession.set(o.sessionId, [o.elevationM]);
-    }
-    if (perSession.size < 2) continue;
-    const means = [...perSession.values()].map((v) => v.reduce((a, b) => a + b, 0) / v.length);
-    out.set(key, Math.max(...means) - Math.min(...means));
-  }
-  return out;
-}
-
-// How far the ride sits from the terrain model, per held-out bucket.
-//
-// The measure the review said was missing, and the only one here that consults
-// anything outside the archive. Both other measures ask whether the data agrees
-// with itself, which a tilt can satisfy while walking away from the ground; this
-// one has an external referent and a tilt shows up in it immediately.
-//
-// The absolute level is not the question -- that is what the anchor sets, and a
-// whole-ride offset is legitimate. What matters is that the SHAPE stays put, so
-// each ride's own median residual is removed before scoring. What is left is how
-// far each bucket sits from terrain relative to the rest of its own ride, which
-// a ramp changes and a constant offset cannot.
-function terrainDisagreements(
-  observations: Map<string, Observation[]>,
-  only?: Set<number>,
-): Map<string, number> {
-  const residualsBySession = new Map<number, Array<{ key: string; residualM: number }>>();
-  for (const [key, list] of observations) {
-    for (const o of list) {
-      if (only && !only.has(o.sessionId)) continue;
-      if (o.demM == null) continue;
-      if (!heldOutKeys.get(o.sessionId)?.has(key)) continue;
-      const seen = residualsBySession.get(o.sessionId);
-      const entry = { key: `${key}|${o.sessionId}|${o.atMs}`, residualM: o.elevationM - o.demM };
-      if (seen) seen.push(entry);
-      else residualsBySession.set(o.sessionId, [entry]);
-    }
-  }
-
-  const out = new Map<string, number>();
-  for (const entries of residualsBySession.values()) {
-    const sorted = entries.map((e) => e.residualM).sort((a, b) => a - b);
-    const mid = Math.floor(sorted.length / 2);
-    const level = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-    for (const e of entries) out.set(e.key, Math.abs(e.residualM - level));
-  }
-  return out;
-}
-
 console.log("=== per ride ===");
 console.table(perRide);
 
 const table: Record<string, unknown>[] = [];
-const results = new Map<string, ReturnType<typeof summarise>>();
+const results = new Map<string, Summary>();
 const measured = new Map<string, Map<string, number>>();
 for (const scope of ["whole archive", "rides the change touched"] as const) {
   const only = scope === "whole archive" ? undefined : treated;
   for (const mode of MODES) {
     const observations = byMode.get(mode)!;
-    for (const [label, values] of [
-      ["self-consistency", selfDisagreements(observations, only)],
-      ["cross-ride", crossRideDisagreements(observations, only)],
-      ["terrain shape", terrainDisagreements(observations, only)],
-    ] as const) {
+    for (const label of MEASURES) {
+      const values = measure(label, observations, heldOutKeys, only);
       const s = summarise([...values.values()]);
       results.set(`${scope}|${mode}|${label}`, s);
       measured.set(`${scope}|${mode}|${label}`, values);
@@ -542,40 +451,31 @@ console.table(table);
 // comparisons got worse, and the only honest response is to count them rather
 // than to wave at the p90 and move on. Unexplained movement in a metric is how
 // the last one in this project ended up with a floor nobody could account for.
+// These numbers are no longer only printed. `judgeMeasure` gates `worsened`,
+// the mean and the worst regression alongside the median -- see the four gates
+// in evalMeasures.ts. Before that, every column below was computed, printed and
+// ignored, and six comparisons improving 0.10m against five regressing 40m
+// exited 0.
 console.log("\n=== paired, comparison by comparison ===");
+const changes = new Map<string, PairedChange>();
 const paired: Record<string, unknown>[] = [];
 for (const scope of ["whole archive", "rides the change touched"] as const) {
-  for (const label of ["self-consistency", "cross-ride", "terrain shape"] as const) {
-    const before = measured.get(`${scope}|before|${label}`)!;
-    const after = measured.get(`${scope}|after|${label}`)!;
-    const deltas: number[] = [];
-    let better = 0;
-    let worse = 0;
-    let unchanged = 0;
-    let worstRegression = 0;
-    for (const [key, b] of before) {
-      const a = after.get(key);
-      if (a == null) continue;
-      const delta = a - b;
-      deltas.push(delta);
-      if (Math.abs(delta) <= 1e-9) unchanged += 1;
-      else if (delta < 0) better += 1;
-      else {
-        worse += 1;
-        worstRegression = Math.max(worstRegression, delta);
-      }
-    }
-    const moved = deltas.filter((d) => Math.abs(d) > 1e-9).sort((a, b) => a - b);
+  for (const label of MEASURES) {
+    const change = pairedChange(
+      measured.get(`${scope}|before|${label}`)!,
+      measured.get(`${scope}|after|${label}`)!,
+    );
+    changes.set(`${scope}|${label}`, change);
     paired.push({
       scope,
       measure: label,
-      improved: better,
-      worsened: worse,
-      unchanged,
-      median_change_m: moved.length
-        ? Number(moved[Math.floor(moved.length / 2)].toFixed(2))
-        : 0,
-      worst_regression_m: Number(worstRegression.toFixed(2)),
+      improved: change.improved,
+      worsened: change.worsened,
+      unchanged: change.unchanged,
+      non_finite: change.nonFinite,
+      median_change_m: Number(change.medianChangeM.toFixed(2)),
+      mean_change_m: Number(change.meanChangeM.toFixed(2)),
+      worst_regression_m: Number(change.worstRegressionM.toFixed(2)),
     });
   }
 }
@@ -599,8 +499,12 @@ if (driftSeen.length > 0) {
   );
 }
 
-// The eval has a pass threshold, like any other. Both measures must improve;
-// a gain in one paid for by a loss in the other is not a win.
+// The eval has a pass threshold, like any other. All three measures must hold
+// on all four gates; a gain in one paid for by a loss in another is not a win.
+//
+// (This said "both measures" when there were three, and "improve" when the only
+// thing consulted was the median. Both halves of that sentence were stale for
+// as long as the gate was one line.)
 let failed = false;
 
 // **And an eval that measured nothing does not pass.**
@@ -616,10 +520,11 @@ let failed = false;
 // reachable by any ride here, so the archive cannot say. Both are non-zero;
 // only a measured improvement exits 0.
 //
-//   0  measured, and every measure improved or held
+//   0  measured, and every measure improved or held on every gate
 //   1  measured, and something got worse
-//   2  not measured -- no ride qualified, so there is no verdict to give
+//   2  nothing was measured that could have moved, so there is no verdict
 let inconclusive = false;
+const inconclusiveBecause: string[] = [];
 
 // Before reading any verdict: prove that the rides which kept a single number
 // came out bit-for-bit identical. If that holds, "rides the change touched" is
@@ -627,102 +532,125 @@ let inconclusive = false;
 // the whole-archive figures are that same set plus a fixed unchanged mass.
 // Judging a treatment on a population it cannot reach is how the last metric in
 // this project ended up with a floor nobody could explain.
-let untouchedChecked = 0;
-let untouchedMoved = 0;
-let untouchedMissing = 0;
-{
-  const before = byMode.get("before")!;
-  const after = byMode.get("after")!;
-  for (const [key, beforeList] of before) {
-    if (beforeList.some((o) => treated.has(o.sessionId))) continue;
-    // Matched on the observation's own identity rather than on position in the
-    // list. Both lists are built in the same loop order today, so indexing works
-    // by luck; a reordering anywhere upstream would silently start comparing one
-    // ride's bucket against another's and still report agreement.
-    const afterByObservation = new Map(
-      (after.get(key) ?? []).map((o) => [`${o.sessionId}|${o.atMs}`, o]),
-    );
-    for (const beforeObservation of beforeList) {
-      untouchedChecked += 1;
-      const afterObservation = afterByObservation.get(
-        `${beforeObservation.sessionId}|${beforeObservation.atMs}`,
-      );
-      // An explicit presence test, because the arithmetic one cannot do it.
-      // This read `Math.abs(before - (after?.elevationM ?? NaN)) > 1e-9`, and
-      // every comparison against NaN is false -- so a bucket the new code
-      // dropped entirely scored as identical and counted towards the proof.
-      // The one failure the check existed to catch was the one it could not see.
-      if (afterObservation == null) {
-        untouchedMissing += 1;
-        untouchedMoved += 1;
-        continue;
-      }
-      const delta = beforeObservation.elevationM - afterObservation.elevationM;
-      if (!Number.isFinite(delta) || Math.abs(delta) > 1e-9) untouchedMoved += 1;
-    }
+const untouched = verifyUntouched(byMode.get("before")!, byMode.get("after")!, treated);
+
+// **The proof reports what it actually verified, and a vacuous run is not a
+// pass.** This printed `verified identical: 0/0` and exited 0 whenever every
+// bucket had a treated contributor, which is the same "check that cannot fail,
+// reported as a check that passed" the feature has now been rejected for four
+// times -- sitting inside the proof that licenses every other verdict here.
+if (untouched.vacuous) {
+  inconclusive = true;
+  inconclusiveBecause.push(
+    "the untouched-bucket proof had no subjects: every bucket has a treated " +
+      "contributor, so it verified nothing and cannot license the treated scope",
+  );
+  console.log(
+    `\nuntouched buckets: NONE to check -- every bucket has a treated contributor. ` +
+      `The identical-bucket proof is vacuous on this run and certifies nothing.`,
+  );
+} else {
+  console.log(
+    `\nuntouched buckets verified identical: ${untouched.checked - untouched.moved}/${untouched.checked}` +
+      ` (against an independent transcription of main's fitDemOffset)`,
+  );
+}
+// The per-ride form of the same vacuity. A bucket with a treated contributor is
+// skipped whole, so an untreated ride sharing every bucket with a treated one is
+// never checked -- while another ride's private buckets keep the printed count
+// affirmative. That ride is then also filtered out of the treated-scope measures
+// and lives only in the whole-archive line, which is never gated. Three blind
+// spots closing a loop around one ride.
+if (untouched.uncheckedSessions.length > 0) {
+  inconclusive = true;
+  inconclusiveBecause.push(
+    `the untouched-bucket proof never looked at session(s) ` +
+      `${untouched.uncheckedSessions.join(", ")}: every bucket they have is shared with a ` +
+      `treated ride, so nothing establishes that they came out identical`,
+  );
+  console.log(
+    `NONE  untouched proof did not cover session(s) ${untouched.uncheckedSessions.join(", ")} ` +
+      `-- all their buckets are shared with a treated ride`,
+  );
+}
+if (untouched.moved > 0) {
+  failed = true;
+  console.log(`FAIL  ${untouched.moved} buckets moved on rides that kept a single number`);
+  if (untouched.missing > 0) {
+    console.log(`FAIL  ${untouched.missing} of those are missing from "after" entirely`);
   }
 }
-console.log(
-  `\nuntouched buckets verified identical: ${untouchedChecked - untouchedMoved}/${untouchedChecked}` +
-    ` (against an independent transcription of main's fitDemOffset)`,
-);
-if (untouchedMoved > 0) {
+// Reported only when it fires. It cannot fire while the observation population
+// is built before and independently of the fit, and a check that cannot fail
+// must not print as a check that passed.
+if (untouched.structurallyDifferent > 0) {
   failed = true;
-  console.log(`FAIL  ${untouchedMoved} buckets moved on rides that kept a single number`);
-  if (untouchedMissing > 0) {
-    console.log(`FAIL  ${untouchedMissing} of those are missing from "after" entirely`);
-  }
+  console.log(
+    `FAIL  ${untouched.structurallyDifferent} observation identities differ between modes -- ` +
+      `the two modes no longer measure the same population, so no comparison below is paired`,
+  );
 }
 
 for (const scope of ["whole archive", "rides the change touched"] as const) {
-  for (const label of ["self-consistency", "cross-ride", "terrain shape"] as const) {
+  for (const label of MEASURES) {
     const before = results.get(`${scope}|before|${label}`)!;
     const after = results.get(`${scope}|after|${label}`)!;
     const moved = before.median - after.median;
+    const { verdict, reasons } = judgeMeasure(
+      label,
+      before,
+      after,
+      changes.get(`${scope}|${label}`)!,
+      scope === "whole archive" ? "whole archive" : "treated",
+    );
 
-    // Nothing to judge is not a failure, and saying FAIL here would be a lie in
-    // the direction that looks rigorous. An empty treated set used to print
-    // "median NaNm -> NaNm (+NaNm)" and count as a regression, because
-    // `NaN <= NaN` is false. That reads as "the change made things worse" when
-    // what happened is that the change reached no ride at all -- a different
-    // finding, and on this feature the important one.
-    if (before.n === 0 && after.n === 0) {
-      console.log(
-        `NONE  ${scope} / ${label}: no comparisons -- the fit treated no rides, ` +
-          `so there is nothing here to improve or regress`,
-      );
-      // Nothing to judge is still not a pass. Saying FAIL here would be a lie in
-      // the direction that looks rigorous -- an empty treated set used to print
-      // "median NaNm -> NaNm" and count as a regression, because `NaN <= NaN` is
-      // false, which reads as "the change made things worse" when the change
-      // reached no ride at all. Exiting 0 is the opposite lie, in the direction
-      // that looks reassuring. It is neither: the run has no verdict to give.
-      if (scope === "rides the change touched") inconclusive = true;
+    if (verdict === "NONE") {
+      console.log(`NONE  ${scope} / ${label}: ${reasons[0]}`);
+      // Nothing to judge is not a failure -- saying FAIL here would be a lie in
+      // the direction that looks rigorous. An empty treated set used to print
+      // "median NaNm -> NaNm (+NaNm)" and count as a regression, because
+      // `NaN <= NaN` is false, which reads as "the change made things worse"
+      // when the change reached no ride at all. Exiting 0 is the opposite lie,
+      // in the direction that looks reassuring. It is neither.
+      if (scope === "rides the change touched") {
+        inconclusive = true;
+        inconclusiveBecause.push(`${label}: ${reasons[0]}`);
+      }
       continue;
     }
 
-    // The verdict rides on the treated population, for the reason proved
-    // above. The whole-archive line is printed either way, because hiding the
-    // diluted number would be the bar-lowering this is trying not to do.
-    const verdict = after.median <= before.median ? "PASS" : "FAIL";
-    if (verdict === "FAIL" && scope === "rides the change touched") failed = true;
+    // The verdict rides on the treated population, for the reason the proof
+    // above establishes. The whole-archive line is printed either way, because
+    // hiding the diluted number would be the bar-lowering this is trying not to
+    // do.
+    if (scope === "rides the change touched") {
+      if (verdict === "FAIL") failed = true;
+      if (verdict === "INCONCLUSIVE") {
+        inconclusive = true;
+        inconclusiveBecause.push(`${label}: ${reasons[0]}`);
+      }
+    }
     console.log(
       `${verdict}  ${scope} / ${label}: median ${before.median.toFixed(2)}m -> ` +
         `${after.median.toFixed(2)}m (${moved >= 0 ? "-" : "+"}${Math.abs(moved).toFixed(2)}m), ` +
         `mean ${before.mean.toFixed(2)} -> ${after.mean.toFixed(2)}, ` +
         `p90 ${before.p90.toFixed(2)} -> ${after.p90.toFixed(2)}`,
     );
+    for (const reason of reasons) console.log(`      ${verdict === "FAIL" ? "why" : "note"}: ${reason}`);
   }
 }
 
 if (inconclusive) {
   console.log(
-    `\nINCONCLUSIVE  the fit treated ${treated.size} of ${usable.length} usable rides, so the ` +
-      `treated-scope measures have no comparisons.\n` +
-      `              The archive cannot say whether the ramp helps or harms. Exit 2 rather ` +
-      `than 0: a run that could not have detected harm must not read as a pass.\n` +
-      `              Production would ramp ${productionRamped.size} of ${usable.length} ` +
-      `(it fits on every revisit; this eval withholds half).`,
+    `\nINCONCLUSIVE  the fit treated ${treated.size} of ${usable.length} usable rides. Exit 2 ` +
+      `rather than 0: a run that could not have detected harm must not read as a pass.`,
+  );
+  for (const why of inconclusiveBecause) console.log(`              - ${why}`);
+  console.log(
+    `              Production would ramp ${productionRamped.size} of ${usable.length} ` +
+      `(it fits on every revisit; this eval withholds half). And this script never ` +
+      `fetches terrain, so it refuses rides production would anchor -- treat ` +
+      `${treated.size} as a floor, not as the reach.`,
   );
 }
 

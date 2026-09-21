@@ -307,10 +307,27 @@ test("a run whose sensor changed part way through is 'mixed', in either order", 
   // that switch is attributable to no instrument, and `collectRevisits` refuses
   // anything that is not wholly on the barometer.
   //
-  // Both orders, because a loop that only ever compared against `samples[0]`
-  // would pass one of them and fail the other, and an implementation that
-  // compared each sample against its predecessor would pass both while missing
-  // barometer -> gps -> barometer.
+  // **This comment used to name two implementations these cases discriminate
+  // against, and both claims were false.**
+  //
+  // It said "a loop that only ever compared against `samples[0]` would pass one
+  // order and fail the other". `runElevationSource` IS that loop -- it takes
+  // `first = samples[0]` and compares every sample to it -- and both orders are
+  // green, because comparing all to the first detects all-equal perfectly well.
+  //
+  // It also said "an implementation that compared each sample against its
+  // predecessor would pass both while missing barometer -> gps -> barometer".
+  // Also false, and a mutant implementing exactly that stayed green: a list is
+  // all-equal if and only if every adjacent pair is equal, so predecessor
+  // comparison and all-equal detection are the same test.
+  //
+  // Both orders and the three-sample case stay, because they are the archive's
+  // real shapes -- the barometer dies when the screen locks and returns when it
+  // wakes, so barometer -> gps -> barometer is what session 64 actually
+  // recorded, and a run straddling that must not be attributed to either
+  // instrument. What they do not do is discriminate between implementations.
+  // Claiming they do tells a future reader this suite is stronger than it is,
+  // which is how a weak test survives a review twice.
   const samples = (sources: Array<"barometer" | "gps" | null>) =>
     sources.map((elevationSource, i) => ({
       id: i,

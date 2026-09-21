@@ -751,7 +751,8 @@ That recurrence, not any single defect, is the finding worth carrying forward.
 | `jzavala5114/fix-elevation-drift-b7815212` | PR #1, draft. 64/64 green. Round-1 defects fixed, lag fix merged in, ramp off. The reviewable baseline. |
 | `jzavala5114/fix-elevation-lag-805d4615` | PR #2, draft. Zero-phase smoother, annotated as folded into #1. |
 | `jzavala5114/drift-round3-wip-8f13d5f2` | Parked mid-round-three with 5 tests deliberately red. Superseded; kept as the record of what was parked and why. |
-| **`jzavala5114/drift-round3-13eeb398`** | **Round three, finished: `c1a250a`, pushed, no PR opened.** 77 tests, typecheck clean. |
+| `jzavala5114/drift-round3-13eeb398` | Round three, finished: `c1a250a`, pushed, no PR opened. 77 tests, typecheck clean. |
+| **`fix-eval-gates`** | **Step 1 of the parked plan: the eval harness, 2026-09-20.** Off round three, not off main - `evalAnchorDrift.ts` does not exist on main. 126 tests, typecheck clean. The fit is untouched. |
 
 Nothing is merged. `origin/main` is `9727a28` and has not moved. `allowRamp`
 still defaults to false and `processSession` still never asks for a ramp, so no
@@ -883,19 +884,9 @@ is sharp; the finding is that it can be pointed at nothing.
 
 The plan agreed before compaction, in order:
 
-1. **Fix the eval harness first.** Three bounded changes, under an hour, and
-   worth having regardless of what happens to the ramp, because every
-   measurement this project makes goes through it:
-   - gate on `untouchedChecked > 0` (`evalAnchorDrift.ts` ~line 630-675)
-   - gate the already-computed `worsened` / `worst_regression_m` alongside the
-     median (~line 707)
-   - treat a treated-scope measure with `improved == 0 && worsened == 0` as
-     inconclusive rather than PASS (~line 689)
-   - and the measures are not unit-testable today because they close over the
-     module-level `heldOutKeys` and the script is top-level `await` against the
-     database. Extracting them into a module that takes `heldOutKeys` as an
-     argument is what lets any of this ship with a test, which is the standard
-     everything else here is held to.
+1. **Fix the eval harness first.** **DONE 2026-09-20** on `fix-eval-gates`. It
+   took two rounds, not the estimated hour, because a cold critic rejected the
+   first. See "The eval harness, fixed" below.
 2. **Then strip the ramp**, keeping what stands on its own: the instrument rule
    (a GPS pass against a barometric one measures the offset between two sensors,
    not drift — this caught session 76 asking to tilt a real ride 20m with every
@@ -907,6 +898,137 @@ does not hold the evidence the feature needs, so every honest round of fixes
 shrinks its reach: it now reaches one ride in thirty-six, and reviewer A's
 closing line is a prediction that a fifth review finds the same pattern in a
 fifth place.
+
+## The eval harness, fixed, and the archive moved under it
+
+**2026-09-20, branch `fix-eval-gates` off `drift-round3-13eeb398`.** Step 1 of
+the plan above. **The fit is untouched**: `allowRamp` still defaults to false,
+`processSession` still never asks for a ramp, step 2 has not started.
+
+### First, a correction to the status above
+
+**"`npm run eval:anchor` now exits 2 by design ... the eval treats 0 rides" is
+stale.** It exits **0** and treats **session 77**. Verified by running the
+*unmodified* `325f166` eval as a control: it does the same, so the archive
+changed, not the code. Sessions 77 and 78 arrived after 2026-09-16; 77 has six
+revisits over half an hour and ramps at -6.12m. Production would ramp 2 (74, 77).
+
+Do not read that green exit as the ramp being vindicated. It says: on the one
+ride this archive can treat, the ramp improved all three measures on every gate.
+Reviewer A's findings are about the *fit*, are untouched by this work, and
+describe shapes the archive does not contain.
+
+### What the harness looks like now
+
+`services/evalMeasures.ts` holds the three measures, the untouched-bucket proof,
+the pairing and the verdict rule, taking `heldOutKeys` as an argument instead of
+closing over a module global. `scripts/evalAnchorDrift.ts` loads rides, fits
+anchors and prints; it decides nothing. **That extraction is the load-bearing
+change** - none of the rest could ship with a test while importing the module ran
+the eval against the production database.
+
+`evalMeasures.test.ts`: 49 tests. `tmp-mutate-evalmeasures.mjs`: 40 mutants, 38
+defects all killed, 2 controls both survive. Backend suite 77 -> 126.
+
+Five gates where there was one (`after.median <= before.median`):
+
+| gate | catches |
+|---|---|
+| non-finite | a value the harness cannot read. Checked FIRST, because NaN silences the rest |
+| median | the typical comparison getting worse |
+| mean | "helped many a little, hurt a few enormously" - total error must fall |
+| count | more comparisons hurt than helped while the aggregates hold |
+| worst regression | one impossible movement drowned in a good aggregate |
+
+Plus INCONCLUSIVE when a treated-scope measure had no power, and the proof
+reporting vacuity both globally and per ride.
+
+### Two rounds, because a cold critic rejected the first
+
+Round one fixed reviewer B's F1-F7, F9 and F10. A critic with no sight of the
+build reasoning returned REJECT with eleven findings, and it was right. **The
+pattern recurred for the fifth time**, in four fresh places:
+
+- **One NaN disabled two gates.** `Math.max(NaN, 293.5)` is NaN and `NaN > 15`
+  is false, so a single unreadable comparison switched the mean and
+  worst-regression gates off *for the whole measure* - while the sign test's
+  `else` filed it as a regression, padding the count gate in the passing
+  direction. Harm that disables the alarm and then pads the register. History
+  defect 2 relocated out of the untouched proof, where it had just been fixed,
+  into the verdict function written in the same commit.
+- **The proof's coverage is per bucket; its premise is about rides.** A bucket
+  with a treated contributor is skipped whole, so an untreated ride sharing
+  every bucket with a treated one is never checked, while another ride's private
+  buckets keep the printed count affirmative. That ride was then also filtered
+  out of the treated measures and lived only in the whole-archive line, which is
+  never gated. It could be 40m out and exit 0. Now reported as
+  `uncheckedSessions`.
+- **"Held out on every contributor" was `some` in disguise.** `heldOut` is a
+  pure FNV hash of the bucket key and takes no session, so for any key either
+  every contributor held it out or none did: 18,000 keys, zero disagreements,
+  `every` keeps exactly what `some` would. The comment claimed a cost never
+  paid, and the test pinning it built a state the script cannot produce. **The
+  deeper half: the filter does not make the measure out of sample at all.** Only
+  the *rate* is withheld. `points` is built from every bucket and both modes
+  consume it unfiltered, so the **level** is fit in sample, and cross-ride is the
+  one measure whose value carries the level.
+- **`medianChangeM` took the upper of two middles.** A balanced set of changes
+  printed a positive number by construction: fifty comparisons worse by 9m
+  against fifty better by 10m read `median_change_m: 9.00` when the honest
+  answer is -0.50 and total error had *fallen* 50m. Fixed the estimator rather
+  than gating it, and recorded why: after the fix, a median-of-changes gate
+  cannot fire anywhere the mean and count gates have not already.
+
+Also: the proof could not see a bucket present only in `after`, which is the
+direction it was written for; `improved === 0 && worsened === 0` let one
+comparison in ten thousand license a verdict over the 9,999 that could not move,
+a quorum of one; and the eval imported the two constants its own comment spends
+ten lines arguing must never be imported.
+
+**And one the critic did not find, which running the thing did.** The
+frozen-majority rule fired on the whole-archive scope, where most comparisons
+are untreated and identical *by construction* - that fixed unchanged mass is
+exactly what the untouched proof exists to establish. It reported the design as
+a defect on every run. The rule is scoped to the treated population now.
+
+### What this cost the measures, measured on the real archive
+
+| | before | after | why |
+|---|---|---|---|
+| self-consistency comparisons | 269 | 162 | revisit gap 300s -> 1800s, matching the fit |
+| cross-ride comparisons | 2146 | 1077 | held-out filter, ~50% as the hash predicts |
+| terrain shape comparisons | 5338 | 5338 | untouched, and therefore the control |
+| treated cross-ride frozen | **54 of 465** | **0 of 253** | the range was blind to non-extreme rides |
+
+That 54 is F4 measured rather than argued: under `max - min` between per-ride
+means, 54 treated comparisons could not respond to the treatment at all.
+
+### Known and deliberate, not oversights
+
+- **No measure here sees a uniform level change.** Self-consistency cancels the
+  level between two passes, terrain shape subtracts each ride's own median, and
+  cross-ride is mean absolute deviation, which is translation invariant. The
+  drawn value can move 15m with all three reading unchanged. Tolerable because
+  setting the level *is* the anchor's job. If the level ever becomes the
+  question it needs a fourth measure - per-bucket drawn value, before against
+  after - not an edit to cross-ride, which would stop answering what it is named
+  for.
+- **The worst-regression bounds are tripwires, not gates.** Derived for
+  self-consistency and terrain shape: the reverse triangle inequality bounds a
+  comparison's movement by the ride's own drift, which `fitDriftRate` caps at
+  `MAX_TOTAL_DRIFT_M`. A judgement at 2x for cross-ride, which spans two rides
+  and has no such derivation. No legitimate fit comes near either; they fire on
+  the impossible, and the mean and count gates are what catch ordinary harm.
+- **F8's `siteKeyFor` case and whitespace normalisation is NOT fixed.** It is
+  production fit logic, not measuring logic, and changing it moves which rides
+  get ramped, so it belongs to step 2. The mutants `name:${name.toLowerCase()}`
+  and `?? ""` after trim both survive today. Under-normalising splits one road
+  into two sites, which is the quorum-inflation class this feature has been
+  rejected for three times.
+- **The eval never fetches terrain**, while a rebuild calls
+  `ensureDemElevations`, which does. So the eval refuses rides production would
+  anchor, biasing `treated` down. Read a small treated count as partly an
+  artefact of the harness rather than purely as the feature's reach.
 
 **If the ramp is wanted anyway**, round four is a simplification rather than an
 addition, and the design is settled: replace the chain walk, the joint veto and
@@ -956,6 +1078,12 @@ apply at all on this checkout.
 - `tmp-mutate-mapping.mjs` — `runElevationSource` and `siteKeyFor`. 7 of 8
   killed; the survivor is semantically equivalent (skipping the self-comparison
   at index 0).
+- `tmp-mutate-evalmeasures.mjs` — the eval harness itself, added 2026-09-20. 40
+  mutants: 38 defects all killed, 2 controls both survive. Every mutant restores
+  a defect a review actually found, so a survivor is a test that does not test
+  what its name says. Two of its patterns went stale mid-task when the code they
+  matched was reformatted, and it reported SKIP rather than a false pass, which
+  is the behaviour to preserve if you rewrite it.
 
 ---
 
