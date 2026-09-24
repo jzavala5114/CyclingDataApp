@@ -3,10 +3,10 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-09-19. **Start with "The sliding anchor after three rounds and
-four reviews"** — it is the only work currently mid-flight, it is parked on a
-decision rather than on effort, and four reviews have rejected it for the same
-reason. Everything else here is shipped and stable.
+Last updated 2026-09-23. **Start with "The sliding anchor is gone"** — that
+decision is made and the code is deleted. Everything in this file about the
+ramp being live, parked, or awaiting a decision is history, kept for the failure
+modes it records. Nothing else here has changed.
 
 ---
 
@@ -85,13 +85,11 @@ the same path as a ride coming off the phone.
   roads. Every road stays canonical. **2,643 more are tagged
   `is_sidewalk` and were never folded** — see the Stage 1 section.
 - **Model**: **4,736 buckets across 611 segments**, 806 coverage rows. Lines are
-  clipped to what was ridden. These carry the single-number anchor, and should
-  keep carrying it: `allowRamp` defaults to false and production never asks for
-  it. Do not run a rebuild expecting a ramp. Three rounds of fixes and four
-  independent reviews later that default has not moved, and the case for it has
-  got stronger rather than weaker — see the sliding anchor section.
-- **Rides**: **36 usable**, measured by `eval:anchor` on 2026-09-16 (was 34 on
-  09-13; the total session count was not re-measured). **Sessions 5 and 6
+  clipped to what was ridden. These carry the single-number anchor, which is now
+  the only anchor there is — the sliding version was deleted on 2026-09-23 after
+  four reviews. See "The sliding anchor is gone".
+- **Rides**: **39 usable**, measured by `eval:quality` on 2026-09-23 (36 on
+  09-16, 34 on 09-13; the total session count was not re-measured). **Sessions 5 and 6
   are permanently corrupt** — `rebuildModel.ts` excludes them by elevation
   scale. Session 45 is excluded for being spikes rather than a ride (20.7% of
   its steps impossible); 46 and 50 were restored when the roughness test was
@@ -733,10 +731,81 @@ claimed these fixes, before vs after), `tmp-chain.mjs` (is a street's own chain
 connected). All restrict to the sessions `rebuildModel` uses — measuring over
 every session counts rides the model throws away.
 
-## The sliding anchor after three rounds and four reviews: the pattern IS the finding
+## The sliding anchor is gone
 
-**Status 2026-09-19 — read this first. Everything below it, including the
-2026-09-14 section, is history.**
+**Decided and done 2026-09-23, on branch `strip-the-ramp`.** Julian took the
+recommendation from the fourth review: fix the measuring tool, then take the
+tilt out. Both are done.
+
+**What was deleted.** `fitDriftRate`, the chain walk (`netObservedRiseM`), the
+contradiction veto, the allowance rule, `collapseToObservations`,
+`largestCoveredBlock`, the `Revisit` type, `FitOptions`/`allowRamp`, eleven of
+thirteen constants, `collectRevisits`, `siteKeyFor`, `runElevationSource`,
+`demDriftM`, `demAnchorShape`, and `evalAnchorDrift.ts`. `anchorFit.ts` went
+from 791 lines to about 70.
+
+**What is left** is the single-median anchor that shipped all along:
+`fitAnchor(residualsM)` returns one number or null. It takes bare residuals, not
+timestamps — deliberately, so nothing can read a time again without changing the
+signature.
+
+**The safety claim, and how it was proved.** The surviving fit had to reproduce
+`main`'s `fitDemOffset` exactly, or merging would move stored elevations. Tested
+against an independent transcription over 20,000 random residual sets, plus a
+cold reviewer's own transcription over a further 350,163 adversarial finite
+cases — including `±0` mixes, `Number.MAX_VALUE` inputs chosen to overflow the
+even-median average to `±Infinity`, every count 0–20, and levels pinned either
+side of 60. **Zero divergences on finite input.**
+
+**One deliberate divergence, on non-finite input.** Main filters nothing, and
+sorting with a NaN present is not a sort: comparisons involving it answer NaN,
+the array comes back partly unsorted, and the "median" is whatever landed in the
+middle. Consequences, both measured rather than reasoned: main returns **NaN as
+the offset** in 5,846 of 100,000 NaN-bearing cases — and `Math.abs(NaN) > 60` is
+false, so the plausibility guard waves it through and the caller subtracts it
+from every bucket, turning a whole ride into NaN heights. For other positions it
+returns a real number that **depends on the array order**. The new version
+filters first. `elevation_m` is `double precision` on both sides of that
+subtraction and Postgres admits NaN, so "cannot happen" rested on the database,
+not on the code.
+
+**What replaced the eval.** `evalAnchorDrift.ts` was a before/after comparison
+built to judge the ramp; with no second mode its gates, pairing and
+untouched-bucket proof are meaningless, so it became `evalModelQuality.ts` — a
+report, not a gate. The three measures survive because they were never about the
+ramp. Two things to know before comparing its numbers to anything older:
+`heldOutKeys` is gone, so the populations are roughly **twice** the size; and
+`terrainDisagreements` no longer removes a per-ride level (see below).
+
+**A defect the cold review found in the new eval, worth carrying forward.**
+`terrainDisagreements` used to subtract each ride's own median residual so it
+would judge shape rather than level. For an *anchored* ride that does nothing —
+the caller has already subtracted the anchor, so the median is zero. The rides it
+affected were the ones `fitAnchor` **refused**: a ride 80m off the terrain is
+past `MAX_PLAUSIBLE_OFFSET_M`, production merges it unanchored and the map draws
+it 80m out, and the measure anchored it anyway with the very offset the guard
+exists to reject and reported **1.00m**. The one measure with an external
+referent was blind to exactly the failure the external referent was brought in
+for. It now scores the model as stored.
+
+**Also removed, and it could not be kept.** The fourth review recommended
+keeping "the instrument rule" — the guard that refuses to compare a GPS pass
+against a barometric one, which caught session 76 asking to tilt a real ride
+20m. It has no meaning without the ramp: its only consumer was the barometer
+filter inside `collectRevisits`, and it guards a *comparison between two
+passes*. Delete the comparison and the guard has nothing to protect. What
+survives independently is the `elevation_source` column itself, still recorded
+per sample and still used for ride eligibility in `usableSessions.ts`.
+
+Everything below this line is the history of the feature, kept for the failure
+modes it records. **It describes code that no longer exists.**
+
+---
+
+## History: the sliding anchor after three rounds and four reviews
+
+**Status 2026-09-19 — superseded by the section above. The code described here
+was deleted on 2026-09-23.**
 
 Four independent adversarial reviews have now rejected this feature. Every one
 found the same class of defect in a new place: **evidence that is not
@@ -1058,32 +1127,36 @@ hook is opt-in per clone and is now enabled here
 any commit touching `backend/`.
 
 **The `.env` points at the live Supabase database**, shared with every other
-session and with production. `eval:anchor` is read-only (verified: no
-insert/update/delete anywhere in it). `PORT=3000` is a single-writer handle, so
-do not start the server in two worktrees at once.
+session and with production. `eval:quality` is read-only (verified: no
+insert/update/delete anywhere in it, and the one function that writes,
+`ensureDemElevations`, is not imported). `PORT=3000` is a single-writer handle,
+so do not start the server twice.
+
+**The worktree instructions above are obsolete.** CLAUDE.md now sets
+`git config claude.mode solo`: one session at a time, branches in the shared
+checkout, no worktrees and no PRs. Restore the worktree protocol before running
+two sessions at once.
 
 ### Tools worth not rewriting
 
-Three mutation harnesses, in `backend/` and gitignored with the other
-`tmp-*.mjs`. Each patches a copy, runs the suite, restores, and reports which
-test died. All three normalise CRLF before matching, which is why their patches
-apply at all on this checkout.
+One mutation harness, in `backend/` and gitignored with the other `tmp-*.mjs`.
+It patches a copy, runs the suite, restores, and reports which test died. It
+normalises CRLF before matching, which is why its patches apply at all on this
+checkout.
 
-- `tmp-mutate-anchor.mjs` — the eight round-three fixes. 7 of 8 killed; the
-  survivor is `MAX_DRIFT_RATE_M_PER_H`, which is **provably dominated** by
-  `MAX_TOTAL_DRIFT_M`: a window is at least 30 minutes, so any rate above 30 m/h
-  implies a total above 15m. Documented at the constant. Do not "fix" it.
-- `tmp-sweep-constants.mjs` — every constant nudged both ways. 17 of 18 pinned,
-  same single exception.
-- `tmp-mutate-mapping.mjs` — `runElevationSource` and `siteKeyFor`. 7 of 8
-  killed; the survivor is semantically equivalent (skipping the self-comparison
-  at index 0).
-- `tmp-mutate-evalmeasures.mjs` — the eval harness itself, added 2026-09-20. 40
-  mutants: 38 defects all killed, 2 controls both survive. Every mutant restores
-  a defect a review actually found, so a survivor is a test that does not test
-  what its name says. Two of its patterns went stale mid-task when the code they
-  matched was reformatted, and it reported SKIP rather than a false pass, which
-  is the behaviour to preserve if you rewrite it.
+- `tmp-mutate-evalmeasures.mjs` — the three quality measures. 21 mutants: 19
+  defects killed, 2 controls survive, and one expected survivor
+  (`passes.length < 2`, dominated by the revisit-gap check and documented at the
+  line). Every mutant restores a defect a review actually found, so a survivor
+  is a test that does not test what its name says. When its patterns go stale it
+  reports SKIP rather than a false pass — preserve that if you rewrite it.
+
+**Three others are gone**, and their absence is not an accident.
+`tmp-mutate-anchor.mjs`, `tmp-sweep-constants.mjs` and `tmp-mutate-mapping.mjs`
+all targeted the sliding anchor: its eight round-three fixes, its eighteen
+constants, and `runElevationSource`/`siteKeyFor`. All of that code was deleted
+on 2026-09-23, and the harnesses went with the worktree they lived in. Do not
+recreate them expecting them to apply.
 
 ---
 

@@ -45,7 +45,7 @@ connection is the first thing to check.
 
 ```
 npm test                # gate tests: deterministic, no database, well under 2s
-npm run eval:anchor     # eval: the drift anchor, against the live archive
+npm run eval:quality    # where the elevation model stands, against the live archive
 npm run eval:smoothing  # eval: the zero-phase elevation smoother
 ```
 
@@ -53,36 +53,39 @@ npm run eval:smoothing  # eval: the zero-phase elevation smoother
 the source, so it is safe on any checkout. Both evals read the live database and
 write nothing.
 
-`npm run eval:anchor` measures whether the elevation model agrees with itself,
-and with the ground. Three questions, all asked of buckets rather than raw
-samples, because the anchor correction is applied on the way into a bucket and
-never written back onto the sample rows:
+`npm run eval:quality` reports three numbers, all asked of buckets rather than
+raw samples, because the anchor correction is applied on the way into a bucket
+and never written back onto the sample rows:
 
-- **self-consistency** — one ride, one bucket, two passes minutes apart. The
-  ground cannot have moved, so any difference is the ride disagreeing with
-  itself. Needs no second ride and no terrain model.
-- **cross-ride** — one bucket, two rides. What actually reaches the map, since
-  the running mean blends them.
-- **terrain shape** — each held-out bucket against the terrain model, with the
-  ride's own median residual removed first so it measures shape rather than
-  level. The only one of the three with a referent outside the archive, and the
-  reason it exists: the other two are both forms of the data agreeing with
-  itself, and a correction that tilts a ride can improve both while walking the
-  ride away from the ground. One did, by up to 12.39m, and scored better for it.
+- **self-consistency** — one ride, one bucket, two passes at least five minutes
+  apart. The ground cannot have moved, so any difference is the ride
+  disagreeing with itself. Needs no second ride and no terrain model, which
+  makes it the closest thing to a ground truth here.
+- **cross-ride** — one bucket, every pass from two or more rides, as the spread
+  about their mean. That mean is the value `mergeBuckets` actually draws, and
+  one vote per pass is how it draws it.
+- **terrain** — each bucket against the USGS 3DEP model, with production's own
+  anchor applied and no second level removed. The only one of the three with a
+  referent outside the archive, and the reason it exists: the other two are
+  forms of the data agreeing with itself, which a systematically wrong ride can
+  satisfy perfectly.
 
-It prints a verdict against the population the change reached, and separately
-proves that every untouched bucket came out identical — against an independent
-transcription of `main`'s `fitDemOffset`, carrying its own literal constants, not
-against the fitter under test. It also pairs each comparison with itself before
-and after, because a summary median cannot tell "helped everything a little"
-from "helped most and hurt some" — and if a quantile ever moves the wrong way,
-that pairing is what says how many comparisons actually got worse instead of
-leaving it to be waved away.
+**It is a report, not a gate.** There is no second mode to compare against, so
+nothing in it passes or fails; it exits non-zero only when a measure could not
+be computed, or met a value that is not a number. Run it either side of a change
+and compare by eye — that is what it is for, and the obvious use is a
+`rebuild-model`, which recomputes every stored bucket and otherwise offers no
+answer to "did that help?" beyond row counts.
 
-A note on the hold-out split it reports as out-of-sample: it splits by bucket,
-and both halves come from the same two passes of the same runs. It controls for
-per-bucket noise and nothing else. Every failure mode this fit actually has is a
-property of the run and appears in both halves identically.
+Two cautions when comparing runs:
+
+- Its terrain coverage is a floor. It uses the DEM values already cached in
+  `segment_dem_elevations` and fetches nothing, while a rebuild calls
+  `ensureDemElevations` and fills gaps in — so a rebuild can legitimately raise
+  the terrain comparison count.
+- Numbers from the older `eval:anchor` are **not** comparable to these. That
+  script scored only buckets held out of its drift fit; with no fit there is
+  nothing to hold out, so these populations are roughly twice the size.
 
 ## Endpoints
 

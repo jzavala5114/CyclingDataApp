@@ -45,11 +45,6 @@ const client = await pool.connect();
 let totalMatched = 0;
 let totalDiscarded = 0;
 let totalSpikes = 0;
-// How many rides got a sliding anchor versus the old single number. A run where
-// nothing ramps means the guards are rejecting every fit, which is a silent way
-// for this to do nothing at all.
-let totalRamped = 0;
-let totalFlat = 0;
 const allDiscards: Array<DiscardedRun & { sessionId: number }> = [];
 try {
   await client.query("begin");
@@ -60,26 +55,17 @@ try {
   await client.query("delete from segment_elevation_buckets");
 
   for (const session of usable) {
-    const { matchedRuns, discardedRuns, demOffsetM, demDriftM, demAnchorShape, demPoints,
+    const { matchedRuns, discardedRuns, demOffsetM, demPoints,
             rejectedSpikes, discards } = await processSession(client, session.id);
     totalMatched += matchedRuns;
     totalDiscarded += discardedRuns;
     totalSpikes += rejectedSpikes;
-    if (demAnchorShape === "ramp") totalRamped += 1;
-    else if (demAnchorShape === "constant") totalFlat += 1;
     for (const discard of discards) allDiscards.push({ ...discard, sessionId: session.id });
     // demOffsetM is (ours - DEM); the correction applied is its negation.
-    // The drift is how far the ride was seen to slide across the stretch its
-    // own revisits covered, which a single-number anchor could not express and
-    // silently smeared across the whole ride instead.
-    const drift =
-      demDriftM != null && demAnchorShape === "ramp"
-        ? `, sliding ${demDriftM >= 0 ? "+" : ""}${demDriftM.toFixed(2)}m over the measured stretch`
-        : "";
     const anchor =
       demOffsetM == null
         ? "unanchored"
-        : `shifted ${(-demOffsetM).toFixed(2)}m onto the DEM datum (${demPoints} points)${drift}`;
+        : `shifted ${(-demOffsetM).toFixed(2)}m onto the DEM datum (${demPoints} points)`;
     const spikes = rejectedSpikes > 0 ? `, ${rejectedSpikes} spikes dropped` : "";
     console.log(
       `  session ${session.id}: ${session.samples} samples -> ${matchedRuns} runs merged, ${discardedRuns} discarded${spikes}, ${anchor}`,
@@ -194,9 +180,6 @@ if (allDiscards.length > 0) {
 
 console.log(
   `\nmerged ${totalMatched} runs, discarded ${totalDiscarded}, dropped ${totalSpikes} impossible fixes`,
-);
-console.log(
-  `anchors: ${totalRamped} rides corrected with a sliding offset, ${totalFlat} with a single number`,
 );
 console.log(
   `model: ${summary[0].buckets} buckets across ${summary[0].segments} segments, ${summary[0].implausible} implausible`,
