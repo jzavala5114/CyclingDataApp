@@ -84,10 +84,12 @@ the same path as a ride coming off the phone.
   47,015 canonical; 17,020 pavements and unnamed sidepaths folded into parent
   roads. Every road stays canonical. **2,643 more are tagged
   `is_sidewalk` and were never folded** — see the Stage 1 section.
-- **Model**: **4,736 buckets across 611 segments**, 806 coverage rows. Lines are
-  clipped to what was ridden. These carry the single-number anchor, which is now
-  the only anchor there is — the sliding version was deleted on 2026-09-23 after
-  four reviews. See "The sliding anchor is gone".
+- **Model**: **5,953 buckets across 739 segments**, 946 coverage rows, 1,792
+  matched runs, 0 implausible. Rebuilt 2026-09-24 onto the zero-phase smoother —
+  see "The merge and the rebuild". Lines are clipped to what was ridden. These
+  carry the single-number anchor, which is now the only anchor there is — the
+  sliding version was deleted on 2026-09-23 after four reviews. See "The sliding
+  anchor is gone".
 - **Rides**: **39 usable**, measured by `eval:quality` on 2026-09-23 (36 on
   09-16, 34 on 09-13; the total session count was not re-measured). **Sessions 5 and 6
   are permanently corrupt** — `rebuildModel.ts` excludes them by elevation
@@ -796,6 +798,59 @@ filter inside `collectRevisits`, and it guards a *comparison between two
 passes*. Delete the comparison and the guard has nothing to protect. What
 survives independently is the `elevation_source` column itself, still recorded
 per sample and still used for ride eligibility in `usableSessions.ts`.
+
+## The merge and the rebuild
+
+**2026-09-24.** `main` moved for the first time since 2026-09-06:
+`9727a28..7708224`, nine commits, the whole elevation stack at once. Deploy
+verified by `builtAt` moving `2026-09-06T07:14:04.086Z` →
+`2026-09-24T01:46:26.360Z`, never by status.
+
+**The only runtime behaviour change in all nine commits is the smoother.** The
+anchor is arithmetically identical to what was already running, and about 5,000
+of the lines are tests, evals and docs the server never loads.
+
+Then `rebuildModel.ts`, to put the stored model on the same filter as new rides.
+Snapshot of all three wiped tables taken first, under
+`scratchpad/pre-rebuild/*.csv`.
+
+- 39 of 42 sessions qualified. The three skips are the documented ones: 5 and 6
+  (elevations not absolute), 45 (20.7% impossible steps).
+- 1,792 runs merged, 444 discarded, 143 impossible fixes dropped.
+- **5,953 buckets across 739 segments, 0 implausible — identical counts to
+  before.** That is correct, not a no-op: the smoother changes heights, not
+  which runs clear the gate.
+- **Every one of the 5,953 buckets moved. 0 identical, 0 added, 0 removed.**
+  Absolute change: median 0.655m, p90 1.770m, worst 5.154m, mean 0.824m. Full
+  before/after at `scratchpad/rebuild-before-after.csv`.
+
+**Did it help? Partly, and the honest answer is mixed.** Measured with
+`eval:quality` over the same 39 rides, old filter against new:
+
+| | main's smoother | after rebuild |
+|---|---|---|
+| terrain median / mean / worst | 2.43 / 3.71 / 30.87 | **2.37 / 3.67 / 27.84** |
+| cross-ride mean / worst | 2.08 / 13.58 | **2.01 / 12.72** |
+| self-consistency median / p90 | **2.75 / 10.43** | 2.87 / 11.85 |
+
+Terrain is the only measure with a referent outside the archive, and it improves
+on median, mean and worst. Self-consistency gets worse. That is the expected
+signature rather than a surprise: **a lagging filter makes two passes of the
+same ground agree with each other while both are wrong in the same direction**,
+so removing the lag costs self-agreement and buys accuracy. It also independently
+reproduces what commit `3010e8b` measured with a different instrument, which is
+the strongest evidence the new eval works.
+
+Caveat on the terrain row: its comparison count rose 11,146 → 11,213, because
+the rebuild calls `ensureDemElevations` and fetched terrain the eval never
+does. Slightly different populations, so read that row as indicative.
+
+**Not done, deliberately:** draft PRs #1 and #2 are still open and now contain
+nothing `main` lacks (#1 already contained #2 via the `0be4344` merge). The four
+old `jzavala5114/*` branches and `fix-eval-gates` / `strip-the-ramp` are all
+merged and still exist. Both are Julian's to close.
+
+---
 
 Everything below this line is the history of the feature, kept for the failure
 modes it records. **It describes code that no longer exists.**
