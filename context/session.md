@@ -3,10 +3,25 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-09-23. **Start with "The sliding anchor is gone"** — that
-decision is made and the code is deleted. Everything in this file about the
-ramp being live, parked, or awaiting a decision is history, kept for the failure
-modes it records. Nothing else here has changed.
+Last updated 2026-09-25.
+
+**Nothing is mid-flight.** The elevation work that occupied September is merged,
+deployed and rebuilt — `main` is `8a1b8e0`, production is serving it, and the
+model was recomputed onto the new smoother on 2026-09-24. There is no parked
+decision waiting on Julian.
+
+Where to start depends on what you came for:
+
+| you want to | read |
+|---|---|
+| know what the app is and how a ride becomes a coloured line | "What it is", "Layout", "Data flow" |
+| change anything in the backend | "Bugs already paid for" — 28 failure modes, each one paid for once already |
+| touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
+| pick up the next piece of work | "Open items" — the `NEXT:` bullet is the biggest lever |
+| understand why there is no drift correction | "What the drift anchor taught us" |
+
+This file is ~19k tokens. It is not meant to be read end to end; the headings
+are the index.
 
 ---
 
@@ -42,11 +57,15 @@ context/        This file
    durable record of a ride.
 3. `POST /sessions/:id/end` → `processSession()`, all in one transaction:
    - load candidate `segments` in a bbox around the samples (+500m), canonical only
-   - `smoothElevations()` — EMA over the elevation series
+   - `rejectElevationSpikes()` — drop fixes that cannot be reconciled with the
+     fixes either side, BEFORE smoothing, since smoothing an impossible reading
+     smears it across its neighbours instead of deleting it
+   - `smoothElevations()` — zero-phase (forward then backward) filter over the
+     elevation series, so it damps noise without the lag a one-pass EMA has
    - `matchSamplesToSegments()` — nearest segment + bearing + hysteresis → runs
    - `profileRun()` — **discard runs that only clipped the segment**, then
      project onto the line and bucket by 15m of distance-along-segment
-   - `ensureDemElevations()` + `fitDemOffset()` — **anchor the whole ride to
+   - `ensureDemElevations()` + `fitAnchor()` — **anchor the whole ride to
      the terrain model with one median offset**
    - `mergeBuckets()` — **upsert a running mean**
    - write `session_segment_matches` for the runs that were merged
@@ -852,581 +871,81 @@ merged and still exist. Both are Julian's to close.
 
 ---
 
-Everything below this line is the history of the feature, kept for the failure
-modes it records. **It describes code that no longer exists.**
-
 ---
 
-## History: the sliding anchor after three rounds and four reviews
-
-**Status 2026-09-19 — superseded by the section above. The code described here
-was deleted on 2026-09-23.**
-
-Four independent adversarial reviews have now rejected this feature. Every one
-found the same class of defect in a new place: **evidence that is not
-independent counted as a quorum, and a check that cannot fail reported as a
-check that passed.** Round three's own fixes were three fresh instances of it.
-That recurrence, not any single defect, is the finding worth carrying forward.
-
-### Where the code is
-
-| branch | state |
-|---|---|
-| `jzavala5114/fix-elevation-drift-b7815212` | PR #1, draft. 64/64 green. Round-1 defects fixed, lag fix merged in, ramp off. The reviewable baseline. |
-| `jzavala5114/fix-elevation-lag-805d4615` | PR #2, draft. Zero-phase smoother, annotated as folded into #1. |
-| `jzavala5114/drift-round3-wip-8f13d5f2` | Parked mid-round-three with 5 tests deliberately red. Superseded; kept as the record of what was parked and why. |
-| `jzavala5114/drift-round3-13eeb398` | Round three, finished: `c1a250a`, pushed, no PR opened. 77 tests, typecheck clean. |
-| **`fix-eval-gates`** | **Step 1 of the parked plan: the eval harness, 2026-09-20.** Off round three, not off main - `evalAnchorDrift.ts` does not exist on main. 126 tests, typecheck clean. The fit is untouched. |
-
-Nothing is merged. `origin/main` is `9727a28` and has not moved. `allowRamp`
-still defaults to false and `processSession` still never asks for a ramp, so no
-saved ride is affected by any of it: the eval reports **8742/8742 untouched
-buckets bit-for-bit identical** against an independent transcription of main's
-`fitDemOffset`.
-
-Full text of both reviews: `~/Desktop/DriftAnchor-Reviews-3-and-4.pdf`, 19
-pages, technical report plus a plain-language translation.
-
-### What round three fixed
-
-The second review returned eleven findings. The parked WIP commit fixed the
-three most severe and left five tests red, labelled "asserting rules this commit
-replaces, they need rewriting". **Three of those five were right and the code
-was wrong.** Round two's fix for "one comparison, one vote" had reintroduced
-self-certification three times in fifty lines:
-
-- The contradiction veto's allowance was anchored to what the ramp **claims**,
-  so the bigger the claim the wider its own gate: a ramp asserting 12.39m
-  against an observed 1.6m was allowed 7.19m of disagreement *because* it
-  asserted 12.39m. Now the smaller of claim and observation.
-- `collapseToObservations` dropped any pair whose interval matched a chain of
-  two others without checking that its **rise** matched their sum. A pair that
-  disagrees with a chain contradicts it rather than restating it, and it is the
-  most valuable row in the set. Derivability now requires the arithmetic to
-  hold to within `MIN_MEANINGFUL_RISE_M`.
-- `netObservedRiseM` walked the chain greedily and took one observation's rise,
-  handing the veto back to a single outlier row — the exact bug
-  `LONGEST_OBSERVATION_TOLERANCE` exists to prevent, one branch over.
-
-**And one defect no test in that file could have seen.** The chain selected its
-joint set with `lateAtMs >= furthest * TOLERANCE` on **absolute timestamps**.
-Every fixture in the suite starts its ride at `atMs 0`, where that line is
-correct; on production epoch milliseconds a 5% band spans 85 years and admits
-everything. Reach is a duration from where the chain stands now, and
-`REGRESSION: the fit is shift-invariant` runs the same fixtures at four epochs.
-**Generalise this**: any rule written as a ratio of two timestamps is invisible
-to a suite whose fixtures all start at zero.
-
-Also in round three: `largestCoveredBlock` maximises duration rather than member
-count (member count was the currency the row-inflation defect was minted in);
-`MIN_POINTS_FOR_ANCHOR` and `MAX_PLAUSIBLE_OFFSET_M` pinned with literals
-instead of fixtures built from the constant under test; the ramp-end offset
-check given its first test; `runElevationSource` exported and both it and
-`siteKeyFor` covered for the first time; and the eval given a third outcome,
-exit 2 `INCONCLUSIVE`, because it previously exited 0 having certified nothing.
-
-`npm run eval:anchor` now exits 2 by design. Production would ramp **1 of 36**
-usable rides; the eval, which withholds half of each ride's revisits, treats
-**0**.
-
-### What the fourth round of review found
-
-Two reviewers, neither seeing the other, neither shown any build reasoning.
-Both returned REJECT.
-
-**Reviewer A, the tilt logic.** Three findings that let bad rides through:
-
-1. **The chain overrides the veto and never consults evidence off its own path.**
-   Verified by hand. Three revisits: `[0,60] +6`, `[20,120] -3`, `[55,115] +6`.
-   The middle one watched 100 of the window's 120 minutes and measured the
-   barometer going *down* 3m. The fit tilts the ride *up* 12m and reports the
-   contradiction as **0.0000**. The dissent is excluded at
-   `Math.abs(r.earlyAtMs - here) <= tol` because its start is 20 minutes in.
-   General form: the chain's links come from the same members whose median set
-   the rate, so `contradictionM ≈ 0` for any data whenever the majority is on
-   the path. **Setting `chainRiseM = null`, deleting the whole 40-line branch,
-   leaves all tests green and correctly refuses this fixture** — round two's fix
-   is strictly weaker than the branch it overrides.
-2. **The collapse invents a row nobody measured.** Two rows on one street at
-   `[0,120] rise 1` and `[0,70] rise 8.5` overlap 0.583 of their union, so they
-   cluster, and the endpoints and rise are medianed *independently* into
-   `[0,95] rise 4.75`. That is 3 m/h exactly, agreeing with the majority, so the
-   only observation with a claim on the whole window is gone and a correct
-   refusal becomes a 6m ramp. The comment claiming a nested pair is not
-   swallowed is false for every nested pair covering half the union, which given
-   the 30-minute floor is every one inside a pass of 60 minutes or less.
-3. **`allowedM` is still anchored to the observation in the direction that
-   matters.** When the ramp over-claims, `Math.min` returns `|observed|`, so the
-   ramp may always claim up to `1m + 1.5 ×` whatever the ride saw. The round-three
-   comment claiming the minimum "closes both directions at once" is wrong: it
-   closes the harmless one. Verified case applies +14.5m where the ride's own
-   chain reports +9m.
-
-Two more in the safe direction: a chain of 10+ equal links is walked taking
-every other link, so a perfectly tiled ride is refused on a half-sized total
-(and the code comment asserting this cannot arise is wrong on both its claims);
-and the one-outlier fix only applies when competing passes fall inside a 5%
-band. Two more on counting: `isDerivable` catches two-link sums only, so three
-increments plus their total vote four times; and the quorum counts **places**
-and never **moments**, so three rows sharing both endpoints satisfy a rule
-written for three independent observations, on which shape `contradictionM ≡ 0`
-by algebra.
-
-**Eleven mutants of behavioural lines leave all 45 anchorFit tests green**,
-including deleting the chain branch entirely. Three tests pass for a reason
-other than the one they name.
-
-**Reviewer B, the eval harness.** Three critical, all verified by execution:
-
-1. **The safety proof can verify zero buckets and print as a pass.** Nothing
-   asserts `untouchedChecked > 0`, so when every bucket has a treated
-   contributor it prints `verified identical: 0/0` and exits 0. The reassuring
-   8742/8742 and a vacuous 0/0 are indistinguishable to the gate. This is the
-   NaN-comparison defect relocated: not "the comparison is always false" but
-   "the loop body never runs".
-2. **The verdict reads only the median.** `mean`, `p90`, `worst`, `worsened` and
-   `worst_regression_m` are all computed and printed, and none is gated. Six
-   comparisons improving 0.10m against five regressing **40m** exits 0.
-3. **`inconclusive` asks "were there comparisons", not "could any have moved".**
-   A scenario shifting every observation of a treated ride by 5m reports
-   improved 0 / worsened 0 / unchanged, six PASSes, exit 0.
-
-Also: `crossRideDisagreements` computes the **range** while its comment claims
-it models the running mean the map actually draws, so it is blind to a
-non-extreme ride moving; it has no held-out filter and is the only measure whose
-value depends on the level; the eval re-implements `runElevationSource` instead
-of importing it, which is the guard that caught session 76; and `siteKeyFor`
-is unnormalised for case, so one OSM name variant splits a site and hands the
-quorum a free vote.
-
-Reviewer B confirmed the `previousAnchor` control is genuinely independent
-(20,000 random point sets, 0 disagreements, and it diverges when either constant
-is moved), and that main's `fitDemOffset` is faithfully transcribed. The knife
-is sharp; the finding is that it can be pointed at nothing.
-
-### The decision this is parked on
-
-The plan agreed before compaction, in order:
-
-1. **Fix the eval harness first.** **DONE 2026-09-20** on `fix-eval-gates`. It
-   took two rounds, not the estimated hour, because a cold critic rejected the
-   first. See "The eval harness, fixed" below.
-2. **Then strip the ramp**, keeping what stands on its own: the instrument rule
-   (a GPS pass against a barometric one measures the offset between two sensors,
-   not drift — this caught session 76 asking to tilt a real ride 20m with every
-   other guard passing it), the zero-phase smoother, the terrain-shape eval
-   measure, `usableSessions.ts`, the gate lane and the mutation harnesses.
-
-**The case for stripping is not that the code is bad.** It is that the archive
-does not hold the evidence the feature needs, so every honest round of fixes
-shrinks its reach: it now reaches one ride in thirty-six, and reviewer A's
-closing line is a prediction that a fifth review finds the same pattern in a
-fifth place.
-
-## The eval harness, fixed, and the archive moved under it
-
-**2026-09-20, branch `fix-eval-gates` off `drift-round3-13eeb398`.** Step 1 of
-the plan above. **The fit is untouched**: `allowRamp` still defaults to false,
-`processSession` still never asks for a ramp, step 2 has not started.
-
-### First, a correction to the status above
-
-**"`npm run eval:anchor` now exits 2 by design ... the eval treats 0 rides" is
-stale.** It exits **0** and treats **session 77**. Verified by running the
-*unmodified* `325f166` eval as a control: it does the same, so the archive
-changed, not the code. Sessions 77 and 78 arrived after 2026-09-16; 77 has six
-revisits over half an hour and ramps at -6.12m. Production would ramp 2 (74, 77).
-
-Do not read that green exit as the ramp being vindicated. It says: on the one
-ride this archive can treat, the ramp improved all three measures on every gate.
-Reviewer A's findings are about the *fit*, are untouched by this work, and
-describe shapes the archive does not contain.
-
-### What the harness looks like now
-
-`services/evalMeasures.ts` holds the three measures, the untouched-bucket proof,
-the pairing and the verdict rule, taking `heldOutKeys` as an argument instead of
-closing over a module global. `scripts/evalAnchorDrift.ts` loads rides, fits
-anchors and prints; it decides nothing. **That extraction is the load-bearing
-change** - none of the rest could ship with a test while importing the module ran
-the eval against the production database.
-
-`evalMeasures.test.ts`: 49 tests. `tmp-mutate-evalmeasures.mjs`: 40 mutants, 38
-defects all killed, 2 controls both survive. Backend suite 77 -> 126.
-
-Five gates where there was one (`after.median <= before.median`):
-
-| gate | catches |
-|---|---|
-| non-finite | a value the harness cannot read. Checked FIRST, because NaN silences the rest |
-| median | the typical comparison getting worse |
-| mean | "helped many a little, hurt a few enormously" - total error must fall |
-| count | more comparisons hurt than helped while the aggregates hold |
-| worst regression | one impossible movement drowned in a good aggregate |
-
-Plus INCONCLUSIVE when a treated-scope measure had no power, and the proof
-reporting vacuity both globally and per ride.
-
-### Two rounds, because a cold critic rejected the first
-
-Round one fixed reviewer B's F1-F7, F9 and F10. A critic with no sight of the
-build reasoning returned REJECT with eleven findings, and it was right. **The
-pattern recurred for the fifth time**, in four fresh places:
-
-- **One NaN disabled two gates.** `Math.max(NaN, 293.5)` is NaN and `NaN > 15`
-  is false, so a single unreadable comparison switched the mean and
-  worst-regression gates off *for the whole measure* - while the sign test's
-  `else` filed it as a regression, padding the count gate in the passing
-  direction. Harm that disables the alarm and then pads the register. History
-  defect 2 relocated out of the untouched proof, where it had just been fixed,
-  into the verdict function written in the same commit.
-- **The proof's coverage is per bucket; its premise is about rides.** A bucket
-  with a treated contributor is skipped whole, so an untreated ride sharing
-  every bucket with a treated one is never checked, while another ride's private
-  buckets keep the printed count affirmative. That ride was then also filtered
-  out of the treated measures and lived only in the whole-archive line, which is
-  never gated. It could be 40m out and exit 0. Now reported as
-  `uncheckedSessions`.
-- **"Held out on every contributor" was `some` in disguise.** `heldOut` is a
-  pure FNV hash of the bucket key and takes no session, so for any key either
-  every contributor held it out or none did: 18,000 keys, zero disagreements,
-  `every` keeps exactly what `some` would. The comment claimed a cost never
-  paid, and the test pinning it built a state the script cannot produce. **The
-  deeper half: the filter does not make the measure out of sample at all.** Only
-  the *rate* is withheld. `points` is built from every bucket and both modes
-  consume it unfiltered, so the **level** is fit in sample, and cross-ride is the
-  one measure whose value carries the level.
-- **`medianChangeM` took the upper of two middles.** A balanced set of changes
-  printed a positive number by construction: fifty comparisons worse by 9m
-  against fifty better by 10m read `median_change_m: 9.00` when the honest
-  answer is -0.50 and total error had *fallen* 50m. Fixed the estimator rather
-  than gating it, and recorded why: after the fix, a median-of-changes gate
-  cannot fire anywhere the mean and count gates have not already.
-
-Also: the proof could not see a bucket present only in `after`, which is the
-direction it was written for; `improved === 0 && worsened === 0` let one
-comparison in ten thousand license a verdict over the 9,999 that could not move,
-a quorum of one; and the eval imported the two constants its own comment spends
-ten lines arguing must never be imported.
-
-**And one the critic did not find, which running the thing did.** The
-frozen-majority rule fired on the whole-archive scope, where most comparisons
-are untreated and identical *by construction* - that fixed unchanged mass is
-exactly what the untouched proof exists to establish. It reported the design as
-a defect on every run. The rule is scoped to the treated population now.
-
-### What this cost the measures, measured on the real archive
-
-| | before | after | why |
-|---|---|---|---|
-| self-consistency comparisons | 269 | 162 | revisit gap 300s -> 1800s, matching the fit |
-| cross-ride comparisons | 2146 | 1077 | held-out filter, ~50% as the hash predicts |
-| terrain shape comparisons | 5338 | 5338 | untouched, and therefore the control |
-| treated cross-ride frozen | **54 of 465** | **0 of 253** | the range was blind to non-extreme rides |
-
-That 54 is F4 measured rather than argued: under `max - min` between per-ride
-means, 54 treated comparisons could not respond to the treatment at all.
-
-### Known and deliberate, not oversights
-
-- **No measure here sees a uniform level change.** Self-consistency cancels the
-  level between two passes, terrain shape subtracts each ride's own median, and
-  cross-ride is mean absolute deviation, which is translation invariant. The
-  drawn value can move 15m with all three reading unchanged. Tolerable because
-  setting the level *is* the anchor's job. If the level ever becomes the
-  question it needs a fourth measure - per-bucket drawn value, before against
-  after - not an edit to cross-ride, which would stop answering what it is named
-  for.
-- **The worst-regression bounds are tripwires, not gates.** Derived for
-  self-consistency and terrain shape: the reverse triangle inequality bounds a
-  comparison's movement by the ride's own drift, which `fitDriftRate` caps at
-  `MAX_TOTAL_DRIFT_M`. A judgement at 2x for cross-ride, which spans two rides
-  and has no such derivation. No legitimate fit comes near either; they fire on
-  the impossible, and the mean and count gates are what catch ordinary harm.
-- **F8's `siteKeyFor` case and whitespace normalisation is NOT fixed.** It is
-  production fit logic, not measuring logic, and changing it moves which rides
-  get ramped, so it belongs to step 2. The mutants `name:${name.toLowerCase()}`
-  and `?? ""` after trim both survive today. Under-normalising splits one road
-  into two sites, which is the quorum-inflation class this feature has been
-  rejected for three times.
-- **The eval never fetches terrain**, while a rebuild calls
-  `ensureDemElevations`, which does. So the eval refuses rides production would
-  anchor, biasing `treated` down. Read a small treated count as partly an
-  artefact of the harness rather than purely as the feature's reach.
-
-**If the ramp is wanted anyway**, round four is a simplification rather than an
-addition, and the design is settled: replace the chain walk, the joint veto and
-the minimum-allowance rule with a single check comparing the ramp against
-**every** member over that member's own interval,
-`|rate × gap_r − rise_r| <= leak allowance`, with the allowance taken from the
-measured leak model (a few tenths of a metre; `MIN_MEANINGFUL_RISE_M` is the
-floor) rather than from either side of the comparison. That deletes
-`netObservedRiseM` and kills findings 1, 3, 4 and 5 at once. It also needs the
-collapse to cluster on **both endpoints matching** rather than on overlap
-fraction (kills finding 2), derivability generalised to N links, and a gate
-requiring more than one distinct time increment.
-
-### Getting back into this
-
-The work is in a session worktree, not the shared checkout:
-
-```
-C:\Users\Julian\.claude-worktrees\CyclingDataApp-1347402229\13eeb398
-```
-
-A worktree carries tracked files only, so bootstrap before the first test run:
-copy `backend/.env` from the shared checkout and junction `backend/node_modules`
-and `mobile/node_modules` to it (`New-Item -ItemType Junction`). The pre-commit
-hook is opt-in per clone and is now enabled here
-(`git config core.hooksPath .githooks`); it runs typecheck and the gate tests on
-any commit touching `backend/`.
-
-**The `.env` points at the live Supabase database**, shared with every other
-session and with production. `eval:quality` is read-only (verified: no
-insert/update/delete anywhere in it, and the one function that writes,
-`ensureDemElevations`, is not imported). `PORT=3000` is a single-writer handle,
-so do not start the server twice.
-
-**The worktree instructions above are obsolete.** CLAUDE.md now sets
-`git config claude.mode solo`: one session at a time, branches in the shared
-checkout, no worktrees and no PRs. Restore the worktree protocol before running
-two sessions at once.
-
-### Tools worth not rewriting
-
-One mutation harness, in `backend/` and gitignored with the other `tmp-*.mjs`.
-It patches a copy, runs the suite, restores, and reports which test died. It
-normalises CRLF before matching, which is why its patches apply at all on this
-checkout.
-
-- `tmp-mutate-evalmeasures.mjs` — the three quality measures. 21 mutants: 19
-  defects killed, 2 controls survive, and one expected survivor
-  (`passes.length < 2`, dominated by the revisit-gap check and documented at the
-  line). Every mutant restores a defect a review actually found, so a survivor
-  is a test that does not test what its name says. When its patterns go stale it
-  reports SKIP rather than a false pass — preserve that if you rewrite it.
-
-**Three others are gone**, and their absence is not an accident.
-`tmp-mutate-anchor.mjs`, `tmp-sweep-constants.mjs` and `tmp-mutate-mapping.mjs`
-all targeted the sliding anchor: its eight round-three fixes, its eighteen
-constants, and `runElevationSource`/`siteKeyFor`. All of that code was deleted
-on 2026-09-23, and the harnesses went with the worktree they lived in. Do not
-recreate them expecting them to apply.
-
----
-
-## The sliding anchor: five defects fixed, and it STILL does not ship
-
-**Status 2026-09-14 — superseded by the section above; kept as history.**
-
-All five defects are fixed on `jzavala5114/fix-elevation-drift-b7815212`, which
-now also contains the zero-phase smoothing fix merged from
-`jzavala5114/fix-elevation-lag-805d4615`. 64 gate tests, every fix mutation
-tested, every guard constant pinned on both sides. `npm run eval:anchor` exits 0.
-
-**And the ramp is switched off.** `allowRamp` defaults to `false` in
-`anchorFit.ts`, and `processSession` calls `fitAnchor` without it, so every ride
-saved through `POST /sessions/:id/end` gets the single number exactly as before.
-That default IS the verdict; a verdict that lived only in prose would have
-shipped the feature on the next ride saved.
-
-Why it is off: with the gates corrected the eval treats **no rides at all**, and
-production would treat **one** (session 74) out of 38. An earlier round, with
-only four of the five fixed, treated two rides and made both worse on all three
-measures. The feature is starved rather than subtly wrong — the evidence it needs
-is close to absent in this archive.
-
-The fifth defect is the one worth carrying forward: **a revisit that compares a
-GPS-altitude pass against a barometric one measures the offset between two
-sensors, not drift.** Session 76 read −3.49m at the head of Culebras Trail and
-−17.96m at its end while every time gap was 31 to 32 minutes, which no drifting
-barometer can produce. Its first lap fell inside a GPS stretch and its second was
-barometric. Every other guard passed it and it asked to tilt the ride 20m.
-
-Two things changed that are true regardless of whether the ramp ever ships:
-`collectRevisits` now requires both passes on the barometer, and "distinct sites"
-counts street names rather than segment ids (a segments row is one OSM way split
-at every junction, so session 76's "15 distinct sites" were 15 pieces of one
-trail).
-
-Next lever, now unblocked by the zero-phase smoother: opposite-direction
-revisits, 21 long ones declined against 30 kept. Needs the bucket index flipped
-and its own measurement.
-
----
-
-### History: the review that rejected the first version
-
-**Status 2026-09-13 (superseded by the section above).** It passed 31 gate tests
-and its eval exited 0, and it was still wrong. An adversarial review found
-defects that the tests and the eval were both structurally unable to see. The
-numbers below are real but they do not mean what they look like. All of them are
-fixed now; kept because the failure modes are worth recognising again.
-
-### The three that block it
-
-**1. The ramp is applied across time nobody observed.** `fitDriftRate` sets the
-window to `min(earlyAtMs)`..`max(lateAtMs)` — the *union* of the pairs, which
-need not overlap or tile. Three 31-minute observations at 0, 100 and 209 minutes
-produce a four-hour ramp. The rate is scale-free, so the per-pair leak is
-multiplied by `window / gap`: rises of 1.6m each (the file's own quoted "median
-disagreement 1.57m") yield a **12.39m** correction spanning −6.17 to +6.22m. The
-code comment claiming the ramp is "linear only between the first and last moment
-the drift was actually observed" is false for disjoint observations. Related: the
-median of per-pair *rates* gives a 31-minute pair and a 4-hour pair equal weight,
-so a pair that directly measured the applied window can be outvoted by short
-ones — constructed case asserts a 15.5m slide over a span its own evidence says
-moved 1.0m.
-
-**2. The quorum of three is not three independent comparisons.** `collectRevisits`
-emits every *pair* of readings in a cell, so N passes over one 15m cell yield
-N(N−1)/2 pairs from only N−1 independent increments. Three passes over a single
-bucket on a single street clear a quorum meant to need three independent
-observations — the exact failure the code's own comment says it prevents, moved
-up one level from buckets to passes. The sign gate is defeated at the boundary
-too: rises of +2, +1, −1 give agreement of exactly 2/3, and `2/3 < 2/3` is false,
-so it is accepted. **`sessionProcessor.test.ts` asserts this as correct
-behaviour**, which is how it survived.
-
-**3. The EMA lag is a same-signed bias that clears the floor on exactly the rides
-this fires on — and the archive is worse than the code assumed.** The lag is
-~2.3 samples; the question is whether it varies with speed. Measured across
-17,092 steps: fixes arrive on a near-fixed **~2s time interval** (2.04s slow,
-1.85s fast), so spacing tracks speed — **median 4.77m under 3 m/s against 11.83m
-at 6 m/s and over**, and the same on both treated rides (73: 4.62/11.69,
-74: 5.14/14.33). So a fast pass and a slow pass over the same ground differ by
-~16m of lag, worth **~0.96m on a 6% grade and ~1.9m on 12%** — at or above
-`MIN_MEANINGFUL_RISE_M`. `MIN_SIGN_AGREEMENT` is no defence because the bias is
-same-signed by construction. And the rides that produce three same-direction
-revisits 30+ minutes apart are hill repeats and loop laps: steep, with the rider
-slowing as they tire. **The leak is maximally correlated with the population the
-feature reaches.** A constructed ride with *zero* real drift, three steep streets
-ridden twice with the rider slower the second time, yields a 6.30m ramp.
-
-Note this also contradicts "Decisions made": the speed-derived GPS interval is
-documented as holding fixes ~11m apart, and it does not — median spacing is
-6.35m and it varies 2.5× with speed.
-
-### The evidence was not evidence
-
-**The headline safety proof is a tautology.** "6,346 of 6,346 untouched buckets
-bit-for-bit identical" compares `fitAnchor(allowRamp:false)` against
-`fitAnchor(allowRamp:true)` *after the latter fell back* — the same `flat()` in
-the same function. It proves `flat() === flat()`, not agreement with the deleted
-`fitDemOffset`. Its float comparison also scores a *missing* after-observation as
-identical, since `Math.abs(x - NaN) > 1e-9` is false.
-
-**The held-out split does not hold out what is fitted.** It splits by bucket key,
-but the rate is learned from *pairs of passes*: the held-out cell and the fitting
-cell are the same two barometer readings minutes apart. It removes cell noise,
-not pass-level signal. `selfDisagreements` then scores the widest pair — the one
-most likely to be ≥30 minutes and therefore in the fit. The "out of sample"
-claim does not hold.
-
-**Neither measure looks at the terrain model.** Both are self-agreement, so a
-ride tilted 12m at its ends by defect 1 moves *away* from the DEM while its
-self-consistency improves, and the eval cannot see it. The level is fitted to the
-DEM and the DEM never grades the result.
-
-Two tests also assert less than they claim: *"a real hill cannot be absorbed"*
-never calls `collectRevisits` and passes against an implementation that pairs
-opposite directions or different segments, and *"every rejection path returns
-exactly the old single number"* compares the new code with itself.
-
-### What is worth keeping regardless
-
-`usableSessions.ts` (so anything measuring the model agrees with the model about
-which rides count), the `npm test` gate lane, `.githooks/pre-commit`, and the
-eval's paired before/after breakdown. Those stand on their own.
-
-### The fork that needs deciding
-
-Defect 3 is not a threshold to retune. Either the lag comes out of the signal —
-a non-causal forward/backward smoothing pass, which changes every number in the
-model and is its own task — or a revisit must require both passes at a similar
-speed, which shrinks a population that is already two rides and may reach zero.
-The measurements below were taken before any of this was known; they are kept
-because they are real, not because they justify shipping.
-
-## What the branch measured, before the review
-
-
-
-Built 2026-09-13. The ride's correction used to be one number for the whole
-ride; it is now a level plus a slope. The level still comes from the DEM. **The
-slope deliberately does not** — see the struck-through open item above for the
-measurement that killed that idea. It comes from *revisits*: places one ride
-covered twice, where the ground and the DEM's error at that spot both cancel and
-most of what is left is the instrument sliding.
-
-`anchorFit.ts` holds the fit, `collectRevisits` in `sessionProcessor.ts` finds
-the pairs, `evalAnchorDrift.ts` measures it, and 31 gate tests cover it in
-0.5 s with no database.
-
-**Measured over the 34 usable sessions:**
-
-| | before | after |
-|---|---|---|
-| treated / self-consistency, median | 1.22 m | **0.89 m** |
-| treated / self-consistency, p90 | 8.12 m | **4.78 m** |
-| treated / cross-ride, median | 2.95 m | **2.63 m** |
-| treated / cross-ride, p90 | 7.23 m | **5.18 m** |
-| whole archive / cross-ride, median | 1.86 m | 1.87 m |
-
-Self-consistency is scored **out of sample**: half of each ride's revisited
-buckets are withheld from its own drift fit, because fitting on revisits and
-then scoring on the same revisits is arithmetic, not evidence.
-
-**Three things in that table need saying rather than glossing.**
-
-**It reaches two rides out of 34.** Sessions 73 and 74, at −4.94 and −1.59 m/h.
-The other 32 keep the single number and 0 are unanchored. That is not timid
-guards, it is how seldom a ride measures its own drift — a revisit must be the
-same segment, same direction and same 15 m cell at least half an hour apart.
-`rebuildModel.ts` now prints the ramp/constant split for exactly this reason: a
-run where nothing ramps is how this change would silently become a no-op.
-
-The eval fits on half of each ride's revisits and scores on the other half, so
-the rides it ramps are a *floor* on the rides production ramps, not the same
-set — and the identical-bucket proof below would then cover less than it looks
-like it does. So the eval reports both: fitting on every revisit the way
-production does gives the same two rides, 73 and 74. Measured, not assumed.
-
-**The whole-archive cross-ride median moved the wrong way, by 0.01 m, and that
-is not noise.** If every changed comparison had weakly improved, no quantile
-could rise — the sorted array would sit pointwise below the old one. A quantile
-that rises is proof that individual comparisons got *worse*. So the eval now
-pairs every comparison with itself before and after instead of leaving that to
-be waved at: **cross-ride 201 improved / 153 worsened, median change −0.22 m,
-worst regression +1.69 m; self-consistency 57 improved / 48 worsened, median
-change −0.42 m, worst regression +3.68 m.** It helps most comparisons and hurts
-some. The median of the *moved* comparisons sitting at −0.42 m rather than near
-zero is what distinguishes real signal from added noise that happened to average
-out favourably; a summary median alone could not have told those apart. Do not
-let this metric acquire an unexplained floor the way the Stage 1 one did.
-
-**Session 54 — the ride this was justified by — is not one of the two.** Its
-7.36 m disagreement over 51 minutes is the number in `anchorFit.ts`'s opening
-comment, and the shipped mechanism cannot see it: session 54's long revisits are
-out-and-backs, 3 opposite-direction returns at up to 72 minutes against 1
-same-direction. That is now written into the code comment rather than left to be
-discovered, and the open item above says what it would take to reach them.
-
-**Blast radius, proved rather than argued.** Every rejection path in `fitAnchor`
-returns exactly the old single number, and the eval checks it: **6,346 of 6,346
-buckets on untreated rides came out bit-for-bit identical.** That is what makes
-"rides the change touched" an honest scope rather than a convenient subset.
-
-Verification: typecheck clean, 31/31 gate tests in 0.53 s, eval exit 0. The
-guards were mutation-tested — removing the ramp clamp, dropping the quorum from
-3 pairs to 1, and zeroing the meaningfulness floor each failed exactly the tests
-written for them, and nothing else.
-
-New: `npm test` (gate tests) and `npm run eval:anchor`, both documented in
-`backend/README.md`, plus `.githooks/pre-commit` running typecheck and gate
-tests on any commit touching `backend/`. It is opt-in per clone:
-`git config core.hooksPath .githooks`.
-
+## What the drift anchor taught us, kept after the code went
+
+Three rounds of building, five adversarial reviews, ~4,300 lines deleted. The
+mechanics are in git (`47a2a14` through `7708224`); what follows is the part
+that transfers to work that has nothing to do with barometers.
+
+**The defect class, which recurred in five separate places.** Evidence that is
+not independent counted as a quorum, and a check that cannot fail reported as a
+check that passed. Every round of fixes introduced fresh instances of the same
+pattern *while fixing it*. Concrete forms worth recognising again:
+
+- **A control that shares an implementation with the treatment is not a
+  control.** The eval "proved" every untouched bucket was identical by comparing
+  `flat()` against `flat()` reached by two routes. It proved `flat() === flat()`.
+- **A proof with no subjects prints as a proof.** The same check printed
+  `verified identical: 0/0` and exited 0 whenever every bucket had a treated
+  contributor. A reassuring `8742/8742` and a vacuous `0/0` were
+  indistinguishable to the gate.
+- **NaN silences a threshold rather than tripping it.** `Math.max(NaN, x)` is
+  NaN and `NaN > limit` is false, so one unreadable value switched off two of
+  five gates for a whole measure — and got counted as a regression, padding the
+  count in the passing direction. This exact bug was found, fixed, and then
+  reintroduced thirty lines away in the same commit.
+- **A measure can be blind to the thing it was added for.** The one quality
+  measure with an external referent removed each ride's median residual "to
+  judge shape, not level" — which silently *anchored* the rides the anchor had
+  refused, reporting a ride the map draws 80m out as 1.00m.
+- **N passes over one cell are N−1 independent increments, not N(N−1)/2 pairs.**
+  Emitting every pair let three passes over one bucket clear a quorum written to
+  need three independent observations.
+- **A rule written as a ratio of two timestamps is invisible to a suite whose
+  fixtures all start at zero.** A 5% band on absolute epoch milliseconds spans 85
+  years and admits everything; every fixture started its ride at `atMs 0`, where
+  the line is correct. Generalise this: test at production magnitudes, not just
+  production shapes.
+
+**Measurement findings that still hold.**
+
+- **A GPS pass compared against a barometric pass measures the offset between
+  two sensors, not drift.** Session 76 read −3.49m at the head of Culebras Trail
+  and −17.96m at its end with every gap 31–32 minutes, which no drifting
+  barometer can produce: its first lap fell in a GPS stretch and its second was
+  barometric. Every other guard passed it and it asked to tilt the ride 20m.
+  `elevation_source` is still recorded per sample and still gates ride
+  eligibility in `usableSessions.ts` — that column earns its keep independently.
+- **Counting `segments` rows as distinct places inflates any quorum.** A segments
+  row is one OSM way split at every junction and capped at 150m, so session 76's
+  "15 distinct sites" were 15 consecutive pieces of one trail.
+- **Fitting a drift term against the DEM is dead, and not for a fixable
+  reason.** It made each ride more self-consistent and *less* consistent with
+  other rides (cross-ride median 1.86m → 1.93m): within one ride, where you are
+  is correlated with when you are, so the line absorbs the DEM's own
+  place-dependent error and tilts the ride to match it. Two rides crossing the
+  same ground in opposite order get opposite tilts.
+- **The archive does not hold the evidence a drift correction needs.** Every
+  honest round of fixes shrank its reach, because every round removed a way for
+  thin evidence to look strong. It ended at two rides in thirty-seven.
+
+**How the reviews were run, because the method worked.** Each reviewer got the
+deliverable and a named reference and nothing else — no commit messages, no
+build reasoning, and an explicit instruction that its job was to reject. Two
+reviewers on the same commit, neither seeing the other, agreed on the defect
+class and found it in different places. Mutation harnesses (patch a line, run
+the suite, restore, report which test died) found what the tests could not: a
+test that passes proves nothing about the bug it is named for.
+
+**If a drift correction is ever wanted again**, the settled design is one check
+comparing the ramp against *every* observation over that observation's own
+interval — `|rate × gap − rise| <= leak allowance`, with the allowance from the
+measured noise floor rather than from either side of the comparison. That single
+rule replaces the chain walk, the joint veto and the minimum-allowance rule, and
+kills four of the five findings at once. Read this section first; the obvious
+approaches are the ones already tried.
 ## Open items
 
 - **Two directions on one path** (deferred). Roads get two ±4 m offset lines,
@@ -1491,34 +1010,23 @@ tests on any commit touching `backend/`. It is opt-in per clone:
   *coast* through a screen-off stretch, recording a near-flat climb — a
   different wrong answer. Treating a GPS fix like a bracketing fix (position
   counts, height ignored) reuses an existing precedent and is more honest.
-- **Within-ride barometric drift.** Still open, and now **parked on a decision**
-  rather than on work: three rounds built, four independent reviews, all
-  rejected, same defect class each time. Read "The sliding anchor after three
-  rounds and four reviews" before touching any of it — the obvious approaches
-  are the ones already tried, and the last two rounds of fixes each introduced
-  fresh instances of the bug they were fixing. This bullet's own suggestion,
-  fitting the drift term against
-  the DEM, was built and measured and is dead: it made each ride more consistent with
-  itself and *less* consistent with other rides (cross-ride median 1.86 m →
-  1.93 m), because within one ride where you are is correlated with when you
-  are, so the line absorbs the DEM's own place-dependent error and tilts the
-  ride to match it. Two rides crossing the same ground in opposite order then
-  get opposite tilts. The slope comes from revisits instead. See the sliding
-  anchor section below.
-- **Use the out-and-back revisits too.** The named next lever for the sliding
-  anchor, and it is not a matter of flipping an index. 21 of the archive's 51
-  long revisits are declined because the two passes ran in opposite directions,
-  against 30 kept — and one of the 21 is session 54, the ride the whole change
-  was justified by. Realigning the bucket grid (forward `d` against backward
-  `lengthM - d`) is the easy half. The hard half is that `smoothElevations` is a
-  causal EMA whose lag points backwards along the *direction of travel*, so an
-  out-and-back pair is displaced in opposite directions along the ground: the
-  error is `2 × lag × grade`, about 1.2 m on a 6% street, it does not cancel
-  even at identical speeds, and it is signed by gradient rather than random. It
-  would read as drift on exactly the hilly rides this is meant to help. Using
-  these pairs means removing the lag first — a non-causal (forward-backward)
-  smoothing pass would do it, and would change every existing number in the
-  model, so it is its own task.
+- ~~**Within-ride barometric drift.**~~ **Closed 2026-09-23 by removing the
+  feature**, not by fixing it. Three rounds, five adversarial reviews, all
+  rejected for the same defect class; it reached two rides in thirty-seven. Read
+  "What the drift anchor taught us" before reopening this — the obvious
+  approaches are the ones already tried, the settled design for a fourth attempt
+  is recorded there, and fitting the drift term against the DEM specifically is
+  dead for a reason that is not fixable.
+- ~~**Use the out-and-back revisits too.**~~ Moot: it was the next lever for the
+  sliding anchor, and there is no anchor to feed. Its hard half **did** get
+  solved on the way and is worth keeping: `smoothElevations` was a causal EMA
+  whose lag pointed backwards along the direction of travel, so an out-and-back
+  pair was displaced in opposite directions along the ground — error
+  `2 × lag × grade`, about 1.2 m on a 6% street, not cancelling even at
+  identical speeds and signed by gradient rather than random. The zero-phase
+  smoother shipped 2026-09-24 removes it. If opposite-direction comparisons are
+  ever wanted for something else, the remaining work is only realigning the
+  bucket grid (forward `d` against backward `lengthM - d`).
 - **A *named* path running beside a road still draws its own line.** That is
   deliberate — it is what keeps Shooks Run and the Greenway intact — but it
   means a named sidepath would double up on its street. None do so far.
@@ -1647,15 +1155,21 @@ tests on any commit touching `backend/`. It is opt-in per clone:
 
 ## Committed / deployed
 
-Pushed through `48224eb` as of 2026-09-06. `origin/main` is current at
-`9727a28`.
+**`origin/main` is `8a1b8e0`, and production is serving it.** Verified by
+`builtAt` = `2026-09-24T01:46:26.360Z`, never by status — Railway reports the
+service Online from the OLD container during a rollout.
 
-**Four branches are pushed and unmerged**, all of the drift-anchor work. None of
-it reaches production: the ramp is off in code and `processSession` never asks
-for it. See "The sliding anchor after three rounds and four reviews" for which
-branch is which and what is blocking. Do not merge PR #1 or #2 without reading
-it — both are draft, both are green, and both are rejected on substance rather
-than on tests.
+**Everything is merged.** `main` sat at `9727a28` from 2026-09-06 until
+2026-09-24, when the whole September elevation stack landed at once
+(`9727a28..7708224`, nine commits): the zero-phase smoother, the eval harness,
+and the removal of the sliding drift anchor. The model was rebuilt onto the new
+smoother immediately after.
+
+**Loose ends Julian owns, neither of them blocking:**
+- Draft PRs #1 and #2 are still open and now contain nothing `main` lacks — #1
+  already contained #2 via the `0be4344` merge, so they were never independent.
+- Six merged branches still exist: four `jzavala5114/*`, plus `fix-eval-gates`
+  and `strip-the-ramp`.
 
 - `5745ac6` — record which sensor measured each sample's elevation
 - `61e48fa` — least-squares, gap/window, stitching and the trail backlog docs
