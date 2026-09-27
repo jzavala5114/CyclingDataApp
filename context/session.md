@@ -3,12 +3,13 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-09-25.
+Last updated 2026-09-27.
 
-**Nothing is mid-flight.** The elevation work that occupied September is merged,
-deployed and rebuilt — `main` is `8a1b8e0`, production is serving it, and the
-model was recomputed onto the new smoother on 2026-09-24. There is no parked
-decision waiting on Julian.
+**One thing is mid-flight.** The sidewalk fold is built, tested and measured but
+**not applied** — see "The sidewalk fold". It is a pipeline change, so landing it
+means `npm run link -- --apply` and then `rebuild-model`, both production
+writes. Everything else is merged and deployed; the model was recomputed onto
+the zero-phase smoother on 2026-09-24.
 
 Where to start depends on what you came for:
 
@@ -17,8 +18,9 @@ Where to start depends on what you came for:
 | know what the app is and how a ride becomes a coloured line | "What it is", "Layout", "Data flow" |
 | change anything in the backend | "Bugs already paid for" — 28 failure modes, each one paid for once already |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | "Open items" — the `NEXT:` bullet is the biggest lever |
+| pick up the next piece of work | "Open items" — the `NEXT:` bullet is done, so nothing is nominated |
 | understand why there is no drift correction | "What the drift anchor taught us" |
+| land the change that is built but not applied | "The sidewalk fold" |
 
 This file is ~19k tokens. It is not meant to be read end to end; the headings
 are the index.
@@ -101,8 +103,12 @@ the same path as a ride coming off the phone.
 - **Network**: 66,684 segments over 38.71–38.97 N, −104.90 to −104.75 W —
   central Colorado Springs plus the northwest suburbs and Ute Valley Park.
   47,015 canonical; 17,020 pavements and unnamed sidepaths folded into parent
-  roads. Every road stays canonical. **2,643 more are tagged
-  `is_sidewalk` and were never folded** — see the Stage 1 section.
+  roads. Every road stays canonical. **12,241 eligible paths are still
+  canonical**, of which 8,940 correctly (no road within 20 m) and **3,301
+  because the linker's parallel test read the chord** — rewritten 2026-09-27,
+  see "The sidewalk fold". The "2,643 tagged `is_sidewalk` and never folded"
+  figure quoted here until then was the wrong population: eligibility is by
+  name, not by that tag, and only 34 of the 2,643 are excluded on purpose.
 - **Model**: **6,043 buckets across 746 segments**, 0 implausible, as of
   2026-09-26. **54.4% of buckets are now blended from more than one pass** —
   see the note under "Elevation accuracy", because that is the threshold where
@@ -374,9 +380,12 @@ is invisible until someone looks at a blank stretch of map and asks why.
 ## Operational gotchas
 
 - **Pipeline order is `fetch → split → load → prune → link`**, then
-  `rebuild-model` in `backend/`. `link` depends on `is_sidewalk`, which `split`
-  populates — running it against segments from an older `split` silently
-  absorbs nothing. `prune` must sit between `load` and `link`; see #27.
+  `rebuild-model` in `backend/`. `prune` must sit between `load` and `link`;
+  see #27. `link` is a dry run unless `--apply` is passed, and writes a
+  per-line CSV either way. It decides eligibility from `street_name`, **not**
+  from `is_sidewalk` — that tag is recorded and reported but the linker never
+  reads it, because a few named trails carry `footway=sidewalk` in OSM and the
+  name is what protects them.
 - **Verify a deploy by `builtAt`, never by status.** During a rollout Railway
   reports the service Online *and* `/health` answers 200 — both from the old
   container. One rollout sat like that for five minutes. Compare
@@ -758,11 +767,14 @@ gate discards intervening runs.
 where it was blank. `#17973` stays blank, and **that half is a pipeline bug, not
 a matcher one**: both competing paths (`#23278`, `#22505`) are tagged
 `is_sidewalk = true` yet still canonical, so they compete for fixes when
-`link_canonical.mjs` exists precisely to stop that. **2,643 of 19,663 tagged
-sidewalks were never folded** (13.4%), because the linker's parallel test uses
-`bearing_deg` — the chord — with a 20° tolerance, and `#23278` misses Hancock by
-**one degree**. Forcing the road to win instead needs a 10m+ penalty, which is
-what breaks Ladders. Fix the linker, not the number.
+`link_canonical.mjs` exists precisely to stop that. The linker's parallel test
+uses `bearing_deg` — the chord — with a 20° tolerance, and `#23278` misses
+Hancock by one degree. Forcing the road to win instead needs a 10m+ penalty,
+which is what breaks Ladders. Fix the linker, not the number.
+
+*Closed 2026-09-27 by "The sidewalk fold" below. The diagnosis above was right
+about the cause and wrong about the size of it: the miss is 20.6°, not one
+degree, and `#23278` is not a near-parallel line at all — it turns a corner.*
 
 New scripts: `tmp-connect-sweep.mjs` (penalty sweep, reproduces the 10.1%
 baseline at penalty 0 — check that before believing any other row),
@@ -772,6 +784,89 @@ baseline at penalty 0 — check that before believing any other row),
 claimed these fixes, before vs after), `tmp-chain.mjs` (is a street's own chain
 connected). All restrict to the sessions `rebuildModel` uses — measuring over
 every session counts rides the model throws away.
+
+## The sidewalk fold
+
+**Built 2026-09-27 on branch `fold-missed-sidewalks`.** The last named lever in
+"Open items", and the fix is a frontage test in `link_canonical.mjs`.
+
+**The headline number in this document was wrong.** "2,643 tagged sidewalks
+never folded" counted the wrong population. The linker's eligibility clause does
+not read `is_sidewalk` at all — it is `kind in ('footway','cycleway') and
+(street_name is null or street_name ilike '%sidewalk%')`, by name. Measured, the
+real picture is **12,241 eligible paths still canonical**: 8,940 with no road
+within 20 m, which is correct, and **3,301 near a road that failed the parallel
+test**, which is the bug. Of the 2,643, only 34 are named paths the name rule
+protects on purpose (Midland Trail, Vindicator Drive Trail, Homestead Trail).
+
+**"Off by one degree" was also wrong, and that mattered.** `#23278` misses
+Hancock by 20.6°, and it is not a near-parallel line. It is one 146 m footway
+that **turns a corner**: 30 m east along Transit Drive, a 14 m corner radius,
+then 102 m south along Hancock at a local heading 0.8° off Hancock's own. The
+chord is the average of two legs belonging to different streets. Widening the
+tolerance would have been the wrong fix — the bearing-delta histogram puts 831
+of the 3,301 in the 80–90° band, and those are genuine perpendicular connectors
+that must stay canonical.
+
+**What shipped.** `scripts/lib/frontage.mjs`: walk the path in 5 m steps and ask
+of each step whether a road is within 20 m **and heading the same way there**.
+The fraction of the path's length that answers yes is its frontage; fold at 60%.
+Same chord→tangent move as note 17, applied to the linker instead of the matcher.
+
+Two details are load-bearing:
+
+- **Frontage is measured against all nearby roads at once**, not one at a time.
+  Roads are split at junctions and capped at 150 m while paths are split on
+  their own nodes, so a 146 m path straddles two 91 m pieces of one street and
+  scores ~50% against each. The parent is then whichever single road holds the
+  largest share. `#23278` scores 0.903 and lands on Hancock `#17973`.
+- **The linker only ever adds parents.** `canonical_segment_id` is a "hide me"
+  flag — all four readers test it for null and **none reads which road it
+  names**. Two consequences, and they pull in opposite directions.
+  **Releasing is risky**: recomputing every parent from scratch releases 743
+  paths, and replaying the matcher over that set cost Brenner Place `#37523`
+  and `#8361` their lines and 430 m of carriageway, to gain five pavement lines
+  nobody has ridden. **Reparenting is inert**: frontage picks a better parent
+  than the old nearest-road rule for 5,562 already-folded paths, and rewriting
+  them would change nothing anyone can observe while making the production
+  write eight times larger. So the default writes **745 rows, every one of
+  which moves a line on the map**, and `--unfold` / `--reparent` do the rest on
+  request. The dry run always reports both counts.
+
+**Measured read-only** by `npm run eval:linker` (`evalLinkerFold.ts`), which
+replays the real matcher, gate and stitcher over the 42 usable sessions against
+both candidate sets — the same harness as `tmp-connect-sweep.mjs`, sweeping the
+candidate set instead of the penalty. Nothing was written to measure this. It
+takes thresholds as an argument (`npm run eval:linker 0.5,0.6,0.7`) and prints
+a **per-line** gained/lost diff, flagging any road that lost its line, because a
+net bucket count hides a street losing to a sidewalk.
+
+| | impossible | buckets | covered km | road km | lines |
+|---|---|---|---|---|---|
+| before | 8.2% | 14,711 | 225.06 | 55.14 | 750 |
+| **after** | **7.1%** | 14,710 | **225.10** | **55.37** | 749 |
+
+**Hancock `#17973` goes from 0 m of its 91 m drawn to 90 m.** `#17974` goes
+47 m → 79 m. Three pavement lines stop being drawn — all three tagged
+`footway=sidewalk`, unnamed, 0–7 m from their street — and two pieces of Hancock
+start being drawn. One named line folds, `Cheyenne Rd North sidewalk`, whose
+name is the rule working. **No named trail is touched.**
+
+The threshold is not delicate and that was measured, not assumed: 0.5, 0.6 and
+0.7 give byte-identical buckets, coverage and impossible rates through the full
+matcher, because the two populations are bimodal — 78% of already-folded paths
+score exactly 1.0, 91% of canonical ones score below 0.1, and the middle is
+nearly empty.
+
+**Tests.** `osm-pipeline` had none before this; it now has 44 (`npm test`, 80 ms,
+no database). The centrepiece is a control that asserts the **old** chord rule
+still rejects `#23278` — if that ever starts passing, the fixture has drifted
+and every assertion under it is measuring nothing. 22 mutants, 21 killed; the
+survivor is a one-point-road guard that cannot be reached against a
+`geometry(LineString, 4326)` column and is documented in place as such.
+
+**Still to do:** `--apply` has not been run. The change is pipeline-only, so it
+needs `npm run link -- --apply` then `rebuild-model`, both production writes.
 
 ## The sliding anchor is gone
 
@@ -1060,14 +1155,9 @@ approaches are the ones already tried.
   and on recent rides 5–6 discards against 44–46 merged runs, all 1–2 fixes
   spanning 0–7 m. What remains is OSM coverage, not matching — ~31% of session
   43's fixes were more than 25 m from any mapped way.
-- **NEXT: fold the 2,643 sidewalks the linker missed.** See the Stage 1 section
-  below — this is now the biggest single lever, and it is a pipeline fix, not a
-  matcher one. `link_canonical.mjs` tests "parallel" with `bearing_deg`, the
-  chord, which this project already proved meaningless on anything that bends.
-  **The risk is documented and severe**: the first geometric attempt at this
-  chopped Shooks Run (−57), Midland (−35) and the Pikes Peak Greenway (−10) into
-  disconnected pieces. Any change here needs the same before/after per-line diff
-  the matcher changes get, and a check that no named trail loses segments.
+- ~~**NEXT: fold the 2,643 sidewalks the linker missed.**~~ Done 2026-09-27 —
+  see "The sidewalk fold". The count was wrong and so was the framing; what
+  shipped folds 745 paths on a frontage test and closes the Hancock hole.
 - **Riding a segment both ways can draw only one direction.** Measured
   2026-09-02 by projecting fixes along the segment over time (no bearings): of 8
   genuine out-and-back visits, 3 segments lost a direction reproducibly across
@@ -1077,7 +1167,10 @@ approaches are the ones already tried.
   Stage 1 should help; a cheaper partial fix is extending `link_canonical.mjs`
   to fold an *unnamed* path into a parallel named **trail**, not only into a
   road, which would resolve 8 of the 37 duplicate pairs. The other 29 are
-  named-vs-named and no naming rule can touch them.
+  named-vs-named and no naming rule can touch them. **This got cheap on
+  2026-09-27**: the frontage rewrite already measures a path against a set of
+  candidates, so admitting named trails to that set is a change to one `where
+  r.kind = 'road'` in `linkPlan.mjs` plus a rerun of the read-only sweep.
 - **Stitched runs can have a hole in the middle.** Rejoined fragments contribute
   only their own samples; whatever was between them matched elsewhere or
   nowhere. Endpoints and coverage are right, but interior buckets may be

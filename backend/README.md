@@ -47,11 +47,22 @@ connection is the first thing to check.
 npm test                # gate tests: deterministic, no database, well under 2s
 npm run eval:quality    # where the elevation model stands, against the live archive
 npm run eval:smoothing  # eval: the zero-phase elevation smoother
+npm run eval:linker     # eval: what folding a sidewalk does to the drawn map
 ```
 
 `npm test` runs Node's built-in test runner through tsx. It needs nothing but
-the source, so it is safe on any checkout. Both evals read the live database and
-write nothing.
+the source, so it is safe on any checkout. All three evals read the live
+database and write nothing.
+
+`npm run eval:linker` scores a **pipeline** decision by its effect on the
+backend. `osm-pipeline/scripts/link_canonical.mjs` decides which segments are
+match candidates, and this replays the real matcher, gate and stitcher over
+every usable session with today's candidate set and again with the one the
+frontage rule would produce — so "does folding these paths help, and what does
+it cost" is answered before anything is written. Takes thresholds as an
+argument (`npm run eval:linker 0.5,0.6,0.7`) and prints a per-line gained/lost
+diff, because a net bucket count hides a street losing its line to a sidewalk
+gaining one.
 
 `npm run eval:quality` reports three numbers, all asked of buckets rather than
 raw samples, because the anchor correction is applied on the way into a bucket

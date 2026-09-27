@@ -32,8 +32,14 @@ DATABASE_URL=postgres://... npm run prune          # shows what would go
 DATABASE_URL=postgres://... npm run prune -- --apply
 
 # 5. Point each sidewalk at the road it runs alongside
-DATABASE_URL=postgres://... npm run link
+DATABASE_URL=postgres://... npm run link           # shows what would change
+DATABASE_URL=postgres://... npm run link -- --apply
 ```
+
+`link` is a dry run unless `--apply` is passed, and either way it writes the
+full per-line diff to a CSV under your temp directory and prints the path.
+`--apply` also writes a snapshot of every row's previous parent next to it, so
+the change can be reversed.
 
 Then rebuild the elevation model, since segment ids and boundaries may have
 moved underneath it:
@@ -58,6 +64,45 @@ to include Ute Valley orphaned 609 segments this way.
 `canonical_segment_id` back to null (`on delete set null`), which would promote
 them to standalone routes drawing their own gradient lines. Linking last
 re-points whatever survives.
+
+## How linking decides
+
+Eligibility is **by name**: a path qualifies if OSM tags it `footway=sidewalk`,
+or if nobody named it at all. Proximity alone is not enough — an early purely
+geometric pass absorbed the stretches where a real trail runs beside a road and
+cut Shooks Run (−57 segments), Midland (−35) and the Pikes Peak Greenway (−10)
+into disconnected pieces. Every trail it ate was named, so the name test is what
+protects them, and `link` reports any named line it is about to fold on every
+run.
+
+Among eligible paths, "runs alongside" is decided by **frontage**: the path is
+walked in 5 m steps and each step asks whether a road is within 20 m and heading
+the same way *at that point*. Fold at 60%. The previous rule compared
+`bearing_deg` — the straight line from a segment's first point to its last —
+which is meaningless on anything that bends: one 146 m footway beside Hancock
+Expressway runs 41 m east along a cross street and then 102 m south along
+Hancock, and its chord missed Hancock's by 20.6°, so it stayed canonical,
+competed with Hancock for GPS fixes and left a 191 m hole in a road that was
+ridden end to end.
+
+Frontage is measured against **all** nearby roads together, not one at a time,
+because roads are split at junctions and capped at 150 m while paths are split
+on their own nodes — a 146 m path routinely straddles two 91 m pieces of one
+street and would score 50% against each. The parent is then whichever single
+road holds the largest share.
+
+`link` only ever **adds** parents. `canonical_segment_id` is a "hide me" flag —
+every reader tests it for null and none reads which road it names — so a fold
+is the only kind of write that moves a line on the map. Releasing a path can
+regress a road (recomputing from scratch cost Brenner Place its line), and
+re-pointing an already-folded path at a better road changes nothing observable.
+Both are therefore opt-in, `--unfold` and `--reparent`, and the dry run reports
+what each would do.
+
+To measure the effect before writing, run `npm run eval:linker` in `../backend`:
+it replays the real matcher over every usable session with both candidate sets
+and prints a per-line gained/lost diff. The geometry itself is unit tested
+without a database in `scripts/lib/frontage.test.mjs` (`npm test`).
 
 ## How splitting works
 

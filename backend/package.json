@@ -11,6 +11,7 @@
     "test": "tsx --test src/**/*.test.ts",
     "eval:quality": "tsx src/scripts/evalModelQuality.ts",
     "eval:smoothing": "tsx src/scripts/evalSmoothingLag.ts",
+    "eval:linker": "tsx src/scripts/evalLinkerFold.ts",
     "rebuild-model": "tsx src/scripts/rebuildModel.ts",
     "prune-sessions": "tsx src/scripts/pruneEmptySessions.ts"
   },
