@@ -209,6 +209,19 @@ Keep these in mind before "simplifying" anything.
     exactly to the segment ends on a pass-through) and threw it away; it is now
     persisted in `segment_coverage`. Head gap median 7.5m → 2.1m, fully painted
     10% → 38%.
+
+    **A bucket labelled PAST the end of its segment is correct, not a bug.**
+    Checked 2026-09-26 because it looks alarming: 414 buckets carry a
+    `distance_m` greater than their segment's `length_m` — five separate pieces
+    of The Chutes each have one at 150m on a 143m segment. It follows from the
+    centre-label above. `bucketizeRun` rounds with `Math.round`, so a fix at
+    143m lands in the bucket centred on 150, covering 142.5–157.5m of which only
+    the first half-metre is real. The label can therefore overshoot by up to
+    `BUCKET_SIZE_M / 2` = 7.5m and no further. **Measured: worst overshoot
+    7.47m, zero above 7.5m, zero negative labels.** The renderer never trusts it
+    anyway — `buildDirectionalGradientLines` clamps with
+    `Math.min(segment.lengthM, …)` before slicing and clamps the fractions again
+    after. Do not "fix" this; the bound is what makes it provably harmless.
 17. **Backward gradients were drawn mirrored** — bucket distances are measured
     *along the direction of travel*, so on a backward run distance 0 is the
     segment's far end. The renderer sliced the offset line in forward geometry
