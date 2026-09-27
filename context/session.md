@@ -103,14 +103,17 @@ the same path as a ride coming off the phone.
   47,015 canonical; 17,020 pavements and unnamed sidepaths folded into parent
   roads. Every road stays canonical. **2,643 more are tagged
   `is_sidewalk` and were never folded** — see the Stage 1 section.
-- **Model**: **5,953 buckets across 739 segments**, 946 coverage rows, 1,792
-  matched runs, 0 implausible. Rebuilt 2026-09-24 onto the zero-phase smoother —
-  see "The merge and the rebuild". Lines are clipped to what was ridden. These
-  carry the single-number anchor, which is now the only anchor there is — the
-  sliding version was deleted on 2026-09-23 after four reviews. See "The sliding
-  anchor is gone".
-- **Rides**: **39 usable**, measured by `eval:quality` on 2026-09-23 (36 on
-  09-16, 34 on 09-13; the total session count was not re-measured). **Sessions 5 and 6
+- **Model**: **6,043 buckets across 746 segments**, 0 implausible, as of
+  2026-09-26. **54.4% of buckets are now blended from more than one pass** —
+  see the note under "Elevation accuracy", because that is the threshold where
+  anchoring stops being preventative and starts setting rendered colours.
+  Rebuilt 2026-09-24 onto the zero-phase smoother (5,953 buckets then; sessions
+  80 and 81 added the rest) — see "The merge and the rebuild". Lines are clipped
+  to what was ridden. These carry the single-number anchor, which is now the
+  only anchor there is — the sliding version was deleted on 2026-09-23 after
+  five reviews. See "The sliding anchor is gone".
+- **Rides**: **41 usable** of 44 recorded, measured by `eval:quality` on
+  2026-09-26 (39 on 09-24, 36 on 09-16, 34 on 09-13). **Sessions 5 and 6
   are permanently corrupt** — `rebuildModel.ts` excludes them by elevation
   scale. Session 45 is excluded for being spikes rather than a ride (20.7% of
   its steps impossible); 46 and 50 were restored when the roughness test was
@@ -451,11 +454,16 @@ best-covered lines):
   each anchors to the GPS altitude of its own first fix. Anchoring removes it.
 - **Residual spread is 3.52m** and mostly *within* a session — barometric drift
   over a ride plus DEM sampling error along an imperfect OSM centreline. A
-  single offset per ride cannot remove it; a drift term could, at the risk of
-  absorbing real terrain.
-- Every directional line currently comes from exactly one session, so
-  **anchoring has not changed any rendered colour yet**. It is preventative: it
-  pays the first time a street is ridden twice.
+  single offset per ride cannot remove it; a drift term was built to, and was
+  removed after five reviews — see "What the drift anchor taught us".
+- ~~Every directional line comes from exactly one session, so anchoring has not
+  changed any rendered colour yet.~~ **No longer true as of 2026-09-26, and this
+  is the moment the feature started paying.** 3,286 of 6,043 buckets (54.4%) are
+  now blended from more than one pass, and 1,745 of those from three or more.
+  Anchoring is what puts those passes on a common datum before the running mean
+  combines them; without it, a bucket fed by two rides that each anchored to
+  their own first GPS fix would average a 3.3m disagreement into the colour.
+  Treat any future "anchoring is preventative" framing as stale.
 
 ## Which sensor: measured, 2026-08-29
 
