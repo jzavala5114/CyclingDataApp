@@ -6,21 +6,29 @@
 #
 #   git config core.hooksPath .githooks
 #
-# Only runs when the commit actually touches the backend, so a change to the
-# app or the pipeline is not held up by it.
+# Each service's checks run only when the commit touches that service, so a
+# change to the app is not held up by either of them.
 set -e
 
-if ! git diff --cached --name-only | grep -q '^backend/'; then
-  exit 0
+staged=$(git diff --cached --name-only)
+
+if echo "$staged" | grep -q '^backend/'; then
+  if [ -d backend/node_modules ]; then
+    echo "pre-commit: backend typecheck"
+    (cd backend && npx tsc --noEmit)
+
+    echo "pre-commit: backend gate tests"
+    (cd backend && npx tsx --test "src/**/*.test.ts")
+  else
+    echo "pre-commit: backend/node_modules missing, skipping backend gate tests"
+  fi
 fi
 
-if [ ! -d backend/node_modules ]; then
-  echo "pre-commit: backend/node_modules missing, skipping gate tests"
-  exit 0
+# The pipeline's tests need nothing but node -- no tsx, no database, no
+# node_modules, and they finish in well under a tenth of a second. They cover
+# the frontage rule that decides which segments the matcher is even allowed to
+# see, so getting that wrong quietly deletes lines from the map.
+if echo "$staged" | grep -q '^osm-pipeline/'; then
+  echo "pre-commit: pipeline gate tests"
+  (cd osm-pipeline && node --test "scripts/lib/*.test.mjs")
 fi
-
-echo "pre-commit: backend typecheck"
-(cd backend && npx tsc --noEmit)
-
-echo "pre-commit: backend gate tests"
-(cd backend && npx tsx --test "src/**/*.test.ts")
