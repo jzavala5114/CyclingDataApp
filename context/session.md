@@ -815,11 +815,18 @@ Same chord→tangent move as note 17, applied to the linker instead of the match
 
 Two details are load-bearing:
 
-- **Frontage is measured against all nearby roads at once**, not one at a time.
-  Roads are split at junctions and capped at 150 m while paths are split on
-  their own nodes, so a 146 m path straddles two 91 m pieces of one street and
-  scores ~50% against each. The parent is then whichever single road holds the
-  largest share. `#23278` scores 0.903 and lands on Hancock `#17973`.
+- **Frontage is measured against all nearby roads at once**, and it pools across
+  *different streets*, which is the point rather than an accident. Two reasons:
+  roads are split at junctions and capped at 150 m while paths are split on
+  their own nodes; and a pavement follows the network around corners. `#23278`
+  is 30 m of Transit Drive's pavement and 102 m of Hancock's, so a single-road
+  threshold would reject the very segment this exists to fold — its best single
+  street holds only 53%. Measured over the 745 folds: 519 pool across more than
+  one street name, 345 would miss the gate on their best single street, and
+  **337 of those 345 pool across streets that physically share an OSM node** —
+  corner pavements, the ~50/50 two-street split being the signature (`North
+  Cascade Avenue 52% + West Pikes Peak Avenue 48%`). Eight do not. The dry run
+  now lists the 16 folds where no single road holds even a third.
 - **The linker only ever adds parents.** `canonical_segment_id` is a "hide me"
   flag — all four readers test it for null and **none reads which road it
   names**. Two consequences, and they pull in opposite directions.
@@ -846,6 +853,15 @@ net bucket count hides a street losing to a sidewalk.
 | before | 8.2% | 14,711 | 225.06 | 55.14 | 750 |
 | **after** | **7.1%** | 14,710 | **225.10** | **55.37** | 749 |
 
+**Two honest caveats on that table, both raised by the cold review.** Buckets
+fall by one — the success test said they must not fall, and one bucket out of
+14,711 is a sidewalk stub that stopped being drawn, but the criterion said what
+it said. And the replay is **blind to 99.6% of the change**: of the 745 folds,
+exactly three currently draw a line, so the other 742 cannot move any number
+here until someone rides them. `eval:linker` now prints that coverage figure
+under its own table, because a measurement that silently covers 0.4% of its
+subject is worse than none.
+
 **Hancock `#17973` goes from 0 m of its 91 m drawn to 90 m.** `#17974` goes
 47 m → 79 m. Three pavement lines stop being drawn — all three tagged
 `footway=sidewalk`, unnamed, 0–7 m from their street — and two pieces of Hancock
@@ -858,12 +874,42 @@ matcher, because the two populations are bimodal — 78% of already-folded paths
 score exactly 1.0, 91% of canonical ones score below 0.1, and the middle is
 nearly empty.
 
-**Tests.** `osm-pipeline` had none before this; it now has 44 (`npm test`, 80 ms,
-no database). The centrepiece is a control that asserts the **old** chord rule
-still rejects `#23278` — if that ever starts passing, the fixture has drifted
-and every assertion under it is measuring nothing. 22 mutants, 21 killed; the
-survivor is a one-point-road guard that cannot be reached against a
+**Tests.** `osm-pipeline` had none before this; it now has 62 (`npm test`, no
+database, under a tenth of a second) and the pre-commit hook runs them. The
+centrepiece is a control that asserts the **old** chord rule still rejects
+`#23278` — if that ever starts passing, the fixture has drifted and every
+assertion under it is measuring nothing. 38 mutants, 37 killed; the survivor is
+a one-point-road guard that cannot be reached against a
 `geometry(LineString, 4326)` column and is documented in place as such.
+
+**The cold review rejected the first version, and it was right.** Two findings
+were disqualifying, and both were the defect class this file already names.
+
+- **The suite could not fail when the bug came back.** `MIN_FRONTAGE` was a
+  private constant in `link_canonical.mjs`. Raising it to 0.95 un-folds
+  `#23278`, restores the hole, and leaves every test green. Twelve more
+  write-path mutations survived too — `--unfold` as the default, every path
+  becoming its own parent, the UPDATE's key and value swapped, `r.kind = 'road'`
+  dropped so a path folds into another path. The *library* was well covered; the
+  seam between the library and Postgres had no coverage at all, and I had
+  claimed the regression was proven on the strength of a mutation *inside* the
+  library. `MIN_FRONTAGE`, `plannedParent`, `updateBatch` and `CANDIDATE_SQL`
+  moved into `linkPlan.mjs` where tests reach them. All thirteen now die.
+- **Both boundary tests were tautologies.** They built their fixtures from
+  `MAX_OFFSET_M ± 1` and `MAX_TANGENT_DELTA_DEG ± 2` and then checked them
+  against those same constants, so they passed at a 200 m offset limit and at a
+  2° tangent limit — the bug in both directions. Literals now.
+
+Three smaller ones, all real. A repeated vertex **in a road** fabricated a due
+east heading (`atan2(0,0)`) that won the tie-break and folded a path into a road
+it crosses — no such vertex exists in the table today, but `turf.lineSliceAlong`
+emits them and `split_ways.mjs` uses it, so the next import arms it. The
+named-line guard printed on every run could not fire, because its test is the
+same predicate as the eligibility clause; it throws now instead of reassuring.
+And the claim that the projection is "exact to well under a centimetre" was
+wrong by 20× — really 0.162 m long north-south and 0.197 m short east-west over
+150 m, still ~300× below the thresholds it feeds, with the arithmetic now in the
+file instead of the adjective.
 
 **Still to do:** `--apply` has not been run. The change is pipeline-only, so it
 needs `npm run link -- --apply` then `rebuild-model`, both production writes.

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import pg from "pg";
-import { buildLinkPlan, decide, tally } from "./lib/linkPlan.mjs";
+import { buildLinkPlan, decide, tally, writesFor, MIN_FRONTAGE } from "./lib/linkPlan.mjs";
 import { MAX_OFFSET_M, MAX_TANGENT_DELTA_DEG } from "./lib/frontage.mjs";
 
 // Points every sidewalk segment at the road it runs alongside, so the matcher
@@ -51,34 +51,15 @@ import { MAX_OFFSET_M, MAX_TANGENT_DELTA_DEG } from "./lib/frontage.mjs";
 //   DATABASE_URL=... node scripts/link_canonical.mjs
 //   DATABASE_URL=... node scripts/link_canonical.mjs --apply
 
-// Fold a path when at least this much of its length runs alongside a road.
+// MIN_FRONTAGE, plannedParent() and the candidate query all live in
+// lib/linkPlan.mjs, where tests can reach them. They were here, and every one
+// of them was invisible to the suite: raising the threshold to 0.95 puts the
+// Hancock hole back with all 46 tests green.
 //
-// The two populations are bimodal, which is why the number is not delicate: of
-// the paths the chord rule already folded, 78% score exactly 1.0 and 89% score
-// above 0.9, while 91% of the ones it left canonical score below 0.1. The
-// middle is nearly empty. Sweeping 0.5, 0.6 and 0.7 through the full matcher
-// gave byte-identical buckets, coverage and impossible-transition rates, so
-// 0.6 is the centre of a measured plateau rather than a tuned value.
-const MIN_FRONTAGE = 0.6;
-
+// Both flags default off, for opposite reasons -- releasing can regress a road,
+// re-parenting is inert. See plannedParent().
 const apply = process.argv.includes("--apply");
-// Off by default. canonical_segment_id is a "hide me" flag -- every reader in
-// the codebase tests it for null and none reads which road it points at -- so
-// folding is monotone and can only reduce the number of lines competing for a
-// fix. Releasing is the half that can regress: recomputing every path from
-// scratch releases 743 that the chord rule folded, and replaying the matcher
-// over that set cost Brenner Place #37523 and #8361 their lines and 430m of
-// carriageway, to gain five pavement lines nobody has ridden. The dry run
-// always reports what --unfold would do, so the choice stays visible.
 const unfold = process.argv.includes("--unfold");
-// Also off by default, for the opposite reason: it is not risky, it is inert.
-// Frontage picks a better parent than the old nearest-road rule for 5,562
-// already-folded paths -- but since no reader consults which road the column
-// names, rewriting them changes nothing anyone can observe, while making the
-// production write eight times larger. The one consumer of the identity is
-// `on delete set null`, and that self-heals: deleting a road promotes its paths
-// to canonical and the next run re-folds them. Pass --reparent to tidy them
-// anyway.
 const reparent = process.argv.includes("--reparent");
 
 const BATCH = 1000;
@@ -114,16 +95,12 @@ try {
   const t = tally(decided);
   console.log(`\r  measured ${plan.length} eligible paths in ${((Date.now() - t0) / 1000).toFixed(1)}s\n`);
 
-  // What the chosen policy would actually write.
-  const target = (d) => {
-    if (d.currentParent === null) return d.newParent; // fold, or stay canonical
-    if (d.newParent === null) return unfold ? null : d.currentParent; // release
-    return reparent ? d.newParent : d.currentParent;
-  };
-  const writes = decided.filter((d) => target(d) !== d.currentParent);
-  const folds = writes.filter((d) => d.currentParent === null);
-  const releases = writes.filter((d) => target(d) === null);
-  const reparents = writes.filter((d) => d.currentParent !== null && target(d) !== null);
+  // What the chosen policy would actually write. `writesFor` is tested.
+  const writes = writesFor(decided, { unfold, reparent });
+  const target = (d) => d.writeParent;
+  const folds = writes.filter((d) => d.action === "fold");
+  const releases = writes.filter((d) => d.action === "release");
+  const reparents = writes.filter((d) => d.action === "reparent");
 
   console.log("frontage says:");
   console.log(`  ${String(t.fold).padStart(6)} canonical paths should be folded`);
@@ -138,10 +115,36 @@ try {
   // caused once, so it is checked on every run rather than trusted to the name
   // rule. Anything whose own name says "sidewalk" is the rule working.
   const namedFolds = folds.filter((d) => d.streetName !== null);
-  console.log(`named lines losing segments: ${namedFolds.length}`);
-  for (const d of namedFolds) {
-    const intended = /sidewalk/i.test(d.streetName);
-    console.log(`  #${String(d.id).padStart(6)} ${d.streetName}${intended ? "" : "   <-- NOT a sidewalk by name, check this"}`);
+  const unintended = namedFolds.filter((d) => !/sidewalk/i.test(d.streetName));
+  console.log(`named lines losing segments: ${namedFolds.length}, all of which should say "sidewalk"`);
+  for (const d of namedFolds) console.log(`  #${String(d.id).padStart(6)} ${d.streetName}`);
+  if (unintended.length > 0) {
+    // Not reachable while eligibility is `street_name is null or ilike
+    // '%sidewalk%'`, which is the same predicate -- so this is a tripwire on
+    // the eligibility clause, not on the geometry, and it is written to THROW
+    // rather than print. A warning nobody can trigger printing beside a list
+    // that always passes is the kind of reassurance this project has learned to
+    // distrust; if it ever fires, it means the name rule that protects Shooks
+    // Run and the Greenway has been loosened, and the run should stop.
+    throw new Error(
+      `eligibility has changed: ${unintended.length} named path(s) would fold whose name is ` +
+        `not a sidewalk, e.g. #${unintended[0].id} "${unintended[0].streetName}". ` +
+        `The name rule is what protects Shooks Run, Midland and the Pikes Peak Greenway.`,
+    );
+  }
+
+  // Frontage is pooled across every nearby road, so a path can clear the gate
+  // without any one street holding much of it. 337 of the 345 that need the
+  // pool run along streets that physically meet -- corner pavements -- but the
+  // ones where no road holds even a third are worth an eye.
+  const thin = folds.filter((d) => d.parentFrontage < 0.35).sort((a, b) => a.parentFrontage - b.parentFrontage);
+  console.log(`\nfolds where no single road holds a third of the path: ${thin.length}`);
+  for (const d of thin.slice(0, 8)) {
+    console.log(
+      `  #${String(d.id).padStart(6)} ${String(Math.round(d.lengthM)).padStart(4)}m  ` +
+        `frontage ${d.frontage.toFixed(2)} pooled over ${d.roadsNearby} roads, ` +
+        `best single ${d.parentFrontage.toFixed(2)}`,
+    );
   }
 
   // Anything currently drawing a line on the map, because that is what a rider
@@ -221,6 +224,14 @@ try {
       );
       written += rowCount;
       process.stdout.write(`\r  wrote ${written}/${writes.length}`);
+    }
+    // Before the commit, not after: if the UPDATE matched fewer rows than the
+    // plan named, some segment vanished between the read and the write and the
+    // half-applied result is worse than none.
+    if (written !== writes.length) {
+      throw new Error(
+        `planned ${writes.length} rows but the UPDATE matched ${written}; rolling back`,
+      );
     }
     await client.query("commit");
     console.log(`\nwrote ${written} rows`);

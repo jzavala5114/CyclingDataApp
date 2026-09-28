@@ -37,6 +37,16 @@ import { buildLinkPlan, decide } from "../../../osm-pipeline/scripts/lib/linkPla
 // totals. A net bucket count hides a street losing its line to a sidewalk
 // gaining one, and this script's subject has destroyed named trails before.
 //
+// KNOW WHAT THIS CANNOT SEE. It replays the rides in the archive, so a folded
+// path that nobody has ridden cannot move a single number here. Of the 745
+// folds the frontage rule produces, exactly THREE currently draw a line. The
+// other 742 are invisible to this eval and will stay invisible until someone
+// rides them. So "0.5, 0.6 and 0.7 give identical results" is a fact about the
+// archive as much as about the rule -- the 115 paths separating those
+// thresholds have never been ridden. The counts printed below the table say how
+// much of the change the replay could actually observe, because a measurement
+// that silently covers 0.4% of its subject is worse than no measurement.
+//
 // READS ONLY. Writes nothing, applies no plan, fetches no terrain.
 //
 // Local tool, not part of the deployed server. `tsc` emits it into
@@ -213,6 +223,23 @@ console.table(
     };
   }),
 );
+
+// How much of the change could this replay even see? A fold on ground nobody
+// has ridden cannot move any number above, and most folds are on such ground.
+for (const t of THRESHOLDS) {
+  const folds = decide(plan, t).filter((d) => d.change === "fold").map((d) => d.id);
+  const { rows: [seen] } = await client.query<{ n: string }>(
+    `select count(distinct segment_id)::int as n
+       from segment_elevation_buckets where segment_id = any($1)`,
+    [folds],
+  );
+  const n = Number(seen.n);
+  console.log(
+    `\nCOVERAGE at ${t}: ${folds.length} folds, of which ${n} currently draw a line. ` +
+      `The replay is blind to the other ${folds.length - n} ` +
+      `(${(((folds.length - n) / folds.length) * 100).toFixed(1)}%), which have never been ridden.`,
+  );
+}
 
 // The per-line diff. A net count hides a street losing its line to a sidewalk
 // gaining one, and that is the failure this whole script exists to catch.

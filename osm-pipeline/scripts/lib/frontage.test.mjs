@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import {
   MAX_OFFSET_M,
   MAX_TANGENT_DELTA_DEG,
+  STEP_M,
   toLocalMetres,
   headingDeg,
   headingDelta,
@@ -423,28 +424,107 @@ test("a cycleway that merely clips a road is not folded into it", () => {
   assert.ok(m.frontage < 0.1, `frontage ${m.frontage} -- this must stay canonical`);
 });
 
-test("the offset limit is what it claims to be", () => {
-  const inside = measureFrontage([at(10, MAX_OFFSET_M - 1), at(150, MAX_OFFSET_M - 1)], [straightRoad]);
-  const outside = measureFrontage([at(10, MAX_OFFSET_M + 1), at(150, MAX_OFFSET_M + 1)], [straightRoad]);
-  assert.ok(inside.frontage > 0.999);
-  assert.equal(outside.frontage, 0);
+// The two limits, against LITERALS rather than against the constants.
+//
+// Both of these used to build their fixtures from `MAX_OFFSET_M ± 1` and
+// `MAX_TANGENT_DELTA_DEG ± 2` and then check them against the same constant, so
+// they passed at MAX_OFFSET_M = 200 and at MAX_TANGENT_DELTA_DEG = 2 -- the bug
+// in both directions. A test whose fixture moves with the thing under test
+// measures nothing.
+
+test("the offset limit is 20 metres, in metres, not whatever the constant says", () => {
+  assert.equal(MAX_OFFSET_M, 20, "if this moves deliberately, move the fixtures below with it");
+  assert.ok(measureFrontage([at(10, 19), at(150, 19)], [straightRoad]).frontage > 0.999);
+  assert.equal(measureFrontage([at(10, 21), at(150, 21)], [straightRoad]).frontage, 0);
+  // A metre either side of 20 is a fine-grained claim; check it is really the
+  // distance being tested and not something coincidental at that scale.
+  assert.equal(measureFrontage([at(10, 60), at(150, 60)], [straightRoad]).frontage, 0);
+  assert.ok(measureFrontage([at(10, 2), at(150, 2)], [straightRoad]).frontage > 0.999);
 });
 
-test("the tangent limit is what it claims to be", () => {
-  // A path splayed just inside and just outside the angular tolerance, short
-  // enough to stay within the offset limit over its whole length.
+test("the tangent limit is 20 degrees, in degrees", () => {
+  assert.equal(MAX_TANGENT_DELTA_DEG, 20, "if this moves deliberately, move the fixtures below with it");
   const rad = (d) => (d * Math.PI) / 180;
-  const splay = (deg) => {
-    const len = 40;
-    return [at(0, 8), at(len * Math.cos(rad(deg)), 8 + len * Math.sin(rad(deg)))];
-  };
-  assert.ok(measureFrontage(splay(MAX_TANGENT_DELTA_DEG - 2), [straightRoad]).frontage > 0.999);
-  assert.equal(measureFrontage(splay(MAX_TANGENT_DELTA_DEG + 2), [straightRoad]).frontage, 0);
+  // Splayed away from a road it starts 8m from, short enough to stay inside the
+  // offset limit over its whole length whatever the angle.
+  const splay = (deg) => [at(0, 8), at(40 * Math.cos(rad(deg)), 8 + 40 * Math.sin(rad(deg)))];
+  assert.ok(measureFrontage(splay(18), [straightRoad]).frontage > 0.999, "18 degrees is inside");
+  assert.equal(measureFrontage(splay(22), [straightRoad]).frontage, 0, "22 degrees is outside");
+  assert.ok(measureFrontage(splay(2), [straightRoad]).frontage > 0.999);
+  assert.equal(measureFrontage(splay(45), [straightRoad]).frontage, 0);
 });
 
-test("toLocalMetres is accurate enough for the thresholds it feeds", () => {
-  // 100m east and 100m north from the origin should come back as (100, 100).
-  const flat = toLocalMetres([at(0, 0), at(100, 100)], LAT0, LON0);
-  assert.ok(Math.abs(flat[2] - 100) < 0.01, `east ${flat[2]}`);
-  assert.ok(Math.abs(flat[3] - 100) < 0.01, `north ${flat[3]}`);
+test("STEP_M is 5 metres, which is what makes a 150m piece ~30 steps", () => {
+  assert.equal(STEP_M, 5);
+  assert.equal(sampleSteps(new Float64Array([0, 0, 150, 0])).length, 30);
+  // Short enough to resolve a corner on the shortest segment split_ways emits.
+  assert.ok(STEP_M < 8, "a segment can be as short as 8m");
+});
+
+test("toLocalMetres is wrong by ~0.1%, and that is small enough for what it feeds", () => {
+  // The old version of this test built its input with `at()`, which uses the
+  // module's own constants, and then checked the output against those same
+  // constants. It asserted the projection agrees with itself, passed at any
+  // value, and went RED when the constants were replaced with the correct ones.
+  //
+  // So compute the truth independently: WGS84 metres per degree from the
+  // meridian arc and the parallel radius. No shared constant with the module.
+  const D = Math.PI / 180;
+  const trueLat = 111132.954 - 559.822 * Math.cos(2 * LAT0 * D) + 1.175 * Math.cos(4 * LAT0 * D);
+  const a = 6378137;
+  const e2 = 0.00669437999014;
+  const s = Math.sin(LAT0 * D);
+  const trueLon = ((a * Math.cos(LAT0 * D)) / Math.sqrt(1 - e2 * s * s)) * D;
+
+  // Walk 150m -- the longest a segment can be -- each way, in true degrees.
+  const north = [[LON0, LAT0], [LON0, LAT0 + 150 / trueLat]];
+  const east = [[LON0, LAT0], [LON0 + 150 / trueLon, LAT0]];
+  const dn = toLocalMetres(north, LAT0, LON0)[3];
+  const de = toLocalMetres(east, LAT0, LON0)[2];
+
+  // Measured: 0.162m long north-south, 0.197m short east-west. Not "well under
+  // a centimetre", which is what the module used to claim.
+  assert.ok(Math.abs(dn - 150) < 0.25, `150m north measured ${dn.toFixed(3)}m`);
+  assert.ok(Math.abs(de - 150) < 0.25, `150m east measured ${de.toFixed(3)}m`);
+
+  // The claim that matters is not "accurate" but "accurate enough". A true 20m
+  // offset must still be decided as 20m against MAX_OFFSET_M, and the two axes
+  // scaling differently must not skew a heading by anything like 20 degrees.
+  const scaleN = dn / 150;
+  const scaleE = de / 150;
+  assert.ok(Math.abs(20 * scaleN - 20) < 0.05, "a 20m offset misreads by under 5cm");
+  assert.ok(Math.abs(20 * scaleE - 20) < 0.05);
+  let worstSkew = 0;
+  for (let deg = 0; deg < 90; deg += 0.25) {
+    const r = Math.atan2(scaleN * Math.sin(deg * D), scaleE * Math.cos(deg * D)) / D;
+    worstSkew = Math.max(worstSkew, Math.abs(r - deg));
+  }
+  assert.ok(worstSkew < 0.1, `worst angular skew ${worstSkew.toFixed(4)} degrees`);
+  assert.ok(worstSkew * 100 < MAX_TANGENT_DELTA_DEG, "two orders of magnitude of headroom");
+});
+
+test("a repeated vertex in a ROAD cannot fabricate a heading and win the tie-break", () => {
+  // atan2(0,0) is 0 -- due east, which nothing is pointing. Worse,
+  // projectToPolyline prefers the earlier leg on a tie, and a duplicated
+  // leading vertex is exactly equidistant with the real leg from every point
+  // past the start, so the fabricated heading wins.
+  //
+  // Live `segments` has no repeated vertices today, but turf.lineSliceAlong
+  // emits them and split_ways.mjs uses it, so the next import can arm this.
+  const northSouth = (coords) => ({ id: 1, coords });
+  const clean = northSouth([at(0, 0), at(0, 100)]);
+  const duped = northSouth([at(0, 0), at(0, 0), at(0, 100)]);
+  // A short east-west path crossing near the road's start: it should never fold
+  // into a road it is perpendicular to.
+  const crossing = [at(-6, 96), at(6, 96)];
+
+  assert.equal(measureFrontage(crossing, [clean]).frontage, 0, "control: no duplicate, no fold");
+  assert.equal(measureFrontage(crossing, [duped]).frontage, 0, "the duplicate must not fold it either");
+  assert.equal(measureFrontage(crossing, [duped]).parentId, null);
+
+  // And a genuine pavement beside the same duplicated road still folds: the
+  // guard drops the bad leg, not the road.
+  const pavement = [at(8, 10), at(8, 90)];
+  assert.ok(measureFrontage(pavement, [duped]).frontage > 0.999);
+  assert.equal(measureFrontage(pavement, [duped]).parentId, 1);
 });

@@ -9,13 +9,15 @@
 // context/session.md).
 //
 // The concrete failure. Segment #23278 is one 146m footway piece beside
-// Hancock Expressway, and it turns a corner: 41m running east along the cross
-// street, then 102m running south along Hancock. Its chord bearing is 161.8
+// Hancock Expressway, and it turns a corner: 30m east along Transit Drive, a
+// 14m corner radius, then 102m south along Hancock. Its chord bearing is 161.8
 // degrees, Hancock's is 182.4, so the test sees a 20.6 degree miss and leaves
 // the path canonical -- where it then competes with Hancock for a rider's GPS
-// fixes and punches a 191m hole in a road that was ridden end to end. Nothing
-// about that piece is 20 degrees off Hancock. 70% of it is exactly parallel and
-// the other 30% belongs to a different street; the chord is the average of two
+// fixes and leaves Hancock #17973 with 0m of its 91m drawn, a hole in a road
+// that was ridden end to end. (That piece is half of the 191m hole recorded in
+// session.md; the other half was closed earlier by the connectivity change.)
+// Nothing about #23278 is 20 degrees off Hancock. 70% of it is exactly parallel
+// and the rest belongs to a different street; the chord is the average of two
 // legs that have no business being averaged.
 //
 // So measure frontage instead of bearing. Walk the path in short steps and ask
@@ -26,11 +28,27 @@
 // ends are close to tarmac, because at no point is it pointing the way the road
 // points.
 //
-// Frontage is measured against the road network as a whole, not against one
-// road, because roads are split at junctions and capped at 150m while paths are
-// split on their own nodes -- a 146m path routinely straddles two 91m pieces of
-// the same street and would score 50% against each. The parent is then whichever
-// single road contributed the most of that frontage.
+// Frontage is measured against the road network AS A WHOLE, and pooling across
+// different streets is the point, not a side effect. Two separate reasons:
+//
+//  1. Roads are split at junctions and capped at 150m while paths are split on
+//     their own nodes, so a 146m path straddles two 91m pieces of one street.
+//  2. A pavement follows the street network around corners. #23278 is 30m of
+//     Transit Drive's pavement and 102m of Hancock's; it is one OSM way and it
+//     is a pavement for its whole length, but no single street holds more than
+//     53% of it.
+//
+// So a single-road threshold would reject the very segment this rewrite exists
+// to fold. Measured over the 745 folds this produces: 519 pool across more than
+// one street name, 345 would not reach the threshold against their best single
+// street, and 337 of those 345 pool across streets that physically share an OSM
+// node -- corner pavements, the ~50/50 two-street split being the signature
+// ("North Cascade Avenue 52% + West Pikes Peak Avenue 48%"). Eight do not, and
+// those are the only ones the pooling cannot justify on its face.
+//
+// The parent is then whichever single road contributed the most of that
+// frontage, which for a corner pavement is a coin toss between two streets that
+// both own part of it -- and which is why nothing downstream reads the parent.
 
 // A sidewalk within this distance of a road is a sidewalk *of* that road. 20m
 // covers a verge plus a parking lane plus half a carriageway.
@@ -44,10 +62,25 @@ export const MAX_TANGENT_DELTA_DEG = 20;
 export const STEP_M = 5;
 
 const DEG = Math.PI / 180;
-// WGS84 metres per degree of latitude at this latitude. Colorado Springs sits
-// at 38.8N and every comparison here spans at most 150m, so a local
-// equirectangular plane is exact to well under a centimetre -- far below the
-// 20m and 20 degree thresholds it feeds.
+// Spherical metres-per-degree, used to build a local equirectangular plane.
+//
+// These are NOT exact, and the size of the error is worth stating rather than
+// waving at. Against WGS84 at 38.82N the true figures are 111,012.05 m/deg of
+// latitude and 86,845.46 m/deg of longitude, so this overstates north-south by
+// 0.108% and understates east-west by 0.131%. Over the 150m a segment can span
+// that is 0.162m too long and 0.197m too short respectively.
+//
+// Both are immaterial to what they feed, and here is the arithmetic rather than
+// the assurance. A true 20m offset measures between 19.974m and 20.022m, so the
+// MAX_OFFSET_M test is decided on a value at most 2.6cm out. The two axes
+// scaling differently also skews angles, by at most 0.0685 degrees anywhere in
+// the circle, against a MAX_TANGENT_DELTA_DEG of 20. Both errors sit about 300x
+// below the threshold they affect.
+//
+// Correcting the constants would be harmless and is not done, because the
+// numbers are shared with split_ways.mjs's world view and a projection that
+// disagrees with the geometry it is measuring is worse than one that is
+// uniformly 0.1% off.
 const M_PER_DEG_LAT = 111132.0;
 const M_PER_DEG_LON_AT = (lat) => 111320.0 * Math.cos(lat * DEG);
 
@@ -219,9 +252,28 @@ export function measureFrontage(path, roads, opts = {}) {
     // parent on the strength of the half of it that parsed. Drop the whole
     // road instead.
     if (!allFinite(flat)) continue;
+    // A zero-length leg has no direction, and atan2(0,0) is 0 -- a heading due
+    // east that nothing is pointing. Worse, projectToPolyline's
+    // strictly-less tie-break *prefers* the earlier leg, and a duplicate
+    // leading vertex makes the degenerate leg exactly equidistant with the real
+    // one from every point past the start, so the fabricated east heading wins
+    // and a path crossing a north-south road folds into it at frontage 1.0.
+    // `null` instead, which the sample loop rejects rather than believes.
+    //
+    // `segments` has no repeated vertices today (checked: ST_NPoints equals
+    // ST_NPoints(ST_RemoveRepeatedPoints) on all 66,684 rows) but
+    // turf.lineSliceAlong emits them and split_ways.mjs:152 uses it, so the
+    // next import can arm this. The `< 1e-9` rather than `=== 0` also catches
+    // the sub-centimetre legs that already exist, whose headings are noise.
     const headings = [];
     for (let i = 0; i < flat.length / 2 - 1; i++) {
-      headings.push(headingDeg(flat[i * 2], flat[i * 2 + 1], flat[i * 2 + 2], flat[i * 2 + 3]));
+      const dx = flat[i * 2 + 2] - flat[i * 2];
+      const dy = flat[i * 2 + 3] - flat[i * 2 + 1];
+      headings.push(
+        Math.hypot(dx, dy) < 1e-9
+          ? null
+          : headingDeg(flat[i * 2], flat[i * 2 + 1], flat[i * 2 + 2], flat[i * 2 + 3]),
+      );
     }
     prepared.push({ id: r.id, flat, headings });
   }
@@ -241,7 +293,12 @@ export function measureFrontage(path, roads, opts = {}) {
     for (const road of prepared) {
       const { distM, legIndex } = projectToPolyline(s.x, s.y, road.flat);
       if (legIndex < 0 || distM > maxOffsetM) continue;
-      if (headingDelta(s.heading, road.headings[legIndex]) > maxDeltaDeg) continue;
+      const roadHeading = road.headings[legIndex];
+      // Explicitly, because `headingDelta(x, null)` would coerce null to 0 and
+      // silently read a directionless leg as due east -- the failure this null
+      // exists to prevent, reintroduced by the comparison meant to catch it.
+      if (roadHeading === null) continue;
+      if (headingDelta(s.heading, roadHeading) > maxDeltaDeg) continue;
       if (distM < bestDist) {
         bestDist = distM;
         bestId = road.id;
