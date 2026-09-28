@@ -107,13 +107,30 @@ export const CANDIDATE_SQL = `
  * worked out but NO threshold applied -- `minFrontage` is a filter over the
  * result, so a sweep can try several without re-reading the database.
  */
-export async function buildLinkPlan(client, { onProgress } = {}) {
+/**
+ * One page of the candidate query, text and bound values together.
+ *
+ * The values are here rather than at the call site because their ORDER is
+ * load-bearing and invisible: `$2` feeds ST_Expand on a 4326 geometry, so it is
+ * DEGREES, and `$3` feeds ST_DWithin on geography, so it is METRES. Swapping
+ * them is a one-character edit that leaves every path with no candidate roads,
+ * every frontage at 0 and nothing folded, and no assertion about the constants
+ * themselves can see it.
+ */
+export function candidateQuery(after, batch = BATCH) {
+  return { text: CANDIDATE_SQL, values: [after, PREFILTER_DEG, MAX_OFFSET_M, batch] };
+}
+
+export async function buildLinkPlan(client, { onProgress, batchSize = BATCH } = {}) {
   const plan = [];
   let after = -1;
 
   for (;;) {
-    const { rows } = await client.query(CANDIDATE_SQL, [after, PREFILTER_DEG, MAX_OFFSET_M, BATCH]);
+    const { text, values } = candidateQuery(after, batchSize);
+    const { rows } = await client.query(text, values);
     if (rows.length === 0) break;
+    // The LAST row of the page, because the query orders ascending by id. Taking
+    // the first would re-read the page forever.
     after = Number(rows[rows.length - 1].id);
 
     for (const row of rows) {
@@ -135,7 +152,7 @@ export async function buildLinkPlan(client, { onProgress } = {}) {
     }
 
     onProgress?.(plan.length, after);
-    if (rows.length < BATCH) break;
+    if (rows.length < batchSize) break;
   }
 
   return plan;
@@ -212,6 +229,80 @@ export function updateBatch(batch) {
            where s.id = v.id`,
     values,
   };
+}
+
+/**
+ * The three flags, off unless asked for.
+ *
+ * Here rather than inline in the script so the defaults are a tested fact
+ * rather than three `includes` calls nothing checks. `apply` off means a run
+ * with no arguments cannot write; `unfold` off means it cannot release the 743
+ * paths whose release costs Brenner Place its line; `reparent` off means it
+ * cannot turn a 745-row write into a 6,307-row one.
+ */
+export function parseFlags(argv = []) {
+  return {
+    apply: argv.includes("--apply"),
+    unfold: argv.includes("--unfold"),
+    reparent: argv.includes("--reparent"),
+  };
+}
+
+/**
+ * Everything one run of the linker decides, from a measured plan.
+ *
+ * `link_canonical.mjs` used to do this inline, which meant the threshold was
+ * passed at a call site (`decide(plan, MIN_FRONTAGE)` -> `decide(plan, 0.95)`
+ * restores the Hancock hole) and the write loop was a hand-copied duplicate of
+ * updateBatch that no test could reach. The script now decides nothing: it
+ * connects, calls this, prints it, and writes what it is given.
+ *
+ * Note it takes NO threshold. MIN_FRONTAGE is applied here and nowhere else.
+ */
+export function planRun(plan, { unfold = false, reparent = false } = {}) {
+  const decided = decide(plan, MIN_FRONTAGE);
+  const writes = writesFor(decided, { unfold, reparent });
+  const folds = writes.filter((w) => w.action === "fold");
+  const namedFolds = folds.filter((f) => f.streetName !== null);
+  return {
+    decided,
+    counts: tally(decided),
+    writes,
+    folds,
+    releases: writes.filter((w) => w.action === "release"),
+    reparents: writes.filter((w) => w.action === "reparent"),
+    namedFolds,
+    // Named paths whose name does not itself say "sidewalk". Unreachable while
+    // eligibility is name-based on the same predicate, so this is a tripwire on
+    // the ELIGIBILITY rule -- the thing that protects Shooks Run, Midland and
+    // the Pikes Peak Greenway -- not on the geometry. The caller throws.
+    unintended: namedFolds.filter((f) => !/sidewalk/i.test(f.streetName)),
+    // Folds where no single road holds even a third of the path. Frontage pools
+    // across every nearby road, and for a corner pavement that is right; for
+    // these it is the weakest the argument gets, so they are listed in full.
+    thin: folds.filter((f) => f.parentFrontage < 0.35).sort((a, b) => a.parentFrontage - b.parentFrontage),
+  };
+}
+
+/**
+ * Writes a plan's rows, in batches, inside whatever transaction the caller has
+ * opened. Throws rather than returning short: a half-applied fold is worse than
+ * none, and the caller's rollback is the point.
+ */
+export async function applyWrites(client, writes, { batchSize = BATCH, onProgress } = {}) {
+  let written = 0;
+  for (let i = 0; i < writes.length; i += batchSize) {
+    const { sql, values } = updateBatch(writes.slice(i, i + batchSize));
+    const { rowCount } = await client.query(sql, values);
+    written += rowCount;
+    onProgress?.(written, writes.length);
+  }
+  // Before the caller commits, not after. A shortfall means a segment vanished
+  // between the read and the write.
+  if (written !== writes.length) {
+    throw new Error(`planned ${writes.length} rows but the UPDATE matched ${written}`);
+  }
+  return written;
 }
 
 /** The rows a run would write, and what each one is. */

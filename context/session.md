@@ -102,8 +102,9 @@ the same path as a ride coming off the phone.
 
 - **Network**: 66,684 segments over 38.71–38.97 N, −104.90 to −104.75 W —
   central Colorado Springs plus the northwest suburbs and Ute Valley Park.
-  47,015 canonical; 17,020 pavements and unnamed sidepaths folded into parent
-  roads. Every road stays canonical. **12,241 eligible paths are still
+  **47,015 canonical + 19,669 folded = 66,684** (the 17,020 quoted here until
+  2026-09-27 was the `is_sidewalk`-tagged subset, and did not add up). Every
+  road stays canonical. **12,241 eligible paths are still
   canonical**, of which 8,940 correctly (no road within 20 m) and **3,301
   because the linker's parallel test read the chord** — rewritten 2026-09-27,
   see "The sidewalk fold". The "2,643 tagged `is_sidewalk` and never folded"
@@ -823,7 +824,11 @@ Two details are load-bearing:
   threshold would reject the very segment this exists to fold — its best single
   street holds only 53%. Measured over the 745 folds: 519 pool across more than
   one street name, 345 would miss the gate on their best single street, and
-  **337 of those 345 pool across streets that physically share an OSM node** —
+  **the large majority of those 345 pool across streets that physically share
+  an OSM node** — 333 or 337 depending on whether "touching" is counted over the
+  road pieces that actually won steps or over every piece of the streets
+  involved, a distinction no shipped code can settle because neither
+  `street_name` nor the node ids are fetched by the linker —
   corner pavements, the ~50/50 two-street split being the signature (`North
   Cascade Avenue 52% + West Pikes Peak Avenue 48%`). Eight do not. The dry run
   now lists the 16 folds where no single road holds even a third.
@@ -874,11 +879,11 @@ matcher, because the two populations are bimodal — 78% of already-folded paths
 score exactly 1.0, 91% of canonical ones score below 0.1, and the middle is
 nearly empty.
 
-**Tests.** `osm-pipeline` had none before this; it now has 62 (`npm test`, no
+**Tests.** `osm-pipeline` had none before this; it now has 81 (`npm test`, no
 database, under a tenth of a second) and the pre-commit hook runs them. The
 centrepiece is a control that asserts the **old** chord rule still rejects
 `#23278` — if that ever starts passing, the fixture has drifted and every
-assertion under it is measuring nothing. 38 mutants, 37 killed; the survivor is
+assertion under it is measuring nothing. 51 mutants, 50 killed; the survivor is
 a one-point-road guard that cannot be reached against a
 `geometry(LineString, 4326)` column and is documented in place as such.
 

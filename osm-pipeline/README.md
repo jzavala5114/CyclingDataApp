@@ -80,10 +80,10 @@ walked in 5 m steps and each step asks whether a road is within 20 m and heading
 the same way *at that point*. Fold at 60%. The previous rule compared
 `bearing_deg` — the straight line from a segment's first point to its last —
 which is meaningless on anything that bends: one 146 m footway beside Hancock
-Expressway runs 41 m east along a cross street and then 102 m south along
-Hancock, and its chord missed Hancock's by 20.6°, so it stayed canonical,
-competed with Hancock for GPS fixes and left a 191 m hole in a road that was
-ridden end to end.
+Expressway runs 30 m east along Transit Drive, turns through a 14 m corner and
+then runs 102 m south along Hancock, and its chord missed Hancock's by 20.6°, so
+it stayed canonical, competed with Hancock for GPS fixes and left Hancock
+`#17973` with 0 m of its 91 m drawn.
 
 Frontage is measured against **all** nearby roads together, not one at a time,
 because roads are split at junctions and capped at 150 m while paths are split

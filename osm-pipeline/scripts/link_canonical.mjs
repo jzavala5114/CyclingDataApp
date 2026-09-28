@@ -2,7 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import pg from "pg";
-import { buildLinkPlan, decide, tally, writesFor, MIN_FRONTAGE } from "./lib/linkPlan.mjs";
+import {
+  buildLinkPlan,
+  planRun,
+  applyWrites,
+  parseFlags,
+  MIN_FRONTAGE,
+} from "./lib/linkPlan.mjs";
 import { MAX_OFFSET_M, MAX_TANGENT_DELTA_DEG } from "./lib/frontage.mjs";
 
 // Points every sidewalk segment at the road it runs alongside, so the matcher
@@ -24,10 +30,12 @@ import { MAX_OFFSET_M, MAX_TANGENT_DELTA_DEG } from "./lib/frontage.mjs";
 // `bearing_deg` -- the straight line from a segment's first point to its last --
 // against the road's, within 20 degrees. That is the chord, and the chord is
 // meaningless on anything that bends. Segment #23278 is one 146m footway beside
-// Hancock Expressway that turns a corner: 41m east along the cross street, then
-// 102m south along Hancock. Its chord missed Hancock's by 20.6 degrees, so it
-// stayed canonical, competed with Hancock for the rider's GPS fixes, and left a
-// 191m hole in a road that was ridden end to end.
+// Hancock Expressway that turns a corner: 30m east along Transit Drive, a 14m
+// corner radius, then 102m south along Hancock. Its chord missed Hancock's by
+// 20.6 degrees, so it stayed canonical, competed with Hancock for the rider's
+// GPS fixes, and left Hancock #17973 with 0m of its 91m drawn -- half of the
+// 191m hole in session.md, the other half having been closed earlier by the
+// connectivity change.
 //
 // Now each path is walked in 5m steps and asked, at every step, whether a road
 // is within MAX_OFFSET_M and heading the same way *here*. The fraction of its
@@ -58,11 +66,8 @@ import { MAX_OFFSET_M, MAX_TANGENT_DELTA_DEG } from "./lib/frontage.mjs";
 //
 // Both flags default off, for opposite reasons -- releasing can regress a road,
 // re-parenting is inert. See plannedParent().
-const apply = process.argv.includes("--apply");
-const unfold = process.argv.includes("--unfold");
-const reparent = process.argv.includes("--reparent");
+const { apply, unfold, reparent } = parseFlags(process.argv);
 
-const BATCH = 1000;
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 const client = await pool.connect();
@@ -91,16 +96,13 @@ try {
       }
     },
   });
-  const decided = decide(plan, MIN_FRONTAGE);
-  const t = tally(decided);
   console.log(`\r  measured ${plan.length} eligible paths in ${((Date.now() - t0) / 1000).toFixed(1)}s\n`);
 
-  // What the chosen policy would actually write. `writesFor` is tested.
-  const writes = writesFor(decided, { unfold, reparent });
-  const target = (d) => d.writeParent;
-  const folds = writes.filter((d) => d.action === "fold");
-  const releases = writes.filter((d) => d.action === "release");
-  const reparents = writes.filter((d) => d.action === "reparent");
+  // Every decision is made in planRun, which is tested. This script passes no
+  // threshold and applies no rule of its own -- it prints and it writes.
+  const run = planRun(plan, { unfold, reparent });
+  const { counts: t, writes, folds, releases, reparents, namedFolds, unintended, thin } = run;
+
 
   console.log("frontage says:");
   console.log(`  ${String(t.fold).padStart(6)} canonical paths should be folded`);
@@ -111,21 +113,9 @@ try {
   console.log("  (only a fold or a release changes what the map draws -- every reader");
   console.log("   of canonical_segment_id tests it for null and none reads its value)\n");
 
-  // A named line losing segments is the failure mode this script has already
-  // caused once, so it is checked on every run rather than trusted to the name
-  // rule. Anything whose own name says "sidewalk" is the rule working.
-  const namedFolds = folds.filter((d) => d.streetName !== null);
-  const unintended = namedFolds.filter((d) => !/sidewalk/i.test(d.streetName));
   console.log(`named lines losing segments: ${namedFolds.length}, all of which should say "sidewalk"`);
   for (const d of namedFolds) console.log(`  #${String(d.id).padStart(6)} ${d.streetName}`);
   if (unintended.length > 0) {
-    // Not reachable while eligibility is `street_name is null or ilike
-    // '%sidewalk%'`, which is the same predicate -- so this is a tripwire on
-    // the eligibility clause, not on the geometry, and it is written to THROW
-    // rather than print. A warning nobody can trigger printing beside a list
-    // that always passes is the kind of reassurance this project has learned to
-    // distrust; if it ever fires, it means the name rule that protects Shooks
-    // Run and the Greenway has been loosened, and the run should stop.
     throw new Error(
       `eligibility has changed: ${unintended.length} named path(s) would fold whose name is ` +
         `not a sidewalk, e.g. #${unintended[0].id} "${unintended[0].streetName}". ` +
@@ -133,13 +123,13 @@ try {
     );
   }
 
-  // Frontage is pooled across every nearby road, so a path can clear the gate
-  // without any one street holding much of it. 337 of the 345 that need the
-  // pool run along streets that physically meet -- corner pavements -- but the
-  // ones where no road holds even a third are worth an eye.
-  const thin = folds.filter((d) => d.parentFrontage < 0.35).sort((a, b) => a.parentFrontage - b.parentFrontage);
+  // Frontage pools across every nearby road. For a corner pavement that is
+  // right and the ~50/50 two-street split is its signature; for these it is the
+  // weakest the argument gets, so they are listed in FULL rather than sampled.
+  // #89600 is the honest counterexample: 129m, frontage 0.61 against a 0.60
+  // gate, split 31/31 between two roads that do not share a node. No corner.
   console.log(`\nfolds where no single road holds a third of the path: ${thin.length}`);
-  for (const d of thin.slice(0, 8)) {
+  for (const d of thin) {
     console.log(
       `  #${String(d.id).padStart(6)} ${String(Math.round(d.lengthM)).padStart(4)}m  ` +
         `frontage ${d.frontage.toFixed(2)} pooled over ${d.roadsNearby} roads, ` +
@@ -186,8 +176,8 @@ try {
             d.lengthM.toFixed(1),
             d.frontage.toFixed(4),
             d.currentParent ?? "",
-            target(d) ?? "",
-            d.currentParent === null ? "fold" : target(d) === null ? "release" : "reparent",
+            d.writeParent ?? "",
+            d.action,
           ].join(","),
         )
         .join("\n") + "\n",
@@ -208,31 +198,13 @@ try {
     console.log(`snapshot of the ${writes.length} rows about to change: ${snapshot}`);
 
     await client.query("begin");
-    let written = 0;
-    for (let i = 0; i < writes.length; i += BATCH) {
-      const batch = writes.slice(i, i + BATCH);
-      const values = [];
-      const tuples = batch.map((d, j) => {
-        values.push(d.id, target(d));
-        return `($${j * 2 + 1}::bigint, $${j * 2 + 2}::bigint)`;
-      });
-      const { rowCount } = await client.query(
-        `update segments s set canonical_segment_id = v.parent
-           from (values ${tuples.join(", ")}) as v(id, parent)
-          where s.id = v.id`,
-        values,
-      );
-      written += rowCount;
-      process.stdout.write(`\r  wrote ${written}/${writes.length}`);
-    }
-    // Before the commit, not after: if the UPDATE matched fewer rows than the
-    // plan named, some segment vanished between the read and the write and the
-    // half-applied result is worse than none.
-    if (written !== writes.length) {
-      throw new Error(
-        `planned ${writes.length} rows but the UPDATE matched ${written}; rolling back`,
-      );
-    }
+    // applyWrites batches, checks the row count and throws on a shortfall, all
+    // of it tested. This loop used to live here as a hand-copied duplicate of
+    // updateBatch, which meant updateBatch's tests guarded a function with no
+    // callers while the statement that reaches production had none at all.
+    const written = await applyWrites(client, writes, {
+      onProgress: (n, total) => process.stdout.write(`\r  wrote ${n}/${total}`),
+    });
     await client.query("commit");
     console.log(`\nwrote ${written} rows`);
   }

@@ -41,10 +41,22 @@
 // So a single-road threshold would reject the very segment this rewrite exists
 // to fold. Measured over the 745 folds this produces: 519 pool across more than
 // one street name, 345 would not reach the threshold against their best single
-// street, and 337 of those 345 pool across streets that physically share an OSM
-// node -- corner pavements, the ~50/50 two-street split being the signature
-// ("North Cascade Avenue 52% + West Pikes Peak Avenue 48%"). Eight do not, and
-// those are the only ones the pooling cannot justify on its face.
+// street, and the large majority of those 345 pool across streets that
+// physically share an OSM node -- corner pavements, the ~50/50 two-street split
+// being the signature ("North Cascade Avenue 52% + West Pikes Peak Avenue
+// 48%"). The count is 333 or 337 depending on whether "touching" is measured
+// over the road pieces that won steps or over every piece of the streets
+// involved; neither is reproducible from this file, because the linker fetches
+// neither street_name nor the node ids.
+//
+// The remaining 8 to 12 are where the pooling argument runs out, and they are
+// real. #89600 is the honest counterexample: 129m, frontage 0.6098 against a
+// 0.60 gate, split 31%/31% between an unnamed road and University Park
+// Boulevard, which do not meet. There is no corner; it is simply near two
+// unrelated roads. It folds, and at a gate of 0.62 it would not. None of them
+// currently draws a line, so the eval cannot see them either. link_canonical
+// lists every fold where no single road holds a third, which is where these
+// show up.
 //
 // The parent is then whichever single road contributed the most of that
 // frontage, which for a corner pavement is a coin toss between two streets that
@@ -74,8 +86,8 @@ const DEG = Math.PI / 180;
 // the assurance. A true 20m offset measures between 19.974m and 20.022m, so the
 // MAX_OFFSET_M test is decided on a value at most 2.6cm out. The two axes
 // scaling differently also skews angles, by at most 0.0685 degrees anywhere in
-// the circle, against a MAX_TANGENT_DELTA_DEG of 20. Both errors sit about 300x
-// below the threshold they affect.
+// the circle, against a MAX_TANGENT_DELTA_DEG of 20. That is 292x of headroom
+// on the angle and 762x on the offset.
 //
 // Correcting the constants would be harmless and is not done, because the
 // numbers are shared with split_ways.mjs's world view and a projection that

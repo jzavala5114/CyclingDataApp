@@ -511,16 +511,19 @@ test("a repeated vertex in a ROAD cannot fabricate a heading and win the tie-bre
   //
   // Live `segments` has no repeated vertices today, but turf.lineSliceAlong
   // emits them and split_ways.mjs uses it, so the next import can arm this.
+  // The crossing must sit AT the duplicated vertex. The degenerate leg is a
+  // single point, so its "distance" is the distance to that point -- a crossing
+  // 96m up the road is nearer the real leg and never reaches the bad one, which
+  // is how an earlier version of this test passed with the guard deleted.
   const northSouth = (coords) => ({ id: 1, coords });
   const clean = northSouth([at(0, 0), at(0, 100)]);
   const duped = northSouth([at(0, 0), at(0, 0), at(0, 100)]);
-  // A short east-west path crossing near the road's start: it should never fold
-  // into a road it is perpendicular to.
-  const crossing = [at(-6, 96), at(6, 96)];
+  const crossing = [at(-6, 0), at(6, 0)]; // due east, straight through the origin
 
   assert.equal(measureFrontage(crossing, [clean]).frontage, 0, "control: no duplicate, no fold");
-  assert.equal(measureFrontage(crossing, [duped]).frontage, 0, "the duplicate must not fold it either");
-  assert.equal(measureFrontage(crossing, [duped]).parentId, null);
+  const bad = measureFrontage(crossing, [duped]);
+  assert.equal(bad.frontage, 0, "a fabricated due-east heading must not fold a perpendicular path");
+  assert.equal(bad.parentId, null);
 
   // And a genuine pavement beside the same duplicated road still folds: the
   // guard drops the bad leg, not the road.
