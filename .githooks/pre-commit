@@ -30,5 +30,5 @@ fi
 # see, so getting that wrong quietly deletes lines from the map.
 if echo "$staged" | grep -q '^osm-pipeline/'; then
   echo "pre-commit: pipeline gate tests"
-  (cd osm-pipeline && node --test "scripts/lib/*.test.mjs")
+  (cd osm-pipeline && node --test "scripts/**/*.test.mjs")
 fi

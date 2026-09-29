@@ -33,6 +33,36 @@ import { measureFrontage, MAX_OFFSET_M } from "./frontage.mjs";
 // score below 0.1, and the middle is nearly empty.
 export const MIN_FRONTAGE = 0.6;
 
+// The floor under the pooling rule.
+//
+// Frontage is summed over every nearby road, which is deliberate -- #23278 is
+// 30m of Transit Drive's pavement and 102m of Hancock's, and its best single
+// ROAD holds only 53%, so a single-road gate would reject the segment this
+// whole rewrite exists to fold. But summed over "every nearby road" with no
+// floor, the rule is unbounded: 25 mutually disjoint roads each flanking a
+// twenty-fifth of a path score frontage 1.000 with no road holding 7%, and
+// #19091 really does fold on 24% from its best road across six of them.
+//
+// So require one of two things, either of which makes "runs alongside streets"
+// true rather than arithmetic:
+//
+//   - the roads that won steps form ONE connected run of street network (a
+//     pavement round a corner, which is the case pooling exists for), or
+//   - one street holds at least this much of the path (a pavement along one
+//     street whose pieces the splitter happened to cut up).
+//
+// Grouping by street NAME rather than by road id is what makes the second test
+// work: Hancock's #17973 and #17974 are two rows and one street, so #23278
+// scores 0.697 by street against 0.531 by road.
+//
+// Measured over the 745 folds, the pair costs exactly ONE: #89600, 129m, split
+// 30.9% / 30.5% between University Park Boulevard and an unnamed road that do
+// not meet. That is the case this file previously documented as the honest
+// counterexample and then folded anyway. Every stricter guard measured cost
+// more and bought nothing: best road >= 0.35 lost 16, connectivity alone lost
+// 20, best street >= 0.50 lost 90.
+export const MIN_BEST_STREET_FRONTAGE = 0.4;
+
 // Cheap bounding-box prefilter the GiST index can serve. Casting straight to
 // geography for every candidate pair instead makes the planner scan the whole
 // table and blows the statement timeout. It MUST exceed MAX_OFFSET_M or the
@@ -85,7 +115,9 @@ export const CANDIDATE_SQL = `
          f.canonical_segment_id,
          ST_AsGeoJSON(f.geom) as path_gj,
          coalesce(
-           json_agg(json_build_object('id', r.id, 'gj', ST_AsGeoJSON(r.geom)))
+           json_agg(json_build_object(
+             'id', r.id, 'gj', ST_AsGeoJSON(r.geom),
+             'name', r.street_name, 'a', r.start_node_id, 'b', r.end_node_id))
              filter (where r.id is not null),
            '[]'
          ) as roads
@@ -137,6 +169,13 @@ export async function buildLinkPlan(client, { onProgress, batchSize = BATCH } = 
       const path = JSON.parse(row.path_gj).coordinates;
       const roads = row.roads.map((r) => ({ id: Number(r.id), coords: JSON.parse(r.gj).coordinates }));
       const m = measureFrontage(path, roads);
+      // Node ids are bigints, so pg hands them back as strings. Normalise, or
+      // the connectivity test compares a string to a number and finds nothing
+      // connected -- which fails closed, and so would have been invisible.
+      const meta = new Map(
+        row.roads.map((r) => [Number(r.id), { name: r.name, a: String(r.a), b: String(r.b) }]),
+      );
+      const shape = poolShape(m.byRoad, m.lengthM, meta);
       plan.push({
         id: Number(row.id),
         kind: row.kind,
@@ -148,6 +187,9 @@ export async function buildLinkPlan(client, { onProgress, batchSize = BATCH } = 
         parentId: m.parentId,
         parentFrontage: m.parentFrontage,
         roadsNearby: roads.length,
+        pooledConnected: shape.connected,
+        bestStreetFrontage: shape.bestStreetFrontage,
+        streetsPooled: shape.streets,
       });
     }
 
@@ -164,7 +206,12 @@ export async function buildLinkPlan(client, { onProgress, batchSize = BATCH } = 
  */
 export function decide(plan, minFrontage) {
   return plan.map((p) => {
-    const newParent = p.frontage >= minFrontage ? p.parentId : null;
+    // Frontage says how much of the path runs alongside SOMETHING. The shape
+    // test says that something is one run of street network, or one street.
+    // Both, or the path stays canonical. See MIN_BEST_STREET_FRONTAGE.
+    const shapeOk =
+      p.pooledConnected === true || (p.bestStreetFrontage ?? 0) >= MIN_BEST_STREET_FRONTAGE;
+    const newParent = p.frontage >= minFrontage && shapeOk ? p.parentId : null;
     let change = "unchanged";
     if (p.currentParent === null && newParent !== null) change = "fold";
     else if (p.currentParent !== null && newParent === null) change = "unfold";
@@ -228,6 +275,56 @@ export function updateBatch(batch) {
             from (values ${tuples.join(", ")}) as v(id, parent)
            where s.id = v.id`,
     values,
+  };
+}
+
+/**
+ * Describes the SHAPE of a path's pooled frontage: is it one connected run of
+ * street network, and how much of it does its biggest single street hold?
+ *
+ * `byRoad` is measureFrontage's per-road credit in metres. `meta` maps a road
+ * id to `{ name, a, b }` (street name and the two OSM end nodes).
+ *
+ * Connectivity is one component, not any-pair-touching. Union-find over the
+ * roads that actually won steps: three roads where two touch and the third
+ * floats are NOT a connected run, and treating them as one is how a path near
+ * several unrelated streets would slip through.
+ */
+export function poolShape(byRoad, lengthM, meta) {
+  const ids = [...byRoad.keys()];
+  const byStreet = new Map();
+  for (const [id, metres] of byRoad) {
+    // An unnamed road is its own street. Two unnamed roads are NOT the same
+    // street just because both are nameless, which grouping on null would say.
+    const key = meta.get(id)?.name ?? `#${id}`;
+    byStreet.set(key, (byStreet.get(key) ?? 0) + metres);
+  }
+  const bestStreetM = byStreet.size === 0 ? 0 : Math.max(...byStreet.values());
+
+  const parent = new Map(ids.map((id) => [id, id]));
+  const find = (x) => {
+    while (parent.get(x) !== x) {
+      parent.set(x, parent.get(parent.get(x)));
+      x = parent.get(x);
+    }
+    return x;
+  };
+  const union = (x, y) => parent.set(find(x), find(y));
+  for (let i = 0; i < ids.length; i++) {
+    for (let j = i + 1; j < ids.length; j++) {
+      const a = meta.get(ids[i]);
+      const b = meta.get(ids[j]);
+      if (!a || !b) continue;
+      if (a.a === b.a || a.a === b.b || a.b === b.a || a.b === b.b) union(ids[i], ids[j]);
+    }
+  }
+  const components = new Set(ids.map(find)).size;
+
+  return {
+    // One road, or none, is trivially one run.
+    connected: ids.length < 2 || components === 1,
+    bestStreetFrontage: lengthM > 0 ? bestStreetM / lengthM : 0,
+    streets: byStreet.size,
   };
 }
 

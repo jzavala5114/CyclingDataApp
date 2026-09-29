@@ -822,18 +822,18 @@ Two details are load-bearing:
   their own nodes; and a pavement follows the network around corners. `#23278`
   is 30 m of Transit Drive's pavement and 102 m of Hancock's, so a single-road
   threshold would reject the very segment this exists to fold — its best single
-  street holds only 53%. Measured over the 745 folds: 519 pool across more than
-  one street name, 345 would miss the gate on their best single street, and
-  **the large majority of those 345 pool across streets that physically share
-  an OSM node** — 333 or 337 depending on whether "touching" is counted over the
-  road pieces that actually won steps or over every piece of the streets
-  involved, a distinction no shipped code can settle because neither
-  `street_name` nor the node ids are fetched by the linker —
+  street holds only 53%. Measured over the 744 folds: 519 pool across more than
+  one street name and 345 would miss the gate on their best single street —
   corner pavements, the ~50/50 two-street split being the signature (`North
-  Cascade Avenue 52% + West Pikes Peak Avenue 48%`). Eight do not. The dry run
-  now lists the 16 folds where no single road holds even a third.
+  Cascade Avenue 52% + West Pikes Peak Avenue 48%`).
+  **But pooling alone is unbounded**, so it is not the whole rule: a path must
+  also run alongside *one connected run* of street network, or have *one street*
+  holding 40% of it. The linker fetches `street_name` and both node ids to
+  decide that, which it did not before. The dry run lists in full every fold
+  where no single road holds even a third — 15 of them — so the thinnest cases
+  stay visible rather than merely bounded.
 - **The linker only ever adds parents.** `canonical_segment_id` is a "hide me"
-  flag — all four readers test it for null and **none reads which road it
+  flag — all five readers test it for null and **none reads which road it
   names**. Two consequences, and they pull in opposite directions.
   **Releasing is risky**: recomputing every parent from scratch releases 743
   paths, and replaying the matcher over that set cost Brenner Place `#37523`
@@ -841,7 +841,7 @@ Two details are load-bearing:
   nobody has ridden. **Reparenting is inert**: frontage picks a better parent
   than the old nearest-road rule for 5,562 already-folded paths, and rewriting
   them would change nothing anyone can observe while making the production
-  write eight times larger. So the default writes **745 rows, every one of
+  write eight times larger. So the default writes **744 rows, every one of
   which moves a line on the map**, and `--unfold` / `--reparent` do the rest on
   request. The dry run always reports both counts.
 
@@ -861,7 +861,7 @@ net bucket count hides a street losing to a sidewalk.
 **Two honest caveats on that table, both raised by the cold review.** Buckets
 fall by one — the success test said they must not fall, and one bucket out of
 14,711 is a sidewalk stub that stopped being drawn, but the criterion said what
-it said. And the replay is **blind to 99.6% of the change**: of the 745 folds,
+it said. And the replay is **blind to 99.6% of the change**: of the 744 folds,
 exactly three currently draw a line, so the other 742 cannot move any number
 here until someone rides them. `eval:linker` now prints that coverage figure
 under its own table, because a measurement that silently covers 0.4% of its
@@ -879,11 +879,11 @@ matcher, because the two populations are bimodal — 78% of already-folded paths
 score exactly 1.0, 91% of canonical ones score below 0.1, and the middle is
 nearly empty.
 
-**Tests.** `osm-pipeline` had none before this; it now has 81 (`npm test`, no
+**Tests.** `osm-pipeline` had none before this; it now has 106 (`npm test`, no
 database, under a tenth of a second) and the pre-commit hook runs them. The
 centrepiece is a control that asserts the **old** chord rule still rejects
 `#23278` — if that ever starts passing, the fixture has drifted and every
-assertion under it is measuring nothing. 51 mutants, 50 killed; the survivor is
+assertion under it is measuring nothing. 58 mutants, 57 killed; the survivor is
 a one-point-road guard that cannot be reached against a
 `geometry(LineString, 4326)` column and is documented in place as such.
 
@@ -904,6 +904,35 @@ were disqualifying, and both were the defect class this file already names.
   `MAX_OFFSET_M ± 1` and `MAX_TANGENT_DELTA_DEG ± 2` and then checked them
   against those same constants, so they passed at a 200 m offset limit and at a
   2° tangent limit — the bug in both directions. Literals now.
+
+**The third review rejected it too, and found the same pattern one level out.**
+Its words: "the finding was answered where it was pointed, and the same defect
+survives one level out." It confirmed every earlier finding genuinely fixed,
+then found that `npm test` globbed `scripts/lib/*.test.mjs` and
+`link_canonical.mjs` is not in `lib/` — so **eight single-line edits there
+survived all 81 tests**, five of them restoring the Hancock hole. The worst
+inverts `if (!apply)`, so a bare `npm run link` writes to production while
+`--apply` reports a dry run. My own mutation count had been measured over a set
+that excluded that file: I claimed 50 of 51; the reviewer measured 93 of 130.
+
+The fix was not another move. `runLink()` now takes its client, argv, logger and
+clock as arguments, so a test drives the whole script against a fake client;
+`npm test` globs `scripts/**` and the pre-commit hook with it. All eight die.
+
+**And the pooling rule got the floor it never had.** Summing frontage over every
+nearby road is unbounded: 25 disjoint roads each flanking a twenty-fifth of a
+path reach frontage 1.000 with no road holding 7%, and `#19091` really did fold
+on 24% from its best road across six of them. `decide` now also requires that
+the roads which won steps form **one connected run of street network**, or that
+**one street holds 40%** of the path. Grouping by street name is what makes the
+second test work: Hancock's `#17973` and `#17974` are two rows and one street,
+so `#23278` scores 0.697 by street against 0.531 by road.
+
+Measured against every alternative rather than chosen: best road ≥ 0.35 cost 16
+folds, connectivity alone cost 20, best street ≥ 0.50 cost 90. **The pair costs
+exactly one**, `#89600` — the case this file previously named as its own
+counterexample and folded anyway. It draws no line, and every matcher number is
+unchanged.
 
 Three smaller ones, all real. A repeated vertex **in a road** fabricated a due
 east heading (`atan2(0,0)`) that won the tie-break and folded a path into a road
@@ -1208,7 +1237,7 @@ approaches are the ones already tried.
   43's fixes were more than 25 m from any mapped way.
 - ~~**NEXT: fold the 2,643 sidewalks the linker missed.**~~ Done 2026-09-27 —
   see "The sidewalk fold". The count was wrong and so was the framing; what
-  shipped folds 745 paths on a frontage test and closes the Hancock hole.
+  shipped folds 744 paths on a frontage test and closes the Hancock hole.
 - **Riding a segment both ways can draw only one direction.** Measured
   2026-09-02 by projecting fixes along the segment over time (no bearings): of 8
   genuine out-and-back visits, 3 segments lost a direction reproducibly across

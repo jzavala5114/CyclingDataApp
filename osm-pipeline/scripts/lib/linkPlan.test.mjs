@@ -22,6 +22,8 @@ import {
   MIN_FRONTAGE,
   PREFILTER_DEG,
   prefilterReachM,
+  poolShape,
+  MIN_BEST_STREET_FRONTAGE,
 } from "./linkPlan.mjs";
 import { measureFrontage, MAX_OFFSET_M } from "./frontage.mjs";
 import { SEG_23278, HANCOCK_17973, HANCOCK_17974, TRANSIT_4847 } from "./fixtures.mjs";
@@ -37,6 +39,11 @@ const row = (over) => ({
   parentId: null,
   parentFrontage: 0,
   roadsNearby: 0,
+  // The shape test defaults to satisfied here so the threshold tests below
+  // measure the threshold. The shape test has its own section.
+  pooledConnected: true,
+  bestStreetFrontage: 1,
+  streetsPooled: 1,
   ...over,
 });
 
@@ -135,7 +142,7 @@ test("THE GATE: MIN_FRONTAGE folds #23278, the segment this rewrite exists for",
       `at this threshold Hancock #17973 keeps its 91m hole`,
   );
   const [d] = decide(
-    [{ id: 23278, currentParent: null, frontage: m.frontage, parentId: m.parentId }],
+    [row({ id: 23278, currentParent: null, frontage: m.frontage, parentId: m.parentId })],
     MIN_FRONTAGE,
   );
   assert.equal(d.change, "fold");
@@ -174,6 +181,126 @@ test("the bbox prefilter reaches further than the offset limit it prefilters for
     `prefilter reaches ${prefilterReachM().toFixed(1)}m but the offset limit is ${MAX_OFFSET_M}m`,
   );
   assert.ok(PREFILTER_DEG > 0);
+
+  // Bounded ABOVE as well. The constant exists because casting to geography for
+  // every candidate pair made the planner scan the whole table and blow the
+  // statement timeout; a prefilter that matches everything reinstates exactly
+  // that, and only a one-sided test was here. 0.5 degrees is ~55km.
+  assert.ok(
+    prefilterReachM() < 4 * MAX_OFFSET_M,
+    `prefilter reaches ${prefilterReachM().toFixed(1)}m, far past the ${MAX_OFFSET_M}m it filters for; ` +
+      `a box that matches every road is the timeout this constant exists to avoid`,
+  );
+});
+
+// ----------------------------------------- the floor under the pooling rule
+//
+// Frontage sums over every nearby road, which is why #23278 folds at all. With
+// no floor the sum is unbounded: 25 disjoint roads each flanking a
+// twenty-fifth of a path reach frontage 1.000 with no road holding 7%.
+
+const meta = (entries) => new Map(entries.map(([id, name, a, b]) => [id, { name, a, b }]));
+
+test("poolShape: pieces of one street are one street, and one road is one run", () => {
+  const s = poolShape(new Map([[1, 60], [2, 40]]), 100,
+    meta([[1, "Hancock Expressway", "n1", "n2"], [2, "Hancock Expressway", "n2", "n3"]]));
+  assert.equal(s.streets, 1);
+  assert.equal(s.bestStreetFrontage, 1);
+  assert.equal(s.connected, true);
+});
+
+test("poolShape: two unnamed roads are two streets, not one nameless street", () => {
+  // Grouping on a null name would call every unnamed road the same street and
+  // hand the pooling rule a free pass.
+  const s = poolShape(new Map([[1, 50], [2, 50]]), 100,
+    meta([[1, null, "n1", "n2"], [2, null, "n8", "n9"]]));
+  assert.equal(s.streets, 2);
+  assert.equal(s.bestStreetFrontage, 0.5);
+  assert.equal(s.connected, false);
+});
+
+test("poolShape: connectivity is ONE component, not any pair touching", () => {
+  // Two that meet plus one that floats is not a connected run of street.
+  const s = poolShape(new Map([[1, 40], [2, 40], [3, 20]]), 100,
+    meta([[1, "A", "n1", "n2"], [2, "B", "n2", "n3"], [3, "C", "n7", "n8"]]));
+  assert.equal(s.connected, false);
+  // And a chain of three IS one component, even though 1 and 3 do not touch.
+  const chain = poolShape(new Map([[1, 40], [2, 40], [3, 20]]), 100,
+    meta([[1, "A", "n1", "n2"], [2, "B", "n2", "n3"], [3, "C", "n3", "n4"]]));
+  assert.equal(chain.connected, true);
+});
+
+test("poolShape: roads meeting at either end count as meeting", () => {
+  for (const [a2, b2] of [["n2", "n9"], ["n9", "n2"], ["n1", "n9"], ["n9", "n1"]]) {
+    const s = poolShape(new Map([[1, 50], [2, 50]]), 100,
+      meta([[1, "A", "n1", "n2"], [2, "B", a2, b2]]));
+    assert.equal(s.connected, true, `${a2}/${b2} should touch n1/n2`);
+  }
+});
+
+test("poolShape: no roads and one road are both trivially one run", () => {
+  assert.equal(poolShape(new Map(), 100, meta([])).connected, true);
+  assert.equal(poolShape(new Map(), 100, meta([])).bestStreetFrontage, 0);
+  assert.equal(poolShape(new Map([[1, 90]]), 100, meta([[1, "A", "n1", "n2"]])).connected, true);
+});
+
+test("THE FLOOR: a path pooled over disjoint roads does not fold, whatever its frontage", () => {
+  // The constructed counterexample: full frontage, 25 unrelated roads, no
+  // street holding more than 4%. Without the floor this folds.
+  const byRoad = new Map(Array.from({ length: 25 }, (_, i) => [i + 1, 6]));
+  const m = meta(Array.from({ length: 25 }, (_, i) => [i + 1, `Street ${i}`, `a${i}`, `b${i}`]));
+  const s = poolShape(byRoad, 150, m);
+  assert.equal(s.connected, false);
+  assert.ok(s.bestStreetFrontage < MIN_BEST_STREET_FRONTAGE);
+
+  const [d] = decide([row({ frontage: 1, parentId: 1, pooledConnected: s.connected,
+    bestStreetFrontage: s.bestStreetFrontage })], MIN_FRONTAGE);
+  assert.equal(d.change, "unchanged", "frontage 1.0 must not be enough on its own");
+  assert.equal(d.newParent, null);
+});
+
+test("THE FLOOR: #23278 passes it, by street rather than by road", () => {
+  // Measured: best single ROAD 0.531, best single STREET 0.697, because
+  // Hancock's #17973 and #17974 are two rows and one street. A road-based floor
+  // above 0.531 would reject the segment this rewrite exists to fold.
+  const fm = measureFrontage(SEG_23278, [TRANSIT_4847, HANCOCK_17973, HANCOCK_17974]);
+  const s = poolShape(fm.byRoad, fm.lengthM, meta([
+    [4847, "Transit Drive", "t1", "n_corner"],
+    [17973, "Hancock Expressway", "n_corner", "h2"],
+    [17974, "Hancock Expressway", "h2", "h3"],
+  ]));
+  assert.ok(s.bestStreetFrontage > 0.65, `best street ${s.bestStreetFrontage.toFixed(3)}`);
+  assert.ok(s.bestStreetFrontage > fm.parentFrontage, "street beats road, which is the point");
+  assert.equal(s.connected, true);
+  const [d] = decide([row({ id: 23278, frontage: fm.frontage, parentId: fm.parentId,
+    pooledConnected: s.connected, bestStreetFrontage: s.bestStreetFrontage })], MIN_FRONTAGE);
+  assert.equal(d.change, "fold");
+  assert.equal(d.newParent, 17973);
+});
+
+test("THE FLOOR: either half is enough on its own", () => {
+  const connectedButThin = row({ frontage: 0.9, parentId: 1, pooledConnected: true, bestStreetFrontage: 0.1 });
+  const disjointButDominant = row({ frontage: 0.9, parentId: 1, pooledConnected: false, bestStreetFrontage: 0.9 });
+  const neither = row({ frontage: 0.9, parentId: 1, pooledConnected: false, bestStreetFrontage: 0.1 });
+  assert.equal(decide([connectedButThin], MIN_FRONTAGE)[0].change, "fold");
+  assert.equal(decide([disjointButDominant], MIN_FRONTAGE)[0].change, "fold");
+  assert.equal(decide([neither], MIN_FRONTAGE)[0].change, "unchanged");
+});
+
+test("THE FLOOR: the street share boundary is 0.4, in shares, not whatever the constant says", () => {
+  assert.equal(MIN_BEST_STREET_FRONTAGE, 0.4, "if this moves deliberately, move the fixtures with it");
+  const at = (share) => row({ frontage: 0.9, parentId: 1, pooledConnected: false, bestStreetFrontage: share });
+  assert.equal(decide([at(0.4)], MIN_FRONTAGE)[0].change, "fold", "inclusive");
+  assert.equal(decide([at(0.3999)], MIN_FRONTAGE)[0].change, "unchanged");
+  assert.equal(decide([at(0.31)], MIN_FRONTAGE)[0].change, "unchanged", "#89600 sits here");
+});
+
+test("THE FLOOR: a plan record missing the shape fields fails closed", () => {
+  // buildLinkPlan always supplies them. If a future caller does not, the safe
+  // answer is to leave the path canonical rather than to fold on a default.
+  const bare = { id: 1, currentParent: null, frontage: 1, parentId: 5 };
+  assert.equal(decide([bare], MIN_FRONTAGE)[0].change, "unchanged");
+  assert.equal(decide([bare], MIN_FRONTAGE)[0].newParent, null);
 });
 
 // --------------------------------------------- the write policy, pinned
@@ -282,7 +409,9 @@ test("GOLDEN: the candidate query is exactly this, character for character", () 
          f.canonical_segment_id,
          ST_AsGeoJSON(f.geom) as path_gj,
          coalesce(
-           json_agg(json_build_object('id', r.id, 'gj', ST_AsGeoJSON(r.geom)))
+           json_agg(json_build_object(
+             'id', r.id, 'gj', ST_AsGeoJSON(r.geom),
+             'name', r.street_name, 'a', r.start_node_id, 'b', r.end_node_id))
              filter (where r.id is not null),
            '[]'
          ) as roads
@@ -418,6 +547,19 @@ test("buildLinkPlan maps each row's own values, not a constant", async () => {
   assert.equal(plan[1].parentId, null);
   assert.equal(plan[2].roadsNearby, 0);
   assert.equal(plan[0].roadsNearby, 1);
+
+  // parentFrontage was mapped but never asserted, so hardcoding it to 1
+  // silently emptied the "no single road holds a third" report -- the only
+  // safeguard on the pooling rule.
+  assert.ok(plan[0].parentFrontage > 0.999, `alongside: ${plan[0].parentFrontage}`);
+  assert.equal(plan[1].parentFrontage, 0, "a crossing path has no parent share");
+  assert.equal(plan[2].parentFrontage, 0);
+
+  // And the shape fields the floor reads.
+  assert.equal(plan[0].pooledConnected, true, "one road is trivially one run");
+  assert.ok(plan[0].bestStreetFrontage > 0.999);
+  assert.equal(plan[0].streetsPooled, 1);
+  assert.equal(plan[1].bestStreetFrontage, 0);
 
   // And currentParent must come from the column, not be assumed null.
   assert.equal(plan[0].currentParent, 900, "an already-folded path must not read as canonical");

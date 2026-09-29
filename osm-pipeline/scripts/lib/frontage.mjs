@@ -39,28 +39,22 @@
 //     53% of it.
 //
 // So a single-road threshold would reject the very segment this rewrite exists
-// to fold. Measured over the 745 folds this produces: 519 pool across more than
-// one street name, 345 would not reach the threshold against their best single
-// street, and the large majority of those 345 pool across streets that
-// physically share an OSM node -- corner pavements, the ~50/50 two-street split
-// being the signature ("North Cascade Avenue 52% + West Pikes Peak Avenue
-// 48%"). The count is 333 or 337 depending on whether "touching" is measured
-// over the road pieces that won steps or over every piece of the streets
-// involved; neither is reproducible from this file, because the linker fetches
-// neither street_name nor the node ids.
+// to fold. Measured over the folds this produces, 519 pool across more than one
+// street name and 345 would not reach the threshold against their best single
+// street -- corner pavements, the ~50/50 two-street split being the signature
+// ("North Cascade Avenue 52% + West Pikes Peak Avenue 48%").
 //
-// The remaining 8 to 12 are where the pooling argument runs out, and they are
-// real. #89600 is the honest counterexample: 129m, frontage 0.6098 against a
-// 0.60 gate, split 31%/31% between an unnamed road and University Park
-// Boulevard, which do not meet. There is no corner; it is simply near two
-// unrelated roads. It folds, and at a gate of 0.62 it would not. None of them
-// currently draws a line, so the eval cannot see them either. link_canonical
-// lists every fold where no single road holds a third, which is where these
-// show up.
+// BUT POOLING ALONE IS UNBOUNDED, and that is not a hypothetical: 25 mutually
+// disjoint roads each flanking a twenty-fifth of a path sum to frontage 1.000
+// with no road holding 7%. So the sum is not the whole rule. `poolShape` in
+// linkPlan.mjs adds the floor -- the roads that won steps must form one
+// connected run of street network, or one street must hold 40% of the path --
+// and `decide` requires it alongside the frontage. See MIN_BEST_STREET_FRONTAGE
+// for what that costs, which is one fold in 745.
 //
-// The parent is then whichever single road contributed the most of that
-// frontage, which for a corner pavement is a coin toss between two streets that
-// both own part of it -- and which is why nothing downstream reads the parent.
+// The parent is whichever single road contributed the most of that frontage,
+// which for a corner pavement is a coin toss between two streets that both own
+// part of it, and which is why nothing downstream reads the parent.
 
 // A sidewalk within this distance of a road is a sidewalk *of* that road. 20m
 // covers a verge plus a parking lane plus half a carriageway.
@@ -72,6 +66,8 @@ export const MAX_TANGENT_DELTA_DEG = 20;
 // Step length along the path. Short enough to resolve a corner on the shortest
 // segment the splitter emits (8m), long enough that a 150m piece is ~30 steps.
 export const STEP_M = 5;
+// Shortest leg that counts as having a direction. See projectToPolyline.
+export const MIN_LEG_M = 0.01;
 
 const DEG = Math.PI / 180;
 // Spherical metres-per-degree, used to build a local equirectangular plane.
@@ -148,11 +144,25 @@ export function projectToPolyline(px, py, flat) {
     const vx = flat[i * 2 + 2] - ax;
     const vy = flat[i * 2 + 3] - ay;
     const lenSq = vx * vx + vy * vy;
-    let t = 0;
-    if (lenSq > 0) {
-      t = ((px - ax) * vx + (py - ay) * vy) / lenSq;
-      t = t < 0 ? 0 : t > 1 ? 1 : t;
-    }
+    // A leg too short to have a direction is never SELECTED, which is the fix
+    // rather than nulling its heading afterwards. atan2(0,0) is 0 -- due east,
+    // which nothing is pointing -- and a duplicated vertex makes the degenerate
+    // leg exactly equidistant with the real one, so with a strictly-less
+    // tie-break the fabricated heading wins and a path folds into a road it
+    // crosses at right angles.
+    //
+    // Skipping beats nulling because the neighbouring legs cover the same
+    // centimetre of road with a real direction, so the sample lands somewhere
+    // sensible instead of being dropped. Nulling lost legitimate frontage
+    // whenever the stub happened to be the nearest leg.
+    //
+    // MIN_LEG_M is 1cm, chosen against the data: `segments` holds 0 zero-length
+    // legs, 4 under a millimetre and 21 under a centimetre, and OSM's seven
+    // decimal places are themselves about a centimetre. Below that a heading is
+    // the quantisation, not the road.
+    if (lenSq < MIN_LEG_M * MIN_LEG_M) continue;
+    let t = ((px - ax) * vx + (py - ay) * vy) / lenSq;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
     const dx = px - (ax + t * vx);
     const dy = py - (ay + t * vy);
     const sq = dx * dx + dy * dy;
@@ -212,10 +222,7 @@ export function sampleSteps(flat, stepM = STEP_M) {
  * roads and `parentId` is the road holding the largest share of it. `frontage`
  * is 0 and `parentId` null when nothing qualifies.
  */
-export function measureFrontage(path, roads, opts = {}) {
-  const maxOffsetM = opts.maxOffsetM ?? MAX_OFFSET_M;
-  const maxDeltaDeg = opts.maxTangentDeltaDeg ?? MAX_TANGENT_DELTA_DEG;
-  const stepM = opts.stepM ?? STEP_M;
+export function measureFrontage(path, roads) {
 
   const empty = { frontage: 0, lengthM: 0, parentId: null, parentFrontage: 0, byRoad: new Map() };
   // An empty path has no path[0] to centre the projection on. A path with one
@@ -238,7 +245,7 @@ export function measureFrontage(path, roads, opts = {}) {
   // project has already paid for twice: the threshold is not tripped, it is
   // switched off. Refuse to measure instead, which leaves the path canonical.
   if (!allFinite(pathFlat)) return empty;
-  const samples = sampleSteps(pathFlat, stepM);
+  const samples = sampleSteps(pathFlat);
   if (samples.length === 0) return empty;
 
   const lengthM = samples.reduce((a, s) => a + s.lengthM, 0);
@@ -264,28 +271,14 @@ export function measureFrontage(path, roads, opts = {}) {
     // parent on the strength of the half of it that parsed. Drop the whole
     // road instead.
     if (!allFinite(flat)) continue;
-    // A zero-length leg has no direction, and atan2(0,0) is 0 -- a heading due
-    // east that nothing is pointing. Worse, projectToPolyline's
-    // strictly-less tie-break *prefers* the earlier leg, and a duplicate
-    // leading vertex makes the degenerate leg exactly equidistant with the real
-    // one from every point past the start, so the fabricated east heading wins
-    // and a path crossing a north-south road folds into it at frontage 1.0.
-    // `null` instead, which the sample loop rejects rather than believes.
-    //
-    // `segments` has no repeated vertices today (checked: ST_NPoints equals
-    // ST_NPoints(ST_RemoveRepeatedPoints) on all 66,684 rows) but
-    // turf.lineSliceAlong emits them and split_ways.mjs:152 uses it, so the
-    // next import can arm this. The `< 1e-9` rather than `=== 0` also catches
-    // the sub-centimetre legs that already exist, whose headings are noise.
+    // Headings for every leg, degenerate ones included: projectToPolyline never
+    // returns a leg shorter than MIN_LEG_M, so a fabricated heading is never
+    // read. Guarding here as well was the earlier fix and it was worse -- it
+    // dropped samples whose nearest leg happened to be a 1cm stub, losing real
+    // frontage to protect against a heading nobody consults.
     const headings = [];
     for (let i = 0; i < flat.length / 2 - 1; i++) {
-      const dx = flat[i * 2 + 2] - flat[i * 2];
-      const dy = flat[i * 2 + 3] - flat[i * 2 + 1];
-      headings.push(
-        Math.hypot(dx, dy) < 1e-9
-          ? null
-          : headingDeg(flat[i * 2], flat[i * 2 + 1], flat[i * 2 + 2], flat[i * 2 + 3]),
-      );
+      headings.push(headingDeg(flat[i * 2], flat[i * 2 + 1], flat[i * 2 + 2], flat[i * 2 + 3]));
     }
     prepared.push({ id: r.id, flat, headings });
   }
@@ -304,13 +297,8 @@ export function measureFrontage(path, roads, opts = {}) {
     let bestDist = Infinity;
     for (const road of prepared) {
       const { distM, legIndex } = projectToPolyline(s.x, s.y, road.flat);
-      if (legIndex < 0 || distM > maxOffsetM) continue;
-      const roadHeading = road.headings[legIndex];
-      // Explicitly, because `headingDelta(x, null)` would coerce null to 0 and
-      // silently read a directionless leg as due east -- the failure this null
-      // exists to prevent, reintroduced by the comparison meant to catch it.
-      if (roadHeading === null) continue;
-      if (headingDelta(s.heading, roadHeading) > maxDeltaDeg) continue;
+      if (legIndex < 0 || distM > MAX_OFFSET_M) continue;
+      if (headingDelta(s.heading, road.headings[legIndex]) > MAX_TANGENT_DELTA_DEG) continue;
       if (distM < bestDist) {
         bestDist = distM;
         bestId = road.id;
@@ -343,12 +331,3 @@ export function measureFrontage(path, roads, opts = {}) {
   };
 }
 
-/**
- * The linker's decision for one path: the id of the road to fold it into, or
- * null to leave it canonical.
- */
-export function chooseParent(path, roads, minFrontage, opts = {}) {
-  const m = measureFrontage(path, roads, opts);
-  if (m.frontage < minFrontage) return null;
-  return m.parentId;
-}

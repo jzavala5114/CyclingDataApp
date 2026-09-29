@@ -91,6 +91,12 @@ on their own nodes — a 146 m path routinely straddles two 91 m pieces of one
 street and would score 50% against each. The parent is then whichever single
 road holds the largest share.
 
+Pooling that way is unbounded on its own, so there is a floor: the roads that
+won steps must form **one connected run** of street network, or **one street**
+must hold 40% of the path. Grouping by street name is what makes the second
+test work, since two pieces of Hancock are two rows and one street. The floor
+costs one fold in 745 and the dry run lists the thinnest survivors in full.
+
 `link` only ever **adds** parents. `canonical_segment_id` is a "hide me" flag —
 every reader tests it for null and none reads which road it names — so a fold
 is the only kind of write that moves a line on the map. Releasing a path can

@@ -16,7 +16,7 @@ import {
   projectToPolyline,
   sampleSteps,
   measureFrontage,
-  chooseParent,
+  MIN_LEG_M,
 } from "./frontage.mjs";
 
 // ---------------------------------------------------------------- helpers
@@ -274,6 +274,20 @@ test("a road with a non-finite coordinate is dropped, not used for the legs that
   assert.equal(m.byRoad.has(2), false);
 });
 
+test("a step is credited to the CLOSEST accepting road, not just any of them", () => {
+  // The comment beside this logic calls it load-bearing against crediting every
+  // road at once, and "every road" does die -- but crediting the FURTHEST
+  // accepting road survived the suite, so the word "closest" was not a tested
+  // fact. Two parallel roads flanking the path at 4m and 16m: both accept every
+  // step, and the near one must take all of it.
+  const near = { id: 1, coords: [at(0, 0), at(200, 0)] };
+  const far = { id: 2, coords: [at(0, 20), at(200, 20)] };
+  const m = measureFrontage([at(20, 4), at(180, 4)], [near, far]);
+  assert.ok(m.frontage > 0.999, "both roads accept, so the path is fully alongside");
+  assert.equal(m.parentId, 1, "the 4m road, not the 16m one");
+  assert.equal(m.byRoad.has(2), false, "and the far road is credited nothing at all");
+});
+
 test("the answer does not depend on the order the roads arrive in", () => {
   // Nominally equidistant either side of the path. In floating point one of
   // them is microscopically nearer, so this does not test a tie -- it tests
@@ -297,13 +311,6 @@ test("an exact tie in frontage goes to the lower id", () => {
   const m = measureFrontage(path, [west, east]);
   assert.equal(m.byRoad.get(77), m.byRoad.get(42), "the fixture must actually tie");
   assert.equal(m.parentId, 42);
-});
-
-test("chooseParent applies the threshold and returns an id or null", () => {
-  const path = [at(10, 8), at(150, 8)];
-  assert.equal(chooseParent(path, [straightRoad], 0.6), 1);
-  assert.equal(chooseParent(path, [straightRoad], 1.01), null);
-  assert.equal(chooseParent([at(100, -15), at(100, 15)], [straightRoad], 0.6), null);
 });
 
 // --------------------------------------------- the bug, with the real geometry

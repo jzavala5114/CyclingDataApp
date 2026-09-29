@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import pg from "pg";
+import { pathToFileURL } from "node:url";
 import {
   buildLinkPlan,
   planRun,
@@ -66,22 +67,26 @@ import { MAX_OFFSET_M, MAX_TANGENT_DELTA_DEG } from "./lib/frontage.mjs";
 //
 // Both flags default off, for opposite reasons -- releasing can regress a road,
 // re-parenting is inert. See plannedParent().
-const { apply, unfold, reparent } = parseFlags(process.argv);
-
-
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
-const client = await pool.connect();
-await client.query("set statement_timeout = '10min'");
-
-const outDir = path.join(os.tmpdir(), "link_canonical");
-fs.mkdirSync(outDir, { recursive: true });
-
-try {
-  console.log(
+/**
+ * One run of the linker, with its world injected so a test can drive it.
+ *
+ * This exists because the test suite could not reach a line of this file, and
+ * a cold review found eight single-line edits here that survived all 81 tests.
+ * Among them: inverting the `if (!apply)` branch, so a bare run writes to
+ * production while `--apply` reports a dry run; swapping `commit` for
+ * `rollback` while still printing "wrote 745 rows"; and filtering the folds out
+ * of the write so #23278 stays canonical and Hancock keeps its hole.
+ *
+ * Returns what it did, so a caller can assert on the outcome rather than on
+ * stdout.
+ */
+export async function runLink(client, { argv = [], log = console.log, outDir, now = () => new Date() } = {}) {
+  const { apply, unfold, reparent } = parseFlags(argv);
+  log(
     `frontage rule: >= ${(MIN_FRONTAGE * 100).toFixed(0)}% of a path within ` +
       `${MAX_OFFSET_M}m of a road and within ${MAX_TANGENT_DELTA_DEG} degrees of its local heading`,
   );
-  console.log(
+  log(
     `policy: fold${unfold ? " + release (--unfold)" : ""}${reparent ? " + reparent (--reparent)" : ""}` +
       `${unfold || reparent ? "" : " only -- nothing already folded is released or moved"}\n`,
   );
@@ -96,7 +101,7 @@ try {
       }
     },
   });
-  console.log(`\r  measured ${plan.length} eligible paths in ${((Date.now() - t0) / 1000).toFixed(1)}s\n`);
+  log(`\r  measured ${plan.length} eligible paths in ${((Date.now() - t0) / 1000).toFixed(1)}s\n`);
 
   // Every decision is made in planRun, which is tested. This script passes no
   // threshold and applies no rule of its own -- it prints and it writes.
@@ -104,17 +109,17 @@ try {
   const { counts: t, writes, folds, releases, reparents, namedFolds, unintended, thin } = run;
 
 
-  console.log("frontage says:");
-  console.log(`  ${String(t.fold).padStart(6)} canonical paths should be folded`);
-  console.log(`  ${String(t.unfold).padStart(6)} folded paths no longer qualify  ${unfold ? "(will be released)" : "(kept folded; pass --unfold to release)"}`);
-  console.log(`  ${String(t.reparent).padStart(6)} folded paths belong to a different road  ${reparent ? "(will be rewritten)" : "(left alone; pass --reparent to rewrite)"}`);
-  console.log(`  ${String(t.unchanged).padStart(6)} unchanged\n`);
-  console.log(`this run would write ${writes.length} rows: ${folds.length} folds, ${reparents.length} reparents, ${releases.length} releases`);
-  console.log("  (only a fold or a release changes what the map draws -- every reader");
-  console.log("   of canonical_segment_id tests it for null and none reads its value)\n");
+  log("frontage says:");
+  log(`  ${String(t.fold).padStart(6)} canonical paths should be folded`);
+  log(`  ${String(t.unfold).padStart(6)} folded paths no longer qualify  ${unfold ? "(will be released)" : "(kept folded; pass --unfold to release)"}`);
+  log(`  ${String(t.reparent).padStart(6)} folded paths belong to a different road  ${reparent ? "(will be rewritten)" : "(left alone; pass --reparent to rewrite)"}`);
+  log(`  ${String(t.unchanged).padStart(6)} unchanged\n`);
+  log(`this run would write ${writes.length} rows: ${folds.length} folds, ${reparents.length} reparents, ${releases.length} releases`);
+  log("  (only a fold or a release changes what the map draws -- every reader");
+  log("   of canonical_segment_id tests it for null and none reads its value)\n");
 
-  console.log(`named lines losing segments: ${namedFolds.length}, all of which should say "sidewalk"`);
-  for (const d of namedFolds) console.log(`  #${String(d.id).padStart(6)} ${d.streetName}`);
+  log(`named lines losing segments: ${namedFolds.length}, all of which should say "sidewalk"`);
+  for (const d of namedFolds) log(`  #${String(d.id).padStart(6)} ${d.streetName}`);
   if (unintended.length > 0) {
     throw new Error(
       `eligibility has changed: ${unintended.length} named path(s) would fold whose name is ` +
@@ -123,14 +128,15 @@ try {
     );
   }
 
-  // Frontage pools across every nearby road. For a corner pavement that is
-  // right and the ~50/50 two-street split is its signature; for these it is the
-  // weakest the argument gets, so they are listed in FULL rather than sampled.
-  // #89600 is the honest counterexample: 129m, frontage 0.61 against a 0.60
-  // gate, split 31/31 between two roads that do not share a node. No corner.
-  console.log(`\nfolds where no single road holds a third of the path: ${thin.length}`);
+  // Frontage pools across every nearby road, and MIN_BEST_STREET_FRONTAGE puts
+  // a floor under that. These cleared the floor -- they are alongside one
+  // connected run of street -- but no single road holds much of any of them, so
+  // they are where the argument is thinnest. Listed in FULL rather than
+  // sampled, because a printed count of 15 above a list of 8 is the kind of
+  // half-report this file has already shipped once.
+  log(`\nfolds where no single road holds a third of the path: ${thin.length}`);
   for (const d of thin) {
-    console.log(
+    log(
       `  #${String(d.id).padStart(6)} ${String(Math.round(d.lengthM)).padStart(4)}m  ` +
         `frontage ${d.frontage.toFixed(2)} pooled over ${d.roadsNearby} roads, ` +
         `best single ${d.parentFrontage.toFixed(2)}`,
@@ -151,9 +157,9 @@ try {
         [foldIds],
       )
     : { rows: [] };
-  console.log(`\ncurrently-drawn lines that would stop being drawn: ${drawn.length}`);
+  log(`\ncurrently-drawn lines that would stop being drawn: ${drawn.length}`);
   for (const r of drawn) {
-    console.log(
+    log(
       `  #${String(r.id).padStart(6)} ${String(r.street_name ?? "(unnamed)").padEnd(22)} ` +
         `${r.kind.padEnd(8)} tagged_sidewalk=${String(r.is_sidewalk).padEnd(5)} ` +
         `${String(r.len).padStart(4)}m  ${String(r.buckets).padStart(3)} buckets`,
@@ -162,7 +168,7 @@ try {
 
   // The full diff, every run, applied or not. A net count hides which lines
   // moved, and this script's one historical failure was visible only per-line.
-  const csv = path.join(outDir, `plan-${new Date().toISOString().replace(/[:.]/g, "-")}.csv`);
+  const csv = path.join(outDir, `plan-${now().toISOString().replace(/[:.]/g, "-")}.csv`);
   fs.writeFileSync(
     csv,
     "id,kind,is_sidewalk,street_name,length_m,frontage,current_parent,new_parent,action\n" +
@@ -182,20 +188,20 @@ try {
         )
         .join("\n") + "\n",
   );
-  console.log(`\nfull per-line diff: ${csv}`);
+  log(`\nfull per-line diff: ${csv}`);
 
   if (!apply) {
-    console.log("\ndry run -- nothing written. Re-run with --apply.");
+    log("\ndry run -- nothing written. Re-run with --apply.");
   } else {
     // The snapshot is what makes this reversible: id and the parent it had
     // before, for every row about to move.
-    const snapshot = path.join(outDir, `before-${new Date().toISOString().replace(/[:.]/g, "-")}.csv`);
+    const snapshot = path.join(outDir, `before-${now().toISOString().replace(/[:.]/g, "-")}.csv`);
     fs.writeFileSync(
       snapshot,
       "id,canonical_segment_id\n" +
         writes.map((d) => `${d.id},${d.currentParent ?? ""}`).join("\n") + "\n",
     );
-    console.log(`snapshot of the ${writes.length} rows about to change: ${snapshot}`);
+    log(`snapshot of the ${writes.length} rows about to change: ${snapshot}`);
 
     await client.query("begin");
     // applyWrites batches, checks the row count and throws on a shortfall, all
@@ -206,7 +212,7 @@ try {
       onProgress: (n, total) => process.stdout.write(`\r  wrote ${n}/${total}`),
     });
     await client.query("commit");
-    console.log(`\nwrote ${written} rows`);
+    log(`\nwrote ${written} rows`);
   }
 
   const { rows: summary } = await client.query(
@@ -215,17 +221,31 @@ try {
             count(*) filter (where canonical_segment_id is not null) as merged_into_road
        from segments group by kind, is_sidewalk order by kind, is_sidewalk`,
   );
-  console.log("");
-  console.table(summary);
+  log("");
+  log(summary);
 
   if (apply) {
-    console.log("Segment geometry is unchanged, but which lines are match candidates is not.");
-    console.log("Run `npm run rebuild-model` in backend/ before trusting the map.");
+    log("Segment geometry is unchanged, but which lines are match candidates is not.");
+    log("Run `npm run rebuild-model` in backend/ before trusting the map.");
   }
-} catch (err) {
-  await client.query("rollback").catch(() => {});
-  throw err;
-} finally {
-  client.release();
-  await pool.end();
+  return { apply, writes, applied: apply ? writes.length : 0 };
+}
+
+// Only when run as a script, so importing this file for a test connects to
+// nothing.
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
+  const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+  const client = await pool.connect();
+  await client.query("set statement_timeout = '10min'");
+  const dir = path.join(os.tmpdir(), "link_canonical");
+  fs.mkdirSync(dir, { recursive: true });
+  try {
+    await runLink(client, { argv: process.argv, outDir: dir });
+  } catch (err) {
+    await client.query("rollback").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+    await pool.end();
+  }
 }

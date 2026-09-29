@@ -9,7 +9,7 @@ import type { Segment, SessionSample } from "../types/index.js";
 // to score a pipeline decision against a backend behaviour, so it has to hold
 // both; duplicating the frontage rule here to keep the directories tidy would
 // mean scoring a copy of the thing instead of the thing.
-import { buildLinkPlan, decide } from "../../../osm-pipeline/scripts/lib/linkPlan.mjs";
+import { buildLinkPlan, decide, MIN_FRONTAGE } from "../../../osm-pipeline/scripts/lib/linkPlan.mjs";
 
 // What does folding a sidewalk actually do to the map?
 //
@@ -57,7 +57,13 @@ import { buildLinkPlan, decide } from "../../../osm-pipeline/scripts/lib/linkPla
 
 const BBOX_PAD_DEG = 0.005;
 const DISCONNECT_PENALTY_M = 6; // what the matcher ships with; see session.md
-const THRESHOLDS = (process.argv[2] ?? "0.6").split(",").map(Number);
+// MIN_FRONTAGE, not a literal. The default arm is described as "the shipped
+// threshold" in backend/README.md, and with a hardcoded 0.6 that stops being
+// true the moment the constant moves -- which it can, since the suite pins it
+// only to a 0.5-to-0.7 range and the fold count swings 809 to 694 across that.
+// linkPlan.mjs exists to stop a threshold being chosen by one code path and
+// applied by another; this script is a code path.
+const THRESHOLDS = (process.argv[2] ?? String(MIN_FRONTAGE)).split(",").map(Number);
 const ARMS = ["before", ...THRESHOLDS.flatMap((t) => [`fold>=${t}`, `both>=${t}`])];
 
 // The sessions the published 10.1% impossible-transition baseline was measured
