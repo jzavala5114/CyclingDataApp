@@ -5,11 +5,14 @@ built the way it is, and the failure modes already paid for.
 
 Last updated 2026-09-27.
 
-**One thing is mid-flight.** The sidewalk fold is built, tested and measured but
-**not applied** — see "The sidewalk fold". It is a pipeline change, so landing it
-means `npm run link -- --apply` and then `rebuild-model`, both production
-writes. Everything else is merged and deployed; the model was recomputed onto
-the zero-phase smoother on 2026-09-24.
+**Nothing is mid-flight.** The sidewalk fold is applied, rebuilt, merged and
+deployed as of 2026-09-29 — see "The sidewalk fold". 744 paths folded, the
+model rebuilt to 6,098 buckets across 749 segments, `main` at `8deb8fb`,
+production serving `builtAt 2026-09-29T02:31:31.559Z`. Hancock `#17973` draws
+15–90 m of its 91 m where it drew nothing, verified through `/segments` rather
+than from the database alone. The first deploy attempt failed; see note 29,
+which is worth reading before adding anything to `backend/` that imports
+outside it.
 
 Where to start depends on what you came for:
 
@@ -314,6 +317,22 @@ Keep these in mind before "simplifying" anything.
     difference at all short of uploading a synthetic ride. `npm run build` now
     writes a timestamp into `dist/buildInfo.json` and `/health` returns it as
     `builtAt`. One request confirms which build is answering.
+29. **A local build is not a rehearsal of the deploy.** Railway builds `backend/`
+    alone; the rest of the repo is not in the build context. `evalLinkerFold.ts`
+    imports across into `../../../osm-pipeline/`, deliberately — it scores a
+    pipeline decision against the backend's behaviour, so it needs both halves.
+    `tsc` resolves imports at **build** time, so the deploy died on `TS2307`
+    while `npm run build` passed locally every time, because a developer
+    checkout has the sibling directory the container does not. The comment in
+    the file even stated that Railway ships only `backend/` and then concluded
+    the deploy was unaffected, reasoning about runtime resolution. Production
+    never went down — a failed build leaves the previous container serving — and
+    the sidewalk fold was untouched, because that change is rows rather than
+    code. Now: `tsconfig.json` excludes the tool, `tsconfig.check.json`
+    typechecks it anyway, and `src/buildContext.test.ts` fails on any relative
+    import in the production build that resolves outside `backend/src`. To
+    rehearse for real, copy `backend/` somewhere with no siblings and build
+    there; that is what caught it and what confirmed the fix.
 
 ## Trails the importer was silently throwing away
 
@@ -945,8 +964,32 @@ wrong by 20× — really 0.162 m long north-south and 0.197 m short east-west ov
 150 m, still ~300× below the thresholds it feeds, with the arithmetic now in the
 file instead of the adjective.
 
-**Still to do:** `--apply` has not been run. The change is pipeline-only, so it
-needs `npm run link -- --apply` then `rebuild-model`, both production writes.
+**Applied 2026-09-29.** `npm run link -- --apply` wrote **744 rows**, all folds,
+none released or reparented. Network `47,015 + 19,669` → `46,271 + 20,413`.
+Verified after the write: `#23278 → 17973`, `#89600` still canonical (the floor
+held it out), 0 roads folded, 0 self-references, and every named trail fully
+canonical — Greenway 226/226, Shooks Run 109/109, Midland 65/65, Ridgeway 19/19.
+Reversal snapshot at `%TEMP%/link_canonical/before-2026-09-29T02-12-31-901Z.csv`,
+744 rows, every previous value null, so undoing it is one `update ... set
+canonical_segment_id = null` over those ids.
+
+`rebuild-model` then merged 2,228 runs, discarded 502, dropped 158 impossible
+fixes: **6,100 buckets / 750 segments → 6,098 / 749**, 0 implausible.
+
+| | buckets before → after |
+|---|---|
+| Hancock `#17973` | **0 → 5**, covering 15–90 m of 91 m |
+| Hancock `#17974` | 3 → 5 |
+| Hancock `#26446` | **0 → 5** |
+| `#23278`, `#21671`, `#24463` | 14 → 0, folded away |
+
+Hancock now runs continuously across `#17971` (30–105 m), `#17972` (45–105 m),
+`#17973` (15–90 m) and `#17974` (30–90 m). Confirmed through the live
+`/segments` endpoint, not just the database: all four pieces return, all three
+sidewalks are gone.
+
+**The first deploy failed** on `TS2307` and taught note 29. Production stayed up
+throughout, and the map fix never depended on the deploy — it is rows, not code.
 
 ## The sliding anchor is gone
 
