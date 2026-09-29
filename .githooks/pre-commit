@@ -15,7 +15,7 @@ staged=$(git diff --cached --name-only)
 if echo "$staged" | grep -q '^backend/'; then
   if [ -d backend/node_modules ]; then
     echo "pre-commit: backend typecheck"
-    (cd backend && npx tsc --noEmit)
+    (cd backend && npx tsc -p tsconfig.check.json)
 
     echo "pre-commit: backend gate tests"
     (cd backend && npx tsx --test "src/**/*.test.ts")

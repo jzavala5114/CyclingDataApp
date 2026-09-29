@@ -11,5 +11,18 @@
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Railway builds from `backend/` alone -- the rest of the repo is not in the
+  // build context. `evalLinkerFold.ts` imports the linker's decision logic from
+  // `../../../osm-pipeline/`, deliberately, because its whole job is to score a
+  // pipeline decision against the backend's behaviour. In the deploy that path
+  // does not exist, and `tsc` resolves imports at BUILD time, so compiling it
+  // there fails with TS2307 and takes the whole deploy with it.
+  //
+  // It is a local tool. The server never imports it. So the production build
+  // skips it, and `npm run typecheck` uses tsconfig.check.json to typecheck it
+  // anyway. `no source file escapes the deploy context` in
+  // src/buildContext.test.ts is what stops the next one of these reaching
+  // Railway instead of a test run.
+  "exclude": ["src/scripts/evalLinkerFold.ts"]
 }

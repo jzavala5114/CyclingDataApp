@@ -1,0 +1,17 @@
+{
+  // Typechecks EVERYTHING, including the files the production build skips.
+  //
+  // tsconfig.json excludes `src/scripts/evalLinkerFold.ts` because Railway
+  // builds from `backend/` alone and that file imports across into
+  // `osm-pipeline/`. Excluding it there is right; leaving it unchecked here
+  // would not be, because it would then be the one file in the service with no
+  // typechecking at all.
+  //
+  // `npm run typecheck` and the pre-commit hook use this. `npm run build` uses
+  // the other one, and src/buildContext.test.ts holds the line between them.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "exclude": []
+}
