@@ -91,6 +91,48 @@ export const eligibleSql = (a) => `${a}.kind in ('footway','cycleway')
    and (${a}.street_name is null or ${a}.street_name ilike '%sidewalk%')`;
 
 /**
+ * What a path may be folded INTO. A path never folds into another path.
+ *
+ * This is the shipped rule and it is deliberately narrow: only roads parent.
+ * `TRAIL_PARENTS_SQL` below is the wider alternative, which was built,
+ * measured against the live network and the full matcher, and rejected.
+ */
+export const parentSql = () => `r.kind = 'road'`;
+
+/**
+ * The rejected alternative: any segment that is not itself foldable, which
+ * admits named trails as parents alongside roads.
+ *
+ * Written as the complement of `eligibleSql` rather than as its own list, so
+ * the two sets are disjoint by construction and a chain -- path A hidden
+ * behind path B which is itself hidden behind road C -- cannot be expressed.
+ * Nothing downstream would notice such a chain, because all five readers of
+ * `canonical_segment_id` test it for null and none reads its value.
+ *
+ * **Measured 2026-09-30 and rejected.** It finds 195 real duplicates -- unnamed
+ * footways at frontage 1.000 running the full length of Pikes Peak Greenway,
+ * Templeton Gap Trail and 163 others, which are the walking half of a shared
+ * path mapped twice. 0 folds lost, 0 reparents. But replayed through the real
+ * matcher over all 42 usable rides, every measure moved the wrong way:
+ *
+ *   arm          impossible   merged  discard  buckets  covered_km  lines
+ *   roads only   26/367 7.1%    2228    18.4%    14710      225.10    749
+ *   trails too   29/366 7.9%    2223    18.7%    14701      224.91    745
+ *
+ * Four lines lost, none gained. Hiding a path did not move its fixes onto the
+ * parent trail; it lost them. And impossible transitions ROSE, which is the
+ * measure this whole linker exists to reduce.
+ *
+ * The honest caveat, from the eval's own blind spot: 191 of the 195 folds
+ * (97.9%) are on paths nobody has ridden, so the replay is blind to them. The
+ * case is not closed, it is unproven and currently costing four lines. Re-run
+ * it when those trails have been ridden:
+ *
+ *   buildLinkPlan(client, { parentClause: TRAIL_PARENTS_SQL() })
+ */
+export const TRAIL_PARENTS_SQL = () => `not (${eligibleSql("r")})`;
+
+/**
  * The candidate query, as a string so a test can hold it to its promises.
  *
  * Four clauses in here decide correctness and none of them is reachable from a
@@ -106,7 +148,7 @@ export const eligibleSql = (a) => `${a}.kind in ('footway','cycleway')
  * 158,309, so striding the id space in fixed steps issued 305 queries averaging
  * 105 rows, and the next import would make that worse for free.
  */
-export const CANDIDATE_SQL = `
+export const candidateSql = (parentClause = parentSql()) => `
   select f.id,
          f.kind,
          f.is_sidewalk,
@@ -123,7 +165,7 @@ export const CANDIDATE_SQL = `
          ) as roads
     from segments f
     left join segments r
-      on r.kind = 'road'
+      on ${parentClause}
      and r.geom && ST_Expand(f.geom, $2)
      and ST_DWithin(f.geom::geography, r.geom::geography, $3)
    where ${eligibleSql("f")}
@@ -131,6 +173,9 @@ export const CANDIDATE_SQL = `
    group by f.id
    order by f.id
    limit $4`;
+
+/** The query as it is actually run. Pinned character for character by a test. */
+export const CANDIDATE_SQL = candidateSql();
 
 /**
  * Computes a frontage measurement for every eligible path.
@@ -149,16 +194,19 @@ export const CANDIDATE_SQL = `
  * every frontage at 0 and nothing folded, and no assertion about the constants
  * themselves can see it.
  */
-export function candidateQuery(after, batch = BATCH) {
-  return { text: CANDIDATE_SQL, values: [after, PREFILTER_DEG, MAX_OFFSET_M, batch] };
+export function candidateQuery(after, batch = BATCH, { parentClause } = {}) {
+  return {
+    text: parentClause ? candidateSql(parentClause) : CANDIDATE_SQL,
+    values: [after, PREFILTER_DEG, MAX_OFFSET_M, batch],
+  };
 }
 
-export async function buildLinkPlan(client, { onProgress, batchSize = BATCH } = {}) {
+export async function buildLinkPlan(client, { onProgress, batchSize = BATCH, parentClause } = {}) {
   const plan = [];
   let after = -1;
 
   for (;;) {
-    const { text, values } = candidateQuery(after, batchSize);
+    const { text, values } = candidateQuery(after, batchSize, { parentClause });
     const { rows } = await client.query(text, values);
     if (rows.length === 0) break;
     // The LAST row of the page, because the query orders ascending by id. Taking

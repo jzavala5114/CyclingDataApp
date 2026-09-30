@@ -19,6 +19,9 @@ import {
   planRun,
   applyWrites,
   CANDIDATE_SQL,
+  candidateSql,
+  parentSql,
+  TRAIL_PARENTS_SQL,
   MIN_FRONTAGE,
   PREFILTER_DEG,
   prefilterReachM,
@@ -429,6 +432,82 @@ test("GOLDEN: the candidate query is exactly this, character for character", () 
   assert.equal(CANDIDATE_SQL, expected);
 });
 
+test("the shipped parent rule is roads only, and a trail is not a parent", () => {
+  // Admitting named trails was built and measured on 2026-09-30, and rejected:
+  // it folds 195 real duplicates but the full-matcher replay lost four lines,
+  // gained none, and RAISED impossible transitions 7.1% -> 7.9%. See
+  // TRAIL_PARENTS_SQL. This test is what stops it drifting back in unmeasured.
+  assert.equal(parentSql(), `r.kind = 'road'`);
+  assert.ok(CANDIDATE_SQL.includes(`on ${parentSql()}`));
+  assert.doesNotMatch(CANDIDATE_SQL, /not \(r\.kind/);
+});
+
+test("the rejected alternative is the exact complement of eligibility", () => {
+  // Kept so the question can be re-answered in one command once those trails
+  // have been ridden -- 191 of the 195 folds are on paths nobody has ridden,
+  // so the replay that rejected it was blind to 97.9% of them.
+  //
+  // The complement form is what makes parents and children disjoint by
+  // construction, so a chain -- path A hidden behind path B hidden behind road
+  // C -- cannot be written. Spelling the two sets out separately is how they
+  // drift: an earlier draft wrote `r.kind = 'road' or r.street_name is not
+  // null`, which admits a footway named "Elm Street Sidewalk" as a parent
+  // even though the same row is eligible to be folded.
+  assert.equal(TRAIL_PARENTS_SQL(), `not (${eligibleSql("r")})`);
+});
+
+test("SQL precedence: the alternative's NOT covers the whole clause, not its first term", () => {
+  // `not A and B` is `(not A) and B`. The eligibility clause is two ANDed
+  // terms, so without the parentheses the negation would cover only
+  // `kind in (...)`: every unnamed ROAD would stop being a parent and every
+  // named path would start being one. Both halves wrong, and it still runs.
+  const clause = TRAIL_PARENTS_SQL();
+  assert.ok(clause.startsWith("not ("), clause);
+  assert.ok(clause.endsWith(")"), clause);
+  const inner = clause.slice("not (".length, -1);
+  let depth = 0;
+  for (const ch of inner) {
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    assert.ok(depth >= 0, "the NOT's own bracket closes early");
+  }
+  assert.equal(depth, 0, "the NOT's operand is unbalanced");
+});
+
+test("under the alternative, parents and children are disjoint over every combination", () => {
+  const isEligible = (r) =>
+    ["footway", "cycleway"].includes(r.kind) &&
+    (r.street_name === null || /sidewalk/i.test(r.street_name));
+  const mayParent = (r) => !isEligible(r);
+
+  assert.equal(mayParent({ kind: "road", street_name: null }), true, "an unnamed road still parents");
+  assert.equal(mayParent({ kind: "cycleway", street_name: "Shooks Run Trail" }), true);
+  assert.equal(mayParent({ kind: "cycleway", street_name: null }), false);
+  assert.equal(mayParent({ kind: "footway", street_name: "Elm Street Sidewalk" }), false);
+  assert.equal(mayParent({ kind: "footway", street_name: "SIDEWALK" }), false, "case-insensitive");
+
+  for (const kind of ["road", "footway", "cycleway"]) {
+    for (const street_name of [null, "Shooks Run Trail", "Elm Street Sidewalk", "Main Street"]) {
+      const row = { kind, street_name };
+      assert.notEqual(isEligible(row), mayParent(row), `${kind} / ${street_name}`);
+    }
+  }
+});
+
+test("either arm runs through the same query, differing in one clause", () => {
+  const shipped = candidateQuery(0, 10);
+  const alternative = candidateQuery(0, 10, { parentClause: TRAIL_PARENTS_SQL() });
+  assert.match(shipped.text, /on r\.kind = 'road'/);
+  assert.match(alternative.text, /on not \(r\.kind/);
+  // Same parameters, and the same text everywhere else, so a measurement
+  // comparing them is comparing the parent rule and nothing else.
+  assert.deepEqual(shipped.values, alternative.values);
+  assert.equal(
+    shipped.text.replace(`on ${parentSql()}`, "PARENT"),
+    alternative.text.replace(`on ${TRAIL_PARENTS_SQL()}`, "PARENT"),
+  );
+});
+
 test("the candidate query's parameters are bound in the order its placeholders expect", () => {
   // $2 feeds ST_Expand on a 4326 geometry, so DEGREES. $3 feeds ST_DWithin on
   // geography, so METRES. Swapping them leaves every path with no candidate
@@ -446,7 +525,10 @@ test("the candidate query keeps the four clauses that decide correctness", () =>
   // survived the suite as a mutation: a path folding into another path, the
   // distance test dropped so the bbox becomes the filter, eligibility widened,
   // and pagination re-reading or skipping rows.
-  assert.match(CANDIDATE_SQL, /r\.kind = 'road'/, "a path must not fold into another path");
+  assert.ok(
+    CANDIDATE_SQL.includes(parentSql()),
+    "a path that is itself foldable must not be a parent",
+  );
   assert.match(CANDIDATE_SQL, /ST_DWithin\(f\.geom::geography, r\.geom::geography, \$3\)/);
   assert.match(CANDIDATE_SQL, /ST_Expand\(f\.geom, \$2\)/, "the bbox prefilter the GiST index serves");
   assert.ok(CANDIDATE_SQL.includes(eligibleSql("f")), "eligibility is the shared clause");

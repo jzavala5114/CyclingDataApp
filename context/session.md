@@ -1459,13 +1459,35 @@ approaches are the ones already tried.
   both rides, while Ridgeway Trail handled its out-and-backs correctly. One case
   is a genuine duplicate pair — unnamed `6432` beside named Chamberlain `10433`,
   each drawing the opposite direction, so the two passes split across two ways.
-  Stage 1 should help; a cheaper partial fix is extending `link_canonical.mjs`
-  to fold an *unnamed* path into a parallel named **trail**, not only into a
-  road, which would resolve 8 of the 37 duplicate pairs. The other 29 are
-  named-vs-named and no naming rule can touch them. **This got cheap on
-  2026-09-27**: the frontage rewrite already measures a path against a set of
-  candidates, so admitting named trails to that set is a change to one `where
-  r.kind = 'road'` in `linkPlan.mjs` plus a rerun of the read-only sweep.
+  **The explanation in this note was wrong, and folding into trails does not
+  fix it. Built, measured and rejected 2026-09-30.**
+  This note used to claim `6432` was "a genuine duplicate pair" beside
+  Chamberlain `10433`, and that folding unnamed paths into parallel named
+  trails would resolve 8 of the 37 pairs. Measured through the frontage tool
+  that did not exist when the claim was written (2026-09-02, three weeks
+  before): **`#6432` runs alongside Chamberlain for 0.0662 of its length**
+  against a 0.60 gate. The other Chamberlain piece `#13340` is 0.0 m away and
+  contributes **zero** frontage — they meet at a point and diverge. They were
+  never duplicates, and the "8 of 37" was an eyeball judgment no measurement
+  supports.
+  The wider parent rule was built anyway and measured properly. It folds 195
+  real duplicates (unnamed footways at frontage 1.000 along Pikes Peak
+  Greenway, Templeton Gap and 163 other trails — the walking half of a shared
+  path mapped twice), 0 folds lost, 0 reparents. But `eval:linker` over all 42
+  rides moved every measure the wrong way: impossible transitions **7.1% →
+  7.9%**, merged 2228 → 2223, discards 18.4% → 18.7%, buckets 14710 → 14701,
+  covered 225.10 → 224.91 km, **4 lines lost and none gained**. Hiding a path
+  did not move its fixes onto the parent trail, it lost them.
+  Kept as `TRAIL_PARENTS_SQL` in `linkPlan.mjs`, not shipped, with the numbers
+  in its doc comment. **Its blind spot is the reason to revisit**: 191 of the
+  195 folds (97.9%) are on paths nobody has ridden, so the replay could not see
+  them. Re-run `buildLinkPlan(client, { parentClause: TRAIL_PARENTS_SQL() })`
+  once those trails have been ridden.
+  **So the out-and-back cause is unknown.** The 2026-09-02 measurement stands —
+  3 of 8 out-and-backs lose a direction reproducibly, 532 segments draw one
+  direction only — but the explanation attached to it has failed. Measure the
+  cause before proposing a fix again. Stage 1 (connectivity) is still the
+  standing hypothesis and is untested against these.
 - **Stitched runs can have a hole in the middle.** Rejoined fragments contribute
   only their own samples; whatever was between them matched elsewhere or
   nowhere. Endpoints and coverage are right, but interior buckets may be
