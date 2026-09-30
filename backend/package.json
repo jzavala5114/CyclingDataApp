@@ -15,6 +15,7 @@
     "rebuild-model": "tsx src/scripts/rebuildModel.ts",
     "prune-sessions": "tsx src/scripts/pruneEmptySessions.ts",
     "find-holes": "tsx src/scripts/findHoles.ts",
+    "diagnose-holes": "tsx src/scripts/diagnoseHoles.ts",
     "migrate": "tsx src/scripts/migrate.ts"
   },
   "dependencies": {

@@ -67,6 +67,37 @@ export interface RunNeighbours {
   after?: { lat: number; lon: number };
 }
 
+/**
+ * Where along a segment a position falls, measured in the direction of travel.
+ *
+ * Returns a closure because the line is built once per segment and reused for
+ * every sample; building it per call showed up in the matcher's profile.
+ *
+ * Exported so anything asking "which bucket would this fix land in" gets the
+ * same answer the merge did. A second copy of this projection is how a
+ * diagnostic ends up disagreeing with the thing it is diagnosing.
+ */
+export function distanceAlongFor(
+  segment: Segment,
+  direction: Direction,
+): (point: { lat: number; lon: number }) => number {
+  const line = turf.lineString(segment.geom.coordinates);
+  // nearestPointOnLine clamps to the line, so a fix taken just before the
+  // segment starts projects onto its start and one taken just after the end
+  // projects onto its end -- which is exactly the extent being measured.
+  return (point) => {
+    const snapped = turf.nearestPointOnLine(line, turf.point([point.lon, point.lat]), {
+      units: "meters",
+    });
+    const distanceFromStart = snapped.properties.location ?? 0;
+    return direction === "forward" ? distanceFromStart : segment.lengthM - distanceFromStart;
+  };
+}
+
+/** The grid position a distance-along rounds to. */
+export const bucketFor = (distanceAlongM: number): number =>
+  Math.round(distanceAlongM / BUCKET_SIZE_M) * BUCKET_SIZE_M;
+
 // Projects each sample in a run onto the segment's line and rounds its
 // distance-along-segment to the nearest bucket, averaging samples that land
 // in the same bucket within this one run.
@@ -75,28 +106,18 @@ function bucketizeRun(
   segment: Segment,
   neighbours: RunNeighbours,
 ): RunProfile {
-  const line = turf.lineString(segment.geom.coordinates);
   const sums = new Map<number, { total: number; count: number }>();
   let minDistance = Infinity;
   let maxDistance = -Infinity;
 
-  // nearestPointOnLine clamps to the line, so a fix taken just before the
-  // segment starts projects onto its start and one taken just after the end
-  // projects onto its end -- which is exactly the extent being measured.
-  const distanceAlong = (point: { lat: number; lon: number }) => {
-    const snapped = turf.nearestPointOnLine(line, turf.point([point.lon, point.lat]), {
-      units: "meters",
-    });
-    const distanceFromStart = snapped.properties.location ?? 0;
-    return run.direction === "forward" ? distanceFromStart : segment.lengthM - distanceFromStart;
-  };
+  const distanceAlong = distanceAlongFor(segment, run.direction);
 
   for (const sample of run.samples) {
     const distanceAlongDirection = distanceAlong(sample);
     minDistance = Math.min(minDistance, distanceAlongDirection);
     maxDistance = Math.max(maxDistance, distanceAlongDirection);
 
-    const bucket = Math.round(distanceAlongDirection / BUCKET_SIZE_M) * BUCKET_SIZE_M;
+    const bucket = bucketFor(distanceAlongDirection);
     const entry = sums.get(bucket) ?? { total: 0, count: 0 };
     entry.total += sample.elevationM;
     entry.count += 1;

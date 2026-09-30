@@ -1,7 +1,10 @@
 import * as turf from "@turf/turf";
 import type { Direction, MatchedRun, Segment, SessionSample } from "../types/index.js";
 
-const MAX_MATCH_DISTANCE_M = 25;
+// Exported because anything asking "would the matcher have looked at this fix"
+// has to ask with the matcher's own numbers. A diagnostic carrying its own copy
+// of 25 and 30 reports on a corridor this file does not use.
+export const MAX_MATCH_DISTANCE_M = 25;
 const MAX_BEARING_DELTA_DEG = 45;
 
 // A street and its separately-mapped sidewalk sit 5-10m apart -- well inside
@@ -15,7 +18,7 @@ const SWITCH_MARGIN_M = 8;
 // Fixes this loose can't tell one parallel way from another, so they'd only
 // add noise. This rejects genuinely bad fixes rather than merely mediocre
 // ones -- being too strict here would throw away most of an urban ride.
-const MAX_ACCURACY_M = 30;
+export const MAX_ACCURACY_M = 30;
 
 // Result-preserving prefilter. The distance from a point to a segment's
 // bounding box is a lower bound on its distance to the segment, so a point

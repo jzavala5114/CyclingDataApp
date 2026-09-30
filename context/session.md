@@ -1311,32 +1311,41 @@ approaches are the ones already tried.
   applied and deployed 2026-09-29 — see "The sidewalk fold". The count was wrong
   and so was the framing; what shipped folds 744 paths on a frontage test and
   closes the Hancock hole.
-- **NEXT: 140 of 966 drawn lines have a hole in the middle** (14.5%), measured
-  2026-09-29 after the fold, now by `npm run find-holes`. Buckets sit on a
-  15 m grid, so two consecutive buckets more than 15 m apart mean ground inside
-  the covered extent with no value, which renders as an unpainted stretch
-  between two coloured ones. 173 holes in total, 30–90 m each, so one to five
-  missing buckets. **88 are on roads**, 36 on cycleways, 16 on footways.
-  **The fold barely touched this: 142 lines before, 140 after.** So the holes
-  are not sidewalks stealing fixes, which was the obvious hypothesis and is now
-  dead. A road with a gap mid-block that a ride passed straight through is the
-  case to explain, and 88 of them cannot all be tunnels.
-  **The tunnel flag has now settled that, and the answer is 1.** Of the 173
-  holes, exactly one sits under a structure (Gold Camp Road `#49704` forward,
-  a 60 m gap on a 55 m segment, which is Julian's case). **172 holes on 139
-  lines are unexplained**, 108 of them on 87 road lines. So tunnels are ruled
-  out as the explanation, not just doubted. Note 18's `MIN_COVERAGE` of 0.7 and
-  "Stitched runs can have a hole in the middle" are the two candidate causes
-  already written down, and neither has been measured against these 139.
-  Reproduce with `cd backend && npm run find-holes`. **5,430 m of unpainted
-  ground is unexplained**, out of 5,490 m of holes in total. None of the 139 is
-  on a folded segment, so all of them are lines the map actually draws. The
-  worst are mostly 150 m cap slices and long trail pieces: Penrose `#23872`
-  backward has a **90 m hole** in 130 m, North Weber `#8100` backward has two
-  holes in 150 m, `#45569` backward two in 143 m, BeaUTEiful Loop `#47421`
-  forward 60 m in 150 m. That shape — long segment, hole in the middle, both
-  ends painted — is what note 18's `MIN_COVERAGE` and the stitching note
-  predict, and it is where to start.
+- **140 of 966 drawn lines have a bucket gap in the middle** (14.5%, 173 gaps,
+  30–90 m each), and **it is a resolution loss, not an unpainted stretch.**
+  Measured by `npm run find-holes`, caused out by `npm run diagnose-holes`.
+  **CORRECTION, 2026-09-30: an earlier version of this note said these render
+  as unpainted stretches between two coloured ones. That was wrong, it was
+  never checked, and it contradicted the stitching note below, which had it
+  right all along.** `gradientBuilder.ts` builds one span per *pair of
+  consecutive buckets* and the app paints every span, so a gap between two
+  buckets becomes one wide painted piece. Verified live on North Weber `#8100`
+  backward, whose 45→105 m gap is the stop at fraction 0.3101 running to
+  0.7260: 41.6% of the line, painted, one colour. What a gap costs is
+  resolution — 60 m carrying one averaged slope instead of four — plus
+  `slopeAt`'s ±2-bucket window silently spanning a longer baseline than the
+  60 m its comment claims.
+  **Causes, from replaying all 42 usable rides through the real matcher, gate
+  and bucketiser** (the replay reproduces the stored 173/140 exactly, which is
+  the control): **170 of 173 were crossed by two consecutive fixes of one run**,
+  median 4 s apart over 23 m of ground, p90 34 m, max 86 m. **0 were dropped
+  fixes and 0 were fixes matched to another segment.** 3 are spanned by no run.
+  So nothing is being thrown away: fix spacing at the wide end simply exceeds
+  the 15 m grid. Note 18's `MIN_COVERAGE` is **not** implicated and neither is
+  stitching.
+- **NEXT: 6,893 m of drawn segment is unpainted at the ENDS of lines**, and
+  that is the gap a rider actually sees. Measured 2026-09-30 from
+  `segment_coverage` against `segments.length_m`: leading 4,276 m (median
+  0.8 m, p90 9.4 m, max 108.7 m), trailing 2,617 m (median 0.0 m, p90 1.2 m,
+  max 110.0 m). Of 1,932 line ends, **1,364 are under 1 m** and invisible, but
+  **445 are over 1 m, 320 over 3 m, 133 over 10 m and 76 over 20 m.** Worst
+  joints are on Penrose, where `#23872` forward stops 93.7 m short of the node
+  it shares with eleven drawn neighbours. Leading is much worse than trailing,
+  which is unexplained and is the first thing to measure: `bucketizeRun` brackets
+  every run with the fix either side and clamps to `[0, lengthM]`, so a
+  pass-through should already reach 0, and a leading gap over ~3 m means either
+  no preceding fix (the ride started there, which is honest) or a preceding fix
+  that projects well inside this segment. See "Coverage gaps at block ends".
 - ~~**The tunnel flag is not imported.**~~ Done, applied and verified
   2026-09-29. OSM tags tunnels `tunnel=yes` and `segments`
   did not carry it, so the map could not tell a tunnel from a lost run. Gold Camp
