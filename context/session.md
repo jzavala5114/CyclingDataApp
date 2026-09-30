@@ -19,9 +19,9 @@ Where to start depends on what you came for:
 | you want to | read |
 |---|---|
 | know what the app is and how a ride becomes a coloured line | "What it is", "Layout", "Data flow" |
-| change anything in the backend | "Bugs already paid for" — 28 failure modes, each one paid for once already |
+| change anything in the backend | "Bugs already paid for" — 29 failure modes, each one paid for once already |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | "Open items" — the `NEXT:` bullet is done, so nothing is nominated |
+| pick up the next piece of work | "Open items" — the `NEXT:` bullet, currently the 140 lines with holes in them |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | land the change that is built but not applied | "The sidewalk fold" |
 
@@ -101,27 +101,29 @@ the same path as a ride coming off the phone.
 
 ## Current state
 
-*(as of 2026-09-13)*
+*(as of 2026-09-29, measured rather than remembered — every figure here came
+from a query on that date)*
 
 - **Network**: 66,684 segments over 38.71–38.97 N, −104.90 to −104.75 W —
   central Colorado Springs plus the northwest suburbs and Ute Valley Park.
-  **47,015 canonical + 19,669 folded = 66,684** (the 17,020 quoted here until
-  2026-09-27 was the `is_sidewalk`-tagged subset, and did not add up). Every
-  road stays canonical. **12,241 eligible paths are still
-  canonical**, of which 8,940 correctly (no road within 20 m) and **3,301
-  because the linker's parallel test read the chord** — rewritten 2026-09-27,
-  see "The sidewalk fold". The "2,643 tagged `is_sidewalk` and never folded"
-  figure quoted here until then was the wrong population: eligibility is by
-  name, not by that tag, and only 34 of the 2,643 are excluded on purpose.
-- **Model**: **6,043 buckets across 746 segments**, 0 implausible, as of
-  2026-09-26. **54.4% of buckets are now blended from more than one pass** —
-  see the note under "Elevation accuracy", because that is the threshold where
-  anchoring stops being preventative and starts setting rendered colours.
-  Rebuilt 2026-09-24 onto the zero-phase smoother (5,953 buckets then; sessions
-  80 and 81 added the rest) — see "The merge and the rebuild". Lines are clipped
-  to what was ridden. These carry the single-number anchor, which is now the
-  only anchor there is — the sliding version was deleted on 2026-09-23 after
-  five reviews. See "The sliding anchor is gone".
+  **46,271 canonical + 20,413 folded = 66,684** after the sidewalk fold landed
+  (was 47,015 + 19,669; the 17,020 quoted here until 2026-09-27 was the
+  `is_sidewalk`-tagged subset and did not add up). Every road stays canonical.
+  Of 31,910 eligible paths, **11,497 are still canonical** — down from 12,241,
+  and most of those correctly, having no road within 20 m. Eligibility is by
+  **name**, not by the `is_sidewalk` tag, which the linker never reads; the
+  "2,643 tagged and never folded" figure quoted here until 2026-09-27 was the
+  wrong population. See "The sidewalk fold".
+- **Model**: **6,098 buckets across 749 segments**, 0 implausible, rebuilt
+  2026-09-29 after the fold. **54.6% of buckets are blended from more than one
+  pass** — see the note under "Elevation accuracy", because that is the
+  threshold where anchoring stops being preventative and starts setting rendered
+  colours. Rebuilt onto the zero-phase smoother on 2026-09-24 (5,953 buckets
+  then) and again after the fold. Lines are clipped to what was ridden, and
+  **140 of the 966 drawn lines have a hole somewhere in the middle** — the
+  current `NEXT:`, see "Open items". These carry the single-number anchor, which
+  is now the only anchor there is; the sliding version was deleted on 2026-09-23
+  after five reviews. See "The sliding anchor is gone".
 - **Rides**: **41 usable** of 44 recorded, measured by `eval:quality` on
   2026-09-26 (39 on 09-24, 36 on 09-16, 34 on 09-13). **Sessions 5 and 6
   are permanently corrupt** — `rebuildModel.ts` excludes them by elevation
@@ -682,8 +684,9 @@ That is the opposite carriageway and it is correct to leave it blank. Only 5
 pieces (~380 m) are genuinely missing. Do not mistake a dual carriageway for a
 bug — check for a parallel twin at ~180° before investigating.
 
-**Topology is already in the schema and unused.** Every one of the 47,015
-canonical segments carries `start_node_id` and `end_node_id`; 23% are 150 m
+**Topology is already in the schema and unused.** Every canonical segment
+(47,015 when this was written, 46,271 since the sidewalk fold) carries
+`start_node_id` and `end_node_id`; 23% are 150 m
 cap-slices that also need `piece_index` to order them. That is a routable graph
 sitting idle — and it is the one thing an external map-matcher would have been
 adopted to provide.
@@ -1266,6 +1269,18 @@ approaches are the ones already tried.
   smoother shipped 2026-09-24 removes it. If opposite-direction comparisons are
   ever wanted for something else, the remaining work is only realigning the
   bucket grid (forward `d` against backward `lengthM - d`).
+- **`context/architecture.html` is a month stale.** Last touched `61e48fa` on
+  2026-08-28, so it predates the zero-phase smoother, the removal of the sliding
+  anchor, Stage 1 connectivity and the sidewalk fold — four of the five things
+  that changed how a ride becomes a line. 3,138 lines. A targeted correction
+  pass beats a rewrite: fix what is now false, leave the rest.
+- **The linker's own measuring tools have no tests.** The third cold review
+  predicted where the next gap would be and it was right twice, so this is
+  written down rather than discovered: `backend/src/scripts/evalLinkerFold.ts`
+  and `.githooks/pre-commit` are both untested. Neither can put wrong data on
+  the map — the eval only reads and the hook only refuses commits — so a bug
+  there gives wrong *numbers* or a gate that silently stops gating. Lower stakes
+  than anything above it, and the honest next place to look.
 - **A *named* path running beside a road still draws its own line.** That is
   deliberate — it is what keeps Shooks Run and the Greenway intact — but it
   means a named sidepath would double up on its street. None do so far.
@@ -1278,9 +1293,44 @@ approaches are the ones already tried.
   and on recent rides 5–6 discards against 44–46 merged runs, all 1–2 fixes
   spanning 0–7 m. What remains is OSM coverage, not matching — ~31% of session
   43's fixes were more than 25 m from any mapped way.
-- ~~**NEXT: fold the 2,643 sidewalks the linker missed.**~~ Done 2026-09-27 —
-  see "The sidewalk fold". The count was wrong and so was the framing; what
-  shipped folds 744 paths on a frontage test and closes the Hancock hole.
+- ~~**NEXT: fold the 2,643 sidewalks the linker missed.**~~ Done 2026-09-27,
+  applied and deployed 2026-09-29 — see "The sidewalk fold". The count was wrong
+  and so was the framing; what shipped folds 744 paths on a frontage test and
+  closes the Hancock hole.
+- **NEXT: 140 of 966 drawn lines have a hole in the middle** (14.5%), measured
+  2026-09-29 after the fold by `backend/tmp-find-holes.mjs`. Buckets sit on a
+  15 m grid, so two consecutive buckets more than 15 m apart mean ground inside
+  the covered extent with no value, which renders as an unpainted stretch
+  between two coloured ones. 173 holes in total, 30–90 m each, so one to five
+  missing buckets. **88 are on roads**, 36 on cycleways, 16 on footways.
+  **The fold barely touched this: 142 lines before, 140 after.** So the holes
+  are not sidewalks stealing fixes, which was the obvious hypothesis and is now
+  dead. A road with a gap mid-block that a ride passed straight through is the
+  case to explain, and 88 of them cannot all be tunnels.
+  **Start with the tunnel flag**, below: it is the cheap step that separates
+  "unpainted because there is a tunnel here" from "unpainted because a run was
+  lost", and without it any count of this is guesswork. Note 18's `MIN_COVERAGE`
+  of 0.7 and "Stitched runs can have a hole in the middle" are both candidate
+  causes already written down; neither has been measured against these 140.
+- **The tunnel flag is not imported.** OSM tags tunnels `tunnel=yes` and
+  `segments` does not carry it, so the map cannot tell a tunnel from a lost run.
+  Gold Camp Road is the known case — Julian identified the unpainted stretch at
+  38.79434/−104.89812 as the old railroad tunnels, and the holes there were
+  confirmed pre-existing rather than caused by a rebuild. Cheap: `split_ways.mjs`
+  already reads the tag off the extract, so it is one property, one column and a
+  re-run of `split → load`. `load_segments.mjs` upserts on
+  `(osm_way_id, start_node_id, end_node_id, piece_index)`, so the same extract
+  produces the same keys and `prune` should delete nothing — **verify that with
+  a dry run before applying**, see note 27.
+- **`SessionVerdict.id` is typed `number` and arrives as a string.**
+  `usableSessions.ts:52` declares `id: number`, but `sessions.id` is `bigserial`
+  and node-postgres returns bigint as text. Found 2026-09-28 when
+  `evalLinkerFold.ts` compared a session id against a `Set` of numbers, matched
+  nothing, and printed `n/a` for its headline metric instead of a wrong number.
+  Coerced with `Number()` at that call site only; **the type is still wrong and
+  anything else comparing a session id has the same bug.** The fix is the type
+  plus a pg parser or an explicit cast in the query, and it wants a test that a
+  verdict's id equals the session it came from.
 - **Riding a segment both ways can draw only one direction.** Measured
   2026-09-02 by projecting fixes along the segment over time (no bearings): of 8
   genuine out-and-back visits, 3 segments lost a direction reproducibly across
