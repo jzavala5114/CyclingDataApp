@@ -1475,12 +1475,16 @@ approaches are the ones already tried.
   spike downtown (seen clearly on South Weber) passes straight through if it is
   inside the 30m accuracy filter. A jump filter rejecting physically impossible
   sideways movement would clip these cheaply.
-- **Coverage gaps at block ends.** Coverage starts where the first fix landed,
-  which on segment 12555 is 8.9m in — an honest 8.9m of unpainted road. 30% of
-  canonical segments are under 30m and 3,883 are artificial 150m-cap slices, so
-  there are many block ends and therefore many small gaps. Two fixes: clamp
-  coverage to the full segment when a run has bookend fixes on *both* sides
-  (it passed through), and bridge a gap under ~10m at draw time.
+- ~~**Coverage gaps at block ends.**~~ Largely fixed 2026-09-30 by the coverage
+  clamp — the first of the two fixes this note proposed, "clamp coverage to the
+  full segment when a run has bookend fixes on both sides". 6,893 m → 4,403 m,
+  ends over 1 m 568 → 137. The second proposal, bridging a sub-10 m gap at draw
+  time, is no longer worth doing: only 137 ends exceed 1 m now, and the ones
+  that remain are mostly genuine part-coverage rather than an artifact.
+  **What is left is deliberate.** 4,403 m of line end stays blank, 72 of those
+  ends over 20 m, because the rider only covered part of that piece. Julian's
+  call on 2026-09-30: ground that has not been ridden should stay blank. Do not
+  "fix" this by painting it.
 - ~~**A failed map refresh reports as a failed save, and lies about it.**~~
   Fixed 2026-09-02. `saveRide()` runs `uploadSamplesInChunks → endSession →
   discardBuffered → reloadSegments`, and `reloadSegments` is *last* — so a
@@ -1506,8 +1510,17 @@ approaches are the ones already tried.
   there is only one. On resume the relative baseline is re-established where the
   rider is and re-anchored to the next GPS altitude, so the series stays
   continuous across the restart rather than stepping.
-- **Saving a ride intermittently times out, and succeeds on retry.** Measured
-  2026-08-30 against the live API with the same 250-sample chunk the app sends
+- ~~**Saving a ride intermittently times out, and succeeds on retry.**~~
+  **Believed fixed; not seen since.** The halving this note proposed shipped in
+  `b65d118` — `UPLOAD_CHUNK` is **125** in `mobile/src/services/api.ts:89`, not
+  250 — and Julian reported on 2026-09-30 that he has not hit it in a long
+  while. An earlier version of this note still listed the halving as pending,
+  which was wrong: it had already shipped. **Not proof.** The absence of a
+  complaint is not the absence of a fault, and the instrumentation below is
+  what would settle it — grep the Railway logs for `ABORTED-BY-CLIENT` on
+  `/samples`. Until someone does, this is "no reports", not "fixed".
+  Original measurement,
+  2026-08-30 against the live API with the same 250-sample chunk the app sent
   (51.1 KB of JSON): `/health` 622 ms, `POST /sessions` 1190 ms, `/samples`
   1151 ms cold and 794–975 ms warm. The pool's `idleTimeoutMillis` of 30 s does
   mean every save opens a fresh Supabase connection, but that costs ~0.3 s, not
