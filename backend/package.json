@@ -16,6 +16,7 @@
     "prune-sessions": "tsx src/scripts/pruneEmptySessions.ts",
     "find-holes": "tsx src/scripts/findHoles.ts",
     "diagnose-holes": "tsx src/scripts/diagnoseHoles.ts",
+    "eval:coverage": "tsx src/scripts/evalCoverageClamp.ts",
     "migrate": "tsx src/scripts/migrate.ts"
   },
   "dependencies": {

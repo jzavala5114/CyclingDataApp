@@ -1333,19 +1333,62 @@ approaches are the ones already tried.
   So nothing is being thrown away: fix spacing at the wide end simply exceeds
   the 15 m grid. Note 18's `MIN_COVERAGE` is **not** implicated and neither is
   stitching.
-- **NEXT: 6,893 m of drawn segment is unpainted at the ENDS of lines**, and
-  that is the gap a rider actually sees. Measured 2026-09-30 from
-  `segment_coverage` against `segments.length_m`: leading 4,276 m (median
-  0.8 m, p90 9.4 m, max 108.7 m), trailing 2,617 m (median 0.0 m, p90 1.2 m,
-  max 110.0 m). Of 1,932 line ends, **1,364 are under 1 m** and invisible, but
-  **445 are over 1 m, 320 over 3 m, 133 over 10 m and 76 over 20 m.** Worst
-  joints are on Penrose, where `#23872` forward stops 93.7 m short of the node
-  it shares with eleven drawn neighbours. Leading is much worse than trailing,
-  which is unexplained and is the first thing to measure: `bucketizeRun` brackets
-  every run with the fix either side and clamps to `[0, lengthM]`, so a
-  pass-through should already reach 0, and a leading gap over ~3 m means either
-  no preceding fix (the ride started there, which is honest) or a preceding fix
-  that projects well inside this segment. See "Coverage gaps at block ends".
+- **NEXT: 6,885 m of drawn segment is unpainted at the ENDS of lines, and
+  3,951 m of that is in the middle of a block.** This is the gap a rider sees,
+  and Julian's screenshot of South Weber Street on 2026-09-30 is what forced it
+  to be measured properly.
+  **Why it looks mid-block.** The map is not one line per street. It is one
+  line per segment per direction, each clipped to its own `segment_coverage`,
+  so every blank is *between* two lines rather than inside one. And
+  `split_ways.mjs` cuts any chunk over `MAX_SEGMENT_M` into equal pieces, so
+  those boundaries land wherever 150 m happens to fall. **Every piece of a
+  sliced chunk carries the chunk's two end nodes**, so node ids say nothing
+  about where a piece ends — classifying these by node called every cut a
+  junction and got the answer wrong the first time. Piece `i` of `n` has an
+  artificial start whenever `i > 0` and an artificial end whenever `i < n-1`;
+  that is exact.
+  **The split, 604 blank line ends over 0.5 m:**
+  **249 ends / 3,951 m at an artificial cut with no junction** (median 5.9 m;
+  190 over 3 m, 137 over 5 m, 64 over 10 m, **48 over 20 m**), and 355 ends /
+  2,934 m at a real OSM node (median 5.1 m; 28 over 20 m).
+  **Two mechanisms, not one.** The small ones (median ~5 m, at every boundary
+  of either kind) are the matcher's `SWITCH_MARGIN_M` hysteresis holding a run
+  on its old segment for a fix or two past the boundary: the new run's
+  bracketing fix is then already *inside* the new segment, so
+  `Math.max(0, minDistance)` starts coverage there instead of at 0. Seen end to
+  end on South Weber, where every one of eight consecutive boundaries loses
+  1–8 m. The large ones are mostly singletrack pieces only partly covered —
+  Palmer Point 110 m of 138 m, Gold Camp `#18801` 108.7 m of 134 m, Ladders,
+  Ridge Trail, Sinuosa, Culebras.
+  **Fixed 2026-09-30 by the coverage clamp.** `passageFor` +
+  `clampCoverageToPassage` in `elevationAggregator.ts`: if the fix immediately
+  before a run was on a segment that touches this one at the end the rider
+  entered through, and the two fixes are within `ANCHOR_MAX_GAP_S`, coverage
+  extends to that end. Same for the exit. Measured read-only by
+  `npm run eval:coverage` before applying: **6,893 m → 4,403 m, closing 2,490 m
+  (36.1%)**, and by count of line ends —
+
+  | over | >1 m | >3 m | >5 m | >10 m | >20 m |
+  |---|---|---|---|---|---|
+  | before | 568 | 445 | 320 | 133 | 76 |
+  | after | 137 | 122 | 110 | 91 | 72 |
+
+  442 lines grow, none shrinks. The control is that the replay reproduces the
+  stored 6,098 buckets / 749 segments / 966 lines **exactly**, so nothing about
+  which fixes match which segments moved and the whole difference is the clamp.
+  The `>20 m` column barely moves (76 → 72) because those are lines the rider
+  genuinely only part-covered, which is honest and stays.
+  **Three design points worth keeping.** The gate still judges the raw span, so
+  the clamp can widen a drawn line but can never turn a rejected run into a
+  drawn one. `reachByKey` also keeps the raw extent, because it answers "was
+  this rejected run a fragment of a real traversal", which is a question about
+  where the fixes were. And `buildEndAdjacency` gives a **middle cap slice no
+  node-shared neighbours at all** — its node ids are the run's ends, up to
+  150 m away, so recording a cross street against them would paint a line to a
+  join the rider never crossed, from the wrong end of the slice.
+  Biggest single growth is Stratton Springs `#6439` forward, +36.7 m: the next
+  fix after the run was on a connected segment past the far end, so ≥36.7 m in
+  ≤15 s, which is ≥8.8 km/h. Defensible, and the largest claim the rule makes.
 - ~~**The tunnel flag is not imported.**~~ Done, applied and verified
   2026-09-29. OSM tags tunnels `tunnel=yes` and `segments`
   did not carry it, so the map could not tell a tunnel from a lost run. Gold Camp

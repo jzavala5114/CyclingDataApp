@@ -113,7 +113,7 @@ const DISCONNECT_PENALTY_M = 6;
 // really could be anywhere, and a stale anchor would drag the ride back towards
 // a street it left minutes ago. At ~11m fix spacing this is a couple of fixes'
 // worth of gap, which is the shape a dropout has.
-const ANCHOR_MAX_GAP_S = 15;
+export const ANCHOR_MAX_GAP_S = 15;
 
 const M_PER_DEG_LAT = 111320;
 
@@ -254,61 +254,131 @@ function nearestAlignedEdge(
   return bestDirection ? { distanceM: bestDistanceM, direction: bestDirection } : null;
 }
 
-// Two segments cut from the same over-long run. The pipeline caps a run at
-// 150m by slicing it, and every slice keeps the *run's* pair of end nodes, so
-// they are distinguished only by piece_index.
-function areCapSlicesOfOneRun(a: Segment, b: Segment): boolean {
-  if (a.osmWayId !== b.osmWayId) return false;
-  return (
-    (a.startNodeId === b.startNodeId && a.endNodeId === b.endNodeId) ||
-    (a.startNodeId === b.endNodeId && a.endNodeId === b.startNodeId)
-  );
+/** What touches a segment at each of its two geometric ends. */
+export interface EndNeighbours {
+  /** Segments meeting this one at the first coordinate of its geometry. */
+  start: Set<number>;
+  /** Segments meeting this one at the last coordinate of its geometry. */
+  end: Set<number>;
 }
 
-// segment id -> the ids of the segments that physically touch it.
+// What touches each segment, and at WHICH END.
 //
 // Sharing an OSM node is the test, with one exception the schema forces. Since
 // every slice of a capped run carries that run's end nodes, node identity alone
 // would call slice 0 and slice 9 neighbours across 1.4km of street. Inside one
 // such family the neighbours are the slices either side, by piece_index.
 //
-// The same quirk leaves a middle slice looking connected to the cross streets
-// at both ends of its run. That is left alone: those streets are hundreds of
-// metres away, and MAX_MATCH_DISTANCE_M has already dropped them long before
-// anything asks whether they are reachable.
+// The same quirk is why the ends have to be tracked separately rather than
+// derived from node ids afterwards: a slice's two node ids describe the *run's*
+// ends, not the slice's, so "which segment is at this slice's far end" is
+// unanswerable from them. split_ways.mjs cuts piece i from
+// `[i*pieceM, (i+1)*pieceM]` along the run, so piece i's geometric start is
+// piece i-1's geometric end, and that ordering is the only thing that knows
+// where a slice actually stops.
+//
+// The other half of the quirk leaves a middle slice looking connected to the
+// cross streets at both ends of its run. That is left alone for matching:
+// those streets are hundreds of metres away, and MAX_MATCH_DISTANCE_M has
+// already dropped them. It is NOT left alone here -- a slice's node-shared
+// neighbours are recorded against the end the node is at, which for a middle
+// slice is an end it does not physically reach. Callers that care about
+// physical arrival (coverage clamping) must therefore also check that the
+// rider was near that end, which is what the time bound in
+// elevationAggregator does.
 //
 // Built per call from the segments the caller is matching against, which is a
 // box around one ride. Nothing is cached between rides: the graph is cheap
 // beside the per-fix geometry, and a stale one would be a silent wrong answer.
-function buildAdjacency(segments: Segment[]): Map<number, Set<number>> {
-  const byNode = new Map<number, Segment[]>();
+export function buildEndAdjacency(segments: Segment[]): Map<number, EndNeighbours> {
+  const ends = new Map<number, EndNeighbours>();
+  for (const segment of segments) ends.set(segment.id, { start: new Set(), end: new Set() });
+
+  // Slices of one capped run, keyed so that a run digitised either way round
+  // lands in the same family -- the same normalisation areCapSlicesOfOneRun
+  // uses.
+  const byChunk = new Map<string, Segment[]>();
   for (const segment of segments) {
-    for (const node of [segment.startNodeId, segment.endNodeId]) {
-      const touching = byNode.get(node);
-      if (touching) touching.push(segment);
-      else byNode.set(node, [segment]);
+    const lo = Math.min(segment.startNodeId, segment.endNodeId);
+    const hi = Math.max(segment.startNodeId, segment.endNodeId);
+    const key = `${segment.osmWayId}|${lo}|${hi}`;
+    const family = byChunk.get(key);
+    if (family) family.push(segment);
+    else byChunk.set(key, [segment]);
+  }
+
+  // Which of a segment's two geometric ends are real OSM nodes. For an unsliced
+  // segment both are. For slice i of n, the start is the run's start node only
+  // when i is 0, and the end is the run's end node only when i is n-1 --
+  // everywhere else the end is a cut at an arbitrary 150m mark with nothing at
+  // it. Recording a cross street against a middle slice's end would place it
+  // hundreds of metres from where it actually is, and the coverage clamp would
+  // then draw a line to a join the rider never crossed.
+  const realEnd = new Map<number, { start: boolean; end: boolean }>();
+  for (const segment of segments) realEnd.set(segment.id, { start: true, end: true });
+
+  for (const family of byChunk.values()) {
+    if (family.length < 2) continue;
+    const ordered = [...family].sort((a, b) => a.pieceIndex - b.pieceIndex);
+    // By piece_index rather than by position in this array, so a family missing
+    // a piece cannot promote its neighbour's cut into a node.
+    const lastPiece = ordered[ordered.length - 1].pieceIndex;
+    for (let i = 0; i < ordered.length; i++) {
+      realEnd.set(ordered[i].id, {
+        start: ordered[i].pieceIndex === 0,
+        end: ordered[i].pieceIndex === lastPiece,
+      });
+      if (i === 0) continue;
+      const previous = ordered[i - 1];
+      const next = ordered[i];
+      // Only consecutive pieces meet. A missing piece_index -- a slice dropped
+      // for being under MIN_SEGMENT_M -- leaves a real physical gap, so pieces
+      // either side of it are not joined.
+      if (next.pieceIndex - previous.pieceIndex !== 1) continue;
+      ends.get(next.id)!.start.add(previous.id);
+      ends.get(previous.id)!.end.add(next.id);
     }
   }
 
-  const adjacency = new Map<number, Set<number>>();
-  const link = (from: number, to: number) => {
-    const set = adjacency.get(from);
-    if (set) set.add(to);
-    else adjacency.set(from, new Set([to]));
-  };
+  const byNode = new Map<number, Array<{ segment: Segment; which: "start" | "end" }>>();
+  for (const segment of segments) {
+    for (const [node, which] of [
+      [segment.startNodeId, "start"],
+      [segment.endNodeId, "end"],
+    ] as Array<[number, "start" | "end"]>) {
+      // A slice's node ids describe the run's ends, not this slice's, so they
+      // only say where this slice stops at the two outer slices.
+      if (!realEnd.get(segment.id)![which]) continue;
+      const touching = byNode.get(node);
+      if (touching) touching.push({ segment, which });
+      else byNode.set(node, [{ segment, which }]);
+    }
+  }
 
   for (const touching of byNode.values()) {
     for (let i = 0; i < touching.length; i++) {
       for (let j = i + 1; j < touching.length; j++) {
         const a = touching[i];
         const b = touching[j];
-        if (areCapSlicesOfOneRun(a, b) && Math.abs(a.pieceIndex - b.pieceIndex) !== 1) continue;
-        link(a.id, b.id);
-        link(b.id, a.id);
+        if (a.segment.id === b.segment.id) continue;
+        ends.get(a.segment.id)![a.which].add(b.segment.id);
+        ends.get(b.segment.id)![b.which].add(a.segment.id);
       }
     }
   }
 
+  return ends;
+}
+
+// segment id -> the ids of the segments that physically touch it, either end.
+// The union of buildEndAdjacency, so the matcher and the coverage clamp cannot
+// disagree about what the network looks like.
+function buildAdjacency(segments: Segment[]): Map<number, Set<number>> {
+  const adjacency = new Map<number, Set<number>>();
+  for (const [id, { start, end }] of buildEndAdjacency(segments)) {
+    const union = new Set([...start, ...end]);
+    if (union.size > 0) adjacency.set(id, union);
+  }
   return adjacency;
 }
 

@@ -1,9 +1,16 @@
 import type { PoolClient } from "pg";
-import { matchSamplesToSegments, stitchFragmentedRuns } from "./segmentMatcher.js";
+import {
+  matchSamplesToSegments,
+  stitchFragmentedRuns,
+  buildEndAdjacency,
+  type EndNeighbours,
+} from "./segmentMatcher.js";
 import {
   assessRun,
+  clampCoverageToPassage,
   mergeBuckets,
   mergeCoverage,
+  passageFor,
   MIN_COVERAGE,
   MIN_SPAN_M,
   type BucketSample,
@@ -158,6 +165,14 @@ export async function processSession(
   // ground, and a traversal chopped into pieces cannot answer that honestly.
   const runs = stitchFragmentedRuns(matchSamplesToSegments(smoothed, segmentRows));
   const segmentsById = new Map(segmentRows.map((s) => [s.id, s]));
+  // Which segment held each fix, and what touches each segment at each of its
+  // ends. Together these answer "did the rider come through this join", which
+  // is what stops a line being trimmed back from a boundary it was ridden
+  // across -- see clampCoverageToPassage.
+  const endAdjacency = buildEndAdjacency(segmentRows);
+  const landedOn = new Map<number, number>();
+  for (const run of runs) for (const sample of run.samples) landedOn.set(sample.id, run.segmentId);
+  const NO_NEIGHBOURS: EndNeighbours = { start: new Set(), end: new Set() };
   // Used to hand each run the fix either side of it, so a short segment
   // crossed between two fixes can still be shown to have been ridden.
   const orderById = new Map(smoothed.map((s, i) => [s.id, i]));
@@ -184,13 +199,39 @@ export async function processSession(
     // can't invent a gradient line for a street that was never ridden.
     const firstIndex = orderById.get(run.samples[0].id) ?? 0;
     const lastIndex = orderById.get(run.samples[run.samples.length - 1].id) ?? 0;
+    const beforeSample = firstIndex > 0 ? smoothed[firstIndex - 1] : undefined;
+    const afterSample = lastIndex < smoothed.length - 1 ? smoothed[lastIndex + 1] : undefined;
     const assessment = assessRun(run, segment, {
-      before: firstIndex > 0 ? smoothed[firstIndex - 1] : undefined,
-      after: lastIndex < smoothed.length - 1 ? smoothed[lastIndex + 1] : undefined,
+      before: beforeSample,
+      after: afterSample,
     });
     const { profile } = assessment;
 
+    const secondsBetween = (a: SessionSample, b: SessionSample) =>
+      Math.abs(Date.parse(b.recordedAt) - Date.parse(a.recordedAt)) / 1000;
+    const passage = passageFor(
+      run.direction,
+      endAdjacency.get(segment.id) ?? NO_NEIGHBOURS,
+      beforeSample
+        ? {
+            segmentId: landedOn.get(beforeSample.id) ?? null,
+            gapS: secondsBetween(beforeSample, run.samples[0]),
+          }
+        : null,
+      afterSample
+        ? {
+            segmentId: landedOn.get(afterSample.id) ?? null,
+            gapS: secondsBetween(run.samples[run.samples.length - 1], afterSample),
+          }
+        : null,
+    );
+    const extent = clampCoverageToPassage(profile, segment, passage);
+
     const key = keyFor(segment.id, run.direction);
+    // Deliberately the RAW extent. `reach` exists to answer "was this rejected
+    // run a fragment of a real traversal", which is a question about where the
+    // fixes actually were; the clamp would answer it with a pass-through this
+    // run never demonstrated.
     const reach = reachByKey.get(key) ?? { from: Infinity, to: -Infinity, runs: 0 };
     reach.from = Math.min(reach.from, profile.coveredFromM);
     reach.to = Math.max(reach.to, profile.coveredToM);
@@ -211,8 +252,11 @@ export async function processSession(
       segment,
       direction: run.direction,
       buckets: profile.buckets,
-      coveredFromM: profile.coveredFromM,
-      coveredToM: profile.coveredToM,
+      // The clamped extent, not the raw one. The gate above still judges the
+      // raw span, so widening here can only change how far an accepted line is
+      // drawn -- it can never turn a rejected run into a drawn one.
+      coveredFromM: extent.coveredFromM,
+      coveredToM: extent.coveredToM,
       firstSampleId: run.samples[0].id,
       lastSampleId: run.samples[run.samples.length - 1].id,
     });

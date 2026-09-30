@@ -1,5 +1,6 @@
 import * as turf from "@turf/turf";
 import type { PoolClient } from "pg";
+import { ANCHOR_MAX_GAP_S, type EndNeighbours } from "./segmentMatcher.js";
 import type { Direction, MatchedRun, Segment } from "../types/index.js";
 
 // Wider buckets mean more raw samples get averaged into each one (see the
@@ -154,6 +155,92 @@ export interface RunAssessment {
   // spanM as a share of the whole segment. The gate accepts either a long
   // enough absolute span or a large enough share, so both are reported.
   coverageFraction: number;
+}
+
+// How far apart the bracketing fix and the run's own first fix may be before a
+// pass-through stops being provable.
+//
+// The two are consecutive fixes by construction, so this is one sampling
+// interval -- measured at a median of 4s across the archive. Past it there was
+// a dropout, and a dropout is precisely when a rider could have left the route
+// and come back. Deliberately the matcher's own ANCHOR_MAX_GAP_S: that is
+// already this codebase's answer to "how long does the last known position keep
+// vouching for where you can be", and having two numbers for one question is
+// how they drift apart.
+export { ANCHOR_MAX_GAP_S as MAX_PASSTHROUGH_GAP_S } from "./segmentMatcher.js";
+
+/** Whether the rider provably entered and left through the segment's own ends. */
+export interface Passage {
+  /** A connected segment held the previous fix, close enough in time. */
+  enteredThrough: boolean;
+  /** A connected segment held the next fix. */
+  exitedThrough: boolean;
+}
+
+/** A fix adjacent to a run: which segment held it, and how long before/after. */
+export interface AdjacentFix {
+  segmentId: number | null;
+  gapS: number;
+}
+
+/**
+ * Did the rider arrive through this segment's own ends, or start mid-block?
+ *
+ * The two ends swap with direction and this is the only place that knows it:
+ * travel distance 0 is the geometry's first coordinate going forward and its
+ * last coordinate going backward, so a backward run entering "at 0" is
+ * physically arriving at the `end` of the geometry. Getting this the wrong way
+ * round would extend every line away from the join the rider actually crossed.
+ */
+export function passageFor(
+  direction: Direction,
+  neighbours: EndNeighbours,
+  before: AdjacentFix | null,
+  after: AdjacentFix | null,
+  maxGapS: number = ANCHOR_MAX_GAP_S,
+): Passage {
+  const atZero = direction === "forward" ? neighbours.start : neighbours.end;
+  const atLength = direction === "forward" ? neighbours.end : neighbours.start;
+  const through = (fix: AdjacentFix | null, side: ReadonlySet<number>) =>
+    fix != null && fix.segmentId != null && fix.gapS <= maxGapS && side.has(fix.segmentId);
+  return {
+    enteredThrough: through(before, atZero),
+    exitedThrough: through(after, atLength),
+  };
+}
+
+/**
+ * Widens a run's covered extent to the ends the rider provably came through.
+ *
+ * `bucketizeRun` measures coverage from the fixes themselves, bracketed by the
+ * fix either side. That is right when a ride starts mid-block, and wrong at
+ * every boundary a rider crosses: `SWITCH_MARGIN_M` deliberately holds a run on
+ * its old segment for a fix or two past the join, so the bracketing fix is
+ * already *inside* the new segment and coverage starts there. Measured across
+ * the archive that costs 6,885m of unpainted road, 3,951m of it at the
+ * artificial 150m cuts `split_ways.mjs` makes mid-block -- which is why the map
+ * shows gaps in places with no junction.
+ *
+ * A rider on a connected segment one fix ago, and on this one now, crossed the
+ * join between them. The ground from the join to the first fix was ridden, so
+ * the line is drawn to it. Nothing is invented: no bucket is added and no
+ * elevation is guessed, only the extent already implied by the route.
+ *
+ * This deliberately does NOT clamp on distance. A run whose first fix is 100m
+ * into a 150m piece still reaches the join if the previous consecutive fix was
+ * on the neighbour there -- that is a dropout crossed at speed, and refusing it
+ * would reintroduce the gap the rule exists to close. The time bound is what
+ * separates that from a rider who left and came back.
+ */
+export function clampCoverageToPassage(
+  profile: RunProfile,
+  segment: Segment,
+  passage: Passage,
+): { coveredFromM: number; coveredToM: number } {
+  return {
+    coveredFromM: passage.enteredThrough ? 0 : profile.coveredFromM,
+    coveredToM: passage.exitedThrough ? segment.lengthM : profile.coveredToM,
+  };
 }
 
 // Buckets one run and judges whether it rode the segment or merely clipped it.
