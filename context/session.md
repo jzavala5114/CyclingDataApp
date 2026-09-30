@@ -1389,6 +1389,18 @@ approaches are the ones already tried.
   Biggest single growth is Stratton Springs `#6439` forward, +36.7 m: the next
   fix after the run was on a connected segment past the far end, so ≥36.7 m in
   ≤15 s, which is ≥8.8 km/h. Defensible, and the largest claim the rule makes.
+  **Applied and deployed 2026-09-30** (`builtAt` 01:26:51.543Z → 02:12:41.700Z),
+  then `rebuild-model`. The rebuild matched the prediction to the metre:
+  **6,893 m → 4,403 m, 469 lines grew, 0 shrank** (the eval said 442 because it
+  counted growth over 0.5 m; the diff counts over 0.01 m). **The elevation model
+  is byte-identical across the rebuild: 6,098 buckets, 0 new, 0 gone, 0 moved,
+  max change 0.0000 m** — so only the extent changed, which is the whole claim.
+  Snapshot and the 469-row before/after CSV were written to the scratchpad, so
+  they are gone; re-derive with `npm run eval:coverage` if it is ever
+  questioned. Verified on the live map on the street from Julian's screenshot:
+  every South Weber piece now draws 100% in both directions, `#10246` forward
+  from 50 m of 75 m to 75.1 m, and walking the whole street leaves **one** blank
+  — `#1844`, which has no data at all and should be blank.
 - ~~**The tunnel flag is not imported.**~~ Done, applied and verified
   2026-09-29. OSM tags tunnels `tunnel=yes` and `segments`
   did not carry it, so the map could not tell a tunnel from a lost run. Gold Camp
