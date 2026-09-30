@@ -1328,9 +1328,17 @@ approaches are the ones already tried.
   out as the explanation, not just doubted. Note 18's `MIN_COVERAGE` of 0.7 and
   "Stitched runs can have a hole in the middle" are the two candidate causes
   already written down, and neither has been measured against these 139.
-  Reproduce with `cd backend && npm run find-holes`.
-- ~~**The tunnel flag is not imported.**~~ Done 2026-09-29, code merged, **not
-  yet loaded into the database**. OSM tags tunnels `tunnel=yes` and `segments`
+  Reproduce with `cd backend && npm run find-holes`. **5,430 m of unpainted
+  ground is unexplained**, out of 5,490 m of holes in total. None of the 139 is
+  on a folded segment, so all of them are lines the map actually draws. The
+  worst are mostly 150 m cap slices and long trail pieces: Penrose `#23872`
+  backward has a **90 m hole** in 130 m, North Weber `#8100` backward has two
+  holes in 150 m, `#45569` backward two in 143 m, BeaUTEiful Loop `#47421`
+  forward 60 m in 150 m. That shape — long segment, hole in the middle, both
+  ends painted — is what note 18's `MIN_COVERAGE` and the stitching note
+  predict, and it is where to start.
+- ~~**The tunnel flag is not imported.**~~ Done, applied and verified
+  2026-09-29. OSM tags tunnels `tunnel=yes` and `segments`
   did not carry it, so the map could not tell a tunnel from a lost run. Gold Camp
   Road was the known case — Julian identified the unpainted stretch at
   38.79434/−104.89812 as the old railroad tunnels, and the flag lands on OSM way
@@ -1342,11 +1350,27 @@ approaches are the ones already tried.
   deliberately **not** read: 283 ways in the extract carry a layer tag and
   almost all are the lower road at a grade separation, open sky either side.
   73 of 66,684 segments are flagged (34 footway, 23 cycleway, 16 road, 2,344 m).
-  **The load is a pure column fill, verified before running it**: the new split
-  produces 66,684 features against the database's 66,684 rows with **zero keys
-  added or removed**, and among shared keys `kind`, `is_sidewalk`, `street_name`,
-  `length_m` and `bearing_deg` all moved zero rows. The upsert never touches
-  `canonical_segment_id`, so the 744 folds survive it.
+  **The load is a pure column fill, and that was proved twice — before and
+  after.** Before: the new split produces 66,684 features against the
+  database's 66,684 rows with **zero keys added or removed**, and among shared
+  keys `kind`, `is_sidewalk`, `street_name`, `length_m` and `bearing_deg` all
+  moved zero rows. After: an md5 over every column `load` overwrites except
+  `is_tunnel`, plus the ones it must not touch, is **identical across the load**
+  — `6714697467229ce5c76451396087e89c`, 66,684 rows, 46,271 canonical / 20,413
+  folded, 6,098 buckets / 749 segments / 966 coverage rows / 2,228 matches, all
+  unchanged. The only difference in the whole table was `flagged: 0 → 73`. The
+  upsert never touches `canonical_segment_id`, so the 744 folds survived.
+  **Run order, all three authorised individually:**
+  `npm run migrate -- src/db/migrations/002_segment_is_tunnel.sql --apply`,
+  then `npm run prune` (dry, reported **0 orphans / 0 with buckets / 0
+  canonical**, which is the key-by-key proof against the live table), then
+  `npm run load`. `link` was not re-run and did not need to be: nothing was
+  added or removed, so no fold decision changed. `rebuild-model` was not run
+  either — no column the model reads moved.
+  A checksum like that is the cheap way to make a 66k-row upsert auditable.
+  `backend/tmp-segment-digest.mjs` is the script; it is throwaway by the
+  `tmp-*.mjs` rule, but the query is worth rewriting the next time a bulk
+  upsert claims to be a no-op.
 - **67 of the 69 canonical covered segments draw nothing at all** — the other
   half of the tunnel story, and a different problem from the holes above. These
   are absent lines rather than gaps in lines: Union Boulevard Underpass, the
