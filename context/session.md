@@ -408,6 +408,14 @@ is invisible until someone looks at a blank stretch of map and asks why.
   from `is_sidewalk` — that tag is recorded and reported but the linker never
   reads it, because a few named trails carry `footway=sidewalk` in OSM and the
   name is what protects them.
+- **A schema change needs a migration file, and `psql` is not installed here.**
+  `schema.sql` is a fresh-install script of bare `create table`, so it cannot be
+  re-run against a database holding rides. Every column since then has a numbered
+  file in `backend/src/db/migrations/`. Run one with
+  `cd backend && npm run migrate -- src/db/migrations/00N_name.sql --apply`,
+  which prints the SQL and stops without `--apply`, wraps it in a transaction,
+  and refuses any path outside that directory — `schema.sql` included, because it
+  sits one tab-completion away and would fail halfway through.
 - **Verify a deploy by `builtAt`, never by status.** During a rollout Railway
   reports the service Online *and* `/health` answers 200 — both from the old
   container. One rollout sat like that for five minutes. Compare
@@ -1280,7 +1288,13 @@ approaches are the ones already tried.
   and `.githooks/pre-commit` are both untested. Neither can put wrong data on
   the map — the eval only reads and the hook only refuses commits — so a bug
   there gives wrong *numbers* or a gate that silently stops gating. Lower stakes
-  than anything above it, and the honest next place to look.
+  than anything above it, and the honest next place to look. The hole finder was
+  the third such tool and it did get tests when it was promoted out of
+  `tmp-find-holes.mjs` on 2026-09-29: the gap rule is
+  `backend/src/services/interiorHoles.ts` (12 tests) and the grouping is
+  `holesByLine` in `backend/src/scripts/findHoles.ts` (12 tests). Its first run
+  reproduced the recorded 173 holes / 140 lines / 966 lines exactly, which is
+  what made the old SQL window function safe to retire.
 - **A *named* path running beside a road still draws its own line.** That is
   deliberate — it is what keeps Shooks Run and the Greenway intact — but it
   means a named sidepath would double up on its street. None do so far.
@@ -1298,7 +1312,7 @@ approaches are the ones already tried.
   and so was the framing; what shipped folds 744 paths on a frontage test and
   closes the Hancock hole.
 - **NEXT: 140 of 966 drawn lines have a hole in the middle** (14.5%), measured
-  2026-09-29 after the fold by `backend/tmp-find-holes.mjs`. Buckets sit on a
+  2026-09-29 after the fold, now by `npm run find-holes`. Buckets sit on a
   15 m grid, so two consecutive buckets more than 15 m apart mean ground inside
   the covered extent with no value, which renders as an unpainted stretch
   between two coloured ones. 173 holes in total, 30–90 m each, so one to five
@@ -1307,21 +1321,41 @@ approaches are the ones already tried.
   are not sidewalks stealing fixes, which was the obvious hypothesis and is now
   dead. A road with a gap mid-block that a ride passed straight through is the
   case to explain, and 88 of them cannot all be tunnels.
-  **Start with the tunnel flag**, below: it is the cheap step that separates
-  "unpainted because there is a tunnel here" from "unpainted because a run was
-  lost", and without it any count of this is guesswork. Note 18's `MIN_COVERAGE`
-  of 0.7 and "Stitched runs can have a hole in the middle" are both candidate
-  causes already written down; neither has been measured against these 140.
-- **The tunnel flag is not imported.** OSM tags tunnels `tunnel=yes` and
-  `segments` does not carry it, so the map cannot tell a tunnel from a lost run.
-  Gold Camp Road is the known case — Julian identified the unpainted stretch at
-  38.79434/−104.89812 as the old railroad tunnels, and the holes there were
-  confirmed pre-existing rather than caused by a rebuild. Cheap: `split_ways.mjs`
-  already reads the tag off the extract, so it is one property, one column and a
-  re-run of `split → load`. `load_segments.mjs` upserts on
-  `(osm_way_id, start_node_id, end_node_id, piece_index)`, so the same extract
-  produces the same keys and `prune` should delete nothing — **verify that with
-  a dry run before applying**, see note 27.
+  **The tunnel flag has now settled that, and the answer is 1.** Of the 173
+  holes, exactly one sits under a structure (Gold Camp Road `#49704` forward,
+  a 60 m gap on a 55 m segment, which is Julian's case). **172 holes on 139
+  lines are unexplained**, 108 of them on 87 road lines. So tunnels are ruled
+  out as the explanation, not just doubted. Note 18's `MIN_COVERAGE` of 0.7 and
+  "Stitched runs can have a hole in the middle" are the two candidate causes
+  already written down, and neither has been measured against these 139.
+  Reproduce with `cd backend && npm run find-holes`.
+- ~~**The tunnel flag is not imported.**~~ Done 2026-09-29, code merged, **not
+  yet loaded into the database**. OSM tags tunnels `tunnel=yes` and `segments`
+  did not carry it, so the map could not tell a tunnel from a lost run. Gold Camp
+  Road was the known case — Julian identified the unpainted stretch at
+  38.79434/−104.89812 as the old railroad tunnels, and the flag lands on OSM way
+  `99568977`, whose first vertex is 38.79411/−104.89826, about 30 m away.
+  What shipped:
+  `osm-pipeline/scripts/lib/tags.mjs` holds `classify` (moved out of
+  `split_ways.mjs`, which had no tests) and the new `isTunnel`, which reads
+  `tunnel` set to anything but `no`/`false`, plus `covered=yes`. `layer=-1` is
+  deliberately **not** read: 283 ways in the extract carry a layer tag and
+  almost all are the lower road at a grade separation, open sky either side.
+  73 of 66,684 segments are flagged (34 footway, 23 cycleway, 16 road, 2,344 m).
+  **The load is a pure column fill, verified before running it**: the new split
+  produces 66,684 features against the database's 66,684 rows with **zero keys
+  added or removed**, and among shared keys `kind`, `is_sidewalk`, `street_name`,
+  `length_m` and `bearing_deg` all moved zero rows. The upsert never touches
+  `canonical_segment_id`, so the 744 folds survive it.
+- **67 of the 69 canonical covered segments draw nothing at all** — the other
+  half of the tunnel story, and a different problem from the holes above. These
+  are absent lines rather than gaps in lines: Union Boulevard Underpass, the
+  Carefree underpasses, three pieces of Gold Camp Road, Sinton and Templeton Gap
+  and Cottonwood Creek where they duck under a road. 2,344 m in total. They are
+  physics and should stay unpainted, but the map has no way to say so, so they
+  read as coverage still to be earned. Cheapest honest fix is to expose
+  `is_tunnel` on `/segments` and have the app draw them in a flat "no data
+  possible" colour. Nothing reads the column today.
 - **`SessionVerdict.id` is typed `number` and arrives as a string.**
   `usableSessions.ts:52` declares `id: number`, but `sessions.id` is `bigserial`
   and node-postgres returns bigint as text. Found 2026-09-28 when

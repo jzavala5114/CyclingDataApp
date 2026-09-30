@@ -1,55 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import * as turf from "@turf/turf";
+import { classify, isTunnel } from "./lib/tags.mjs";
 
 // Splits OSM ways into block-scale segments for the `segments` table (see
 // backend/src/db/schema.sql).
 //
-// Only ways a rider can actually be logged on are kept. Everything else is
-// dropped outright, which does two jobs at once:
-//
-//  1. Data quality -- a detour up an alley or through a parking lot matches
-//     nothing, so it's discarded instead of polluting a street's gradient.
-//  2. De-fragmentation -- driveways and parking aisles used to share nodes
-//     with the sidewalks they cross, and every shared node became a segment
-//     boundary. Dropping them cut this neighborhood from 2795 segments to
-//     ~950 without losing a single real intersection.
-const ROAD_HIGHWAYS = new Set([
-  "residential",
-  "tertiary",
-  "tertiary_link",
-  "secondary",
-  "secondary_link",
-  "primary",
-  "primary_link",
-  "trunk",
-  "trunk_link",
-  "unclassified",
-  "living_street",
-  "road",
-]);
-
-const EXCLUDED_HIGHWAYS = new Set([
-  "motorway",
-  "motorway_link",
-  "construction",
-  "proposed",
-  "abandoned",
-  "steps",
-  "service", // alleys, driveways, parking aisles
-  "bus_guideway",
-  "raceway",
-  "escape",
-  "corridor",
-  "elevator",
-]);
-
-// OSM access is layered: a mode-specific tag overrides the general one, so
-// `access=no` + `bicycle=yes` means "closed in general, open to bikes". Only
-// these values grant access; `dismount`, `destination` and the rest do not.
-const BICYCLE_ALLOWED = new Set(["yes", "designated", "permissive"]);
-
-const bikesAllowed = (tags) => BICYCLE_ALLOWED.has(tags.bicycle);
+// What each tag means -- which ways are rideable, and which have a structure
+// over them -- lives in lib/tags.mjs, which has the tests. This file is the
+// geometry: chunk at intersections, cap the length, measure, write.
 
 // Segments shorter than this are dominated by GPS noise and produce stub
 // lines on the map rather than a usable gradient.
@@ -58,42 +17,6 @@ const MIN_SEGMENT_M = 8;
 // sharing a node with anything, so intersection topology alone can't bound
 // segment length. Capping it keeps every segment block-scale.
 const MAX_SEGMENT_M = 150;
-
-function classify(tags = {}) {
-  const highway = tags.highway;
-  if (!highway) return null;
-
-  // `highway=track` covers two unrelated things. Of the 234 in this extract,
-  // 203 are farm roads and driveways -- Cedar Heights Drive, Amber Valley
-  // Drive, unpaved and access=private -- and 31 are real trails, among them
-  // Ridgeway Trail, Rim Trail and Red Rock Rim Trail. Excluding the tag
-  // wholesale took the trails with the driveways: Ridgeway Trail is mapped as
-  // two ways, and only the `path` half was reaching the database, so half of
-  // it could never draw a gradient however often it was ridden.
-  //
-  // Admit only what OSM explicitly opens to bikes. Never infer it from the
-  // name or the surface. The kind matters downstream: link_canonical.mjs
-  // folds footway/cycleway into parent roads but treats `road` as a *parent*,
-  // so calling a track a road would let it absorb the trails beside it.
-  if (highway === "track") {
-    if (!bikesAllowed(tags)) return null;
-    return tags.bicycle === "designated" ? "cycleway" : "footway";
-  }
-
-  if (EXCLUDED_HIGHWAYS.has(highway)) return null;
-  // A blanket access test discarded 42 ways that OSM marks bike-legal,
-  // including three pieces of the New Santa Fe Regional Trail and a whole
-  // named singletrack network (Thriller, Shreadzilla, Rattlerocks, Pinball) --
-  // all `bicycle=designated`, which is to say *designated bike routes*.
-  if ((tags.access === "private" || tags.access === "no") && !bikesAllowed(tags)) return null;
-  // Crossings are short, run perpendicular to travel, and would only add
-  // chop; they carry no useful gradient of their own.
-  if (highway === "footway" && tags.footway === "crossing") return null;
-  if (ROAD_HIGHWAYS.has(highway)) return "road";
-  if (highway === "cycleway" || (highway === "path" && tags.bicycle === "designated")) return "cycleway";
-  if (highway === "footway" || highway === "pedestrian" || highway === "path") return "footway";
-  return null;
-}
 
 const inPath = path.resolve(process.argv[2] ?? "data/extract.json");
 const outPath = path.resolve(process.argv[3] ?? "data/segments.geojson");
@@ -166,6 +89,14 @@ for (const { way, kind } of ways) {
           // it" -- that geometric test also swallowed the stretches where a
           // real trail happens to run beside a road, chopping trails in half.
           isSidewalk: way.tags?.footway === "sidewalk",
+          // A structure overhead, so no GPS fix is possible here and an
+          // unpainted stretch is physics rather than a defect. Way-level in
+          // OSM and therefore way-level here: every chunk of a tunnel way
+          // inherits it. That is the right granularity because OSM maps the
+          // covered stretch as its own way and its mouths are shared nodes,
+          // which makes them segment boundaries -- so the flag lands on the
+          // covered piece and not on the open road either side.
+          isTunnel: isTunnel(way.tags ?? {}),
           streetName: way.tags?.name ?? null,
           startNodeId: chunkNodeIds[0],
           endNodeId: chunkNodeIds[chunkNodeIds.length - 1],
@@ -183,6 +114,12 @@ const byKind = features.reduce((acc, f) => {
   return acc;
 }, {});
 
+const tunnels = features.filter((f) => f.properties.isTunnel).length;
+
 fs.writeFileSync(outPath, JSON.stringify(turf.featureCollection(features), null, 2));
 console.log(`${ways.length} rideable ways -> ${features.length} segments`, byKind);
+// Printed because a count of zero here means the flag is broken rather than
+// the city being tunnel-free, and that is otherwise invisible until something
+// downstream quietly reports every hole as a defect.
+console.log(`${tunnels} segments under a structure (tunnel/covered)`);
 console.log(`wrote ${outPath}`);

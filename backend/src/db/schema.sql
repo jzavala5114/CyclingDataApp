@@ -12,6 +12,16 @@ create table segments (
     -- OSM footway=sidewalk. Only these get folded into a parent road; trails
     -- and connectors keep their own gradient even where they run beside one.
     is_sidewalk     boolean not null default false,
+    -- There is a structure over this segment, so no GPS fix is possible on it:
+    -- OSM `tunnel` set to anything but no/false, or `covered=yes`. See
+    -- osm-pipeline/scripts/lib/tags.mjs for the rule and what it excludes
+    -- (notably `layer=-1`, which is a grade separation, not a roof).
+    --
+    -- Nothing reads this to change behaviour. It exists so an unpainted
+    -- stretch can be told apart from a lost one: a hole in a drawn line is
+    -- physics under a tunnel and a defect anywhere else, and without the flag
+    -- every count of the second is inflated by the first.
+    is_tunnel       boolean not null default false,
     street_name     text,
     start_node_id   bigint not null,
     end_node_id     bigint not null,
