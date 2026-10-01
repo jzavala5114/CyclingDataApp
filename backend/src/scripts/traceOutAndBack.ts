@@ -54,12 +54,28 @@ type Cause = "next-door" | "no-run" | "gate" | "wrong-dir" | "dropped";
 // the map being wrong. A pass whose fixes are drawn nowhere is the defect.
 const NEXT_DOOR_SHARE = 0.5;
 
-interface Loss {
+export interface Loss {
   sessionId: number;
   segment: Segment;
   pass: Pass;
   cause: Cause;
   detail: string;
+}
+
+/** What one ride looks like under one matcher setting. */
+export interface SessionTrace {
+  losses: Loss[];
+  /** Segments this ride passed over in both directions. */
+  bothWays: number;
+  /** ...of which the map draws both. */
+  bothWaysDrawn: number;
+  onePassSegments: number;
+  merged: number;
+  discarded: number;
+  buckets: number;
+  coveredM: number;
+  /** `segmentId|direction` for every qualifying run, so arms can be compared. */
+  drawn: Set<string>;
 }
 
 /** Where every fix of a session falls on one segment. */
@@ -79,52 +95,68 @@ function projectAll(samples: readonly SessionSample[], segment: Segment): Projec
 /** Do two intervals overlap at all? */
 const overlaps = (a0: number, a1: number, b0: number, b1: number) => a0 <= b1 && b0 <= a1;
 
-async function main(): Promise<void> {
-  const all = process.argv.includes("--all");
-  const topArg = process.argv.indexOf("--top");
-  const top = topArg === -1 ? 25 : Number(process.argv[topArg + 1]);
-  if (!(top > 0)) throw new Error("--top needs a positive number");
+/** The segments a replay needs, for the box around one ride. */
+export async function loadRideContext(
+  client: { query: (text: string, values?: unknown[]) => Promise<{ rows: unknown[] }> },
+  sessionId: number,
+): Promise<{ samples: SessionSample[]; segments: Segment[] }> {
+  const { rows: samples } = (await client.query(
+    `select id, recorded_at as "recordedAt", lat, lon, elevation_m as "elevationM",
+            heading_deg as "headingDeg", speed_mps as "speedMps", accuracy_m as "accuracyM"
+       from session_samples where session_id = $1 order by recorded_at`,
+    [sessionId],
+  )) as { rows: SessionSample[] };
+  if (!samples.length) return { samples: [], segments: [] };
 
-  const client = await pool.connect();
-  await client.query("set statement_timeout = '15min'");
-  const usable = (await loadSessionVerdicts(client)).filter(isUsable);
-  console.log(`tracing ${usable.length} usable sessions\n`);
+  const lats = samples.map((s) => s.lat);
+  const lons = samples.map((s) => s.lon);
+  const { rows: segments } = (await client.query(
+    `select id, osm_way_id as "osmWayId", kind, street_name as "streetName",
+            start_node_id as "startNodeId", end_node_id as "endNodeId",
+            piece_index as "pieceIndex", bearing_deg as "bearingDeg",
+            length_m as "lengthM", st_asgeojson(geom)::json as geom
+       from segments
+      where geom && st_makeenvelope($1, $2, $3, $4, 4326)
+        and canonical_segment_id is null`,
+    [Math.min(...lons) - BBOX_PAD_DEG, Math.min(...lats) - BBOX_PAD_DEG,
+     Math.max(...lons) + BBOX_PAD_DEG, Math.max(...lats) + BBOX_PAD_DEG],
+  )) as { rows: Segment[] };
+  return { samples, segments };
+}
 
+/**
+ * One ride, replayed and attributed.
+ *
+ * Exported so a sweep over a matcher setting runs through exactly this, rather
+ * than through a second copy of the classification that could disagree with it.
+ * `matcher` is forwarded straight to `matchSamplesToSegments`.
+ */
+export function traceSession(
+  sessionId: number,
+  samples: readonly SessionSample[],
+  segments: Segment[],
+  {
+    keepOneWay = false,
+    matcher,
+  }: { keepOneWay?: boolean; matcher?: { tangentWindowM?: number; disconnectPenaltyM?: number } } = {},
+): SessionTrace {
   const losses: Loss[] = [];
   let bothWays = 0;
   let bothWaysDrawn = 0;
   let onePassSegments = 0;
-  let done = 0;
+  let merged = 0;
+  let discarded = 0;
+  let buckets = 0;
+  let coveredM = 0;
+  const drawn = new Set<string>();
+  const all = keepOneWay;
 
-  for (const session of usable) {
-    const sessionId = Number(session.id);
-    const { rows: samples } = await client.query<SessionSample>(
-      `select id, recorded_at as "recordedAt", lat, lon, elevation_m as "elevationM",
-              heading_deg as "headingDeg", speed_mps as "speedMps", accuracy_m as "accuracyM"
-         from session_samples where session_id = $1 order by recorded_at`,
-      [sessionId],
-    );
-    if (!samples.length) continue;
-
-    const lats = samples.map((s) => s.lat);
-    const lons = samples.map((s) => s.lon);
-    const { rows: segments } = await client.query<Segment>(
-      `select id, osm_way_id as "osmWayId", kind, street_name as "streetName",
-              start_node_id as "startNodeId", end_node_id as "endNodeId",
-              piece_index as "pieceIndex", bearing_deg as "bearingDeg",
-              length_m as "lengthM", st_asgeojson(geom)::json as geom
-         from segments
-        where geom && st_makeenvelope($1, $2, $3, $4, 4326)
-          and canonical_segment_id is null`,
-      [Math.min(...lons) - BBOX_PAD_DEG, Math.min(...lats) - BBOX_PAD_DEG,
-       Math.max(...lons) + BBOX_PAD_DEG, Math.max(...lats) + BBOX_PAD_DEG],
-    );
-
-    const { kept, rejected } = rejectElevationSpikes(samples);
+  {
+    const { kept, rejected } = rejectElevationSpikes(samples as SessionSample[]);
     const smoothed = smoothElevations(kept);
     const orderById = new Map(smoothed.map((s, i) => [s.id, i]));
     const spikeIds = new Set(rejected.map((s) => s.id));
-    const runs = stitchFragmentedRuns(matchSamplesToSegments(smoothed, segments));
+    const runs = stitchFragmentedRuns(matchSamplesToSegments(smoothed, segments, matcher));
     const byId = new Map(segments.map((s) => [s.id, s]));
 
     // Every run on this ride, qualified or not, with its extent in time.
@@ -167,6 +199,16 @@ async function main(): Promise<void> {
         spanM: a.spanM,
         coverage: a.coverageFraction,
       });
+      // The same health counters evalLinkerFold reports, so a sweep can see a
+      // direction fix paid for with lost coverage.
+      if (a.qualified) {
+        merged++;
+        buckets += a.profile.buckets.length;
+        coveredM += Math.max(0, a.profile.coveredToM - a.profile.coveredFromM);
+        drawn.add(`${run.segmentId}|${run.direction}`);
+      } else {
+        discarded++;
+      }
     }
 
     // Only segments this ride came near are worth projecting against: the bbox
@@ -262,6 +304,37 @@ async function main(): Promise<void> {
         losses.push({ sessionId, segment, pass, cause, detail });
       }
     }
+  }
+
+  return { losses, bothWays, bothWaysDrawn, onePassSegments, merged, discarded, buckets, coveredM, drawn };
+}
+
+async function main(): Promise<void> {
+  const keepOneWay = process.argv.includes("--all");
+  const topArg = process.argv.indexOf("--top");
+  const top = topArg === -1 ? 25 : Number(process.argv[topArg + 1]);
+  if (!(top > 0)) throw new Error("--top needs a positive number");
+
+  const client = await pool.connect();
+  await client.query("set statement_timeout = '15min'");
+  const usable = (await loadSessionVerdicts(client)).filter(isUsable);
+  console.log(`tracing ${usable.length} usable sessions\n`);
+
+  const losses: Loss[] = [];
+  let bothWays = 0;
+  let bothWaysDrawn = 0;
+  let onePassSegments = 0;
+  let done = 0;
+
+  for (const session of usable) {
+    const sessionId = Number(session.id);
+    const { samples, segments } = await loadRideContext(client, sessionId);
+    if (!samples.length) continue;
+    const t = traceSession(sessionId, samples, segments, { keepOneWay });
+    losses.push(...t.losses);
+    bothWays += t.bothWays;
+    bothWaysDrawn += t.bothWaysDrawn;
+    onePassSegments += t.onePassSegments;
 
     done++;
     if (done % 10 === 0) console.log(`  ${done}/${usable.length} sessions`);

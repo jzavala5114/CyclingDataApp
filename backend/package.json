@@ -18,6 +18,7 @@
     "diagnose-holes": "tsx src/scripts/diagnoseHoles.ts",
     "trace-passes": "tsx src/scripts/traceOutAndBack.ts",
     "eval:coverage": "tsx src/scripts/evalCoverageClamp.ts",
+    "eval:tangent": "tsx src/scripts/evalTangentWindow.ts",
     "migrate": "tsx src/scripts/migrate.ts"
   },
   "dependencies": {

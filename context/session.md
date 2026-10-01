@@ -1492,11 +1492,38 @@ approaches are the ones already tried.
     fragmented and the pieces were not stitched. **So `MIN_COVERAGE` IS
     implicated here**, unlike the interior holes where it was cleared.
   `no-run` (2) and `dropped` (2) are negligible — nothing is being thrown away.
-  **Next, and do not skip the measuring step:** 39 wrong-dir cases concentrated
-  on switchbacks point at the tangent window, and `matchSamplesToSegments`
-  already takes `tangentWindowM` as an option so a sweep runs through the real
-  code path. Measure before changing it; the last two "obvious" fixes here both
-  failed.
+  **The tangent window is NOT the lever. Swept 2026-09-30, `npm run eval:tangent`.**
+  The obvious reading of "wrong-dir concentrated on switchbacks" is that
+  `TANGENT_WINDOW_M`'s 10 m averages across a hairpin, so a narrower window
+  would read it better. Measured through the real matcher at 0, 3, 5, 7, 10, 14
+  and 20 m:
+
+  | window | wrong-dir | gate | both drawn | merged | discard | buckets | covered km | lines |
+  |---|---|---|---|---|---|---|---|---|
+  | 0 m (chord) | 44 (1932 m) | **85 (6166 m)** | 253/433 | 2338 | 25.4% | 13601 | 218.96 | 998 |
+  | 3 m | 38 (1763 m) | 23 (1423 m) | 213/419 | 2220 | 17.1% | 14679 | 224.56 | 961 |
+  | 5 m | 38 (1684 m) | 23 (1423 m) | 214/419 | 2220 | 17.6% | 14686 | 224.59 | 963 |
+  | 7 m | 38 (1677 m) | 22 (1398 m) | 214/419 | 2224 | 17.6% | 14709 | 224.83 | 965 |
+  | **10 m shipped** | 39 (1756 m) | 24 (1462 m) | 215/419 | 2228 | 18.4% | 14710 | 225.10 | 966 |
+  | 14 m | 36 (1662 m) | 24 (1492 m) | 221/418 | 2240 | 19.4% | 14722 | 225.77 | 971 |
+  | 20 m | 41 (1848 m) | 34 (1882 m) | 223/418 | 2249 | 20.8% | 14730 | 226.42 | 972 |
+
+  **wrong-dir is flat at 36–41 across every value from 3 m to 20 m.** The best
+  arm (14 m, 36) beats the shipped one by three cases out of 39, which is noise
+  at this sample size, and buys it with discards 18.4% → 19.4%. Nothing here is
+  worth changing, and the direction of the effect is wrong for the hypothesis:
+  *narrower* does not help.
+  **The 0 m arm is a useful control and confirms the 2026-08-30 chord→tangent
+  change was right**: gate errors 24 → 85, buckets 14,710 → 13,601. (Its line
+  count is *higher* at 998 because chord matching scatters a ride across more
+  segments, which is the fragmentation the change fixed, not coverage gained.)
+  **Next hypothesis, untested:** the comparison is `sample.headingDeg` against
+  the tangent, and the sweep has now cleared the tangent half. That leaves the
+  heading half — the value the phone reports, which on a switchback at walking
+  pace is the least reliable thing in the record. The test is cheap: at each
+  wrong-dir case, compare the device heading against one derived from
+  consecutive fix positions. Measure before changing anything; this is the
+  third hypothesis about this defect and the first two were both wrong.
 - **Stitched runs can have a hole in the middle.** Rejoined fragments contribute
   only their own samples; whatever was between them matched elsewhere or
   nowhere. Endpoints and coverage are right, but interior buckets may be
