@@ -20,10 +20,25 @@ Where to start depends on what you came for:
 |---|---|
 | know what the app is and how a ride becomes a coloured line | "What it is", "Layout", "Data flow" |
 | change anything in the backend | "Bugs already paid for" — 29 failure modes, each one paid for once already |
+| run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:linker` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | "Open items" — the `NEXT:` bullet, currently the 140 lines with holes in them |
+| pick up the next piece of work | "Open items" — the `NEXT:` bullet, currently the 36 lines the derived heading would cost |
 | understand why there is no drift correction | "What the drift anchor taught us" |
-| land the change that is built but not applied | "The sidewalk fold" |
+| see what is built, measured and waiting on a decision | "Branches awaiting a call", immediately below |
+
+## Branches awaiting a call
+
+Two branches are committed, tested and **not merged**. Both are read-only or
+behaviour-neutral; neither has touched the database or the deploy.
+
+| branch | head | what it is |
+|---|---|---|
+| `fold-unnamed-into-trails` | `c3e919f` | Lets a named trail be a fold parent. **Measured and rejected** — 195 real duplicates found, but the matcher replay lost 4 lines, gained none and raised impossible transitions 7.1% → 7.9%. Ships switched off as `TRAIL_PARENTS_SQL`; the candidate query is byte-identical to `main`. Merge to record the negative result, or drop. |
+| `trace-out-and-backs` | `7d49aeb` | The pass detector, the trace, and three sweeps. **Adds no behaviour**: `headingSource` defaults to `"device"` and the device arm reproduces the pre-refactor numbers exactly (39 / 24 / 215/419 / 2228 / 18.4% / 14710 / 225.10 / 966). Merging deploys a no-op change and unlocks `npm run trace-passes`, `eval:tangent`, `eval:heading`. |
+
+`main` is `e8b7a4d`. **`e8b7a4d` was committed directly on `main` rather than
+through a task branch** — a slip, docs-only, left in place rather than
+force-pushing a shared branch.
 
 This file is ~19k tokens. It is not meant to be read end to end; the headings
 are the index.
@@ -1198,6 +1213,39 @@ kills four of the five findings at once. Read this section first; the obvious
 approaches are the ones already tried.
 ## Open items
 
+### NEXT: enumerate the 36 lines the derived heading would cost
+
+The only thing standing between a measurement and a fix. `eval:heading` shows
+the derived heading cuts genuinely-lost passes **63 → 35** and the discard rate
+**18.4% → 12.8%**, with buckets and covered distance flat — but it loses **36
+drawn lines against 26 gained, net −10**. The belief is that most of the 36 are
+consolidation, fixes moving onto the segment they always belonged on, which is
+the intent. **That is a guess.** List the 36, look at each, and only then
+decide. If it ships it needs a full `rebuild-model`, because every bucket on the
+map today was matched with the device heading.
+Do not skip the enumeration. Three hypotheses about this defect, the first two
+measured and both wrong; this is the first that survived and it survived
+*because* it was measured rather than argued.
+
+### What landed on 2026-09-30
+
+Four things shipped to production, in order, each verified before the next:
+
+1. **The tunnel flag.** 73 of 66,684 segments carry `is_tunnel`. Of 173 interior
+   bucket gaps, exactly **1** is under a structure. 67 covered segments draw
+   nothing at all and never will. The load was proved a pure column fill by an
+   md5 over every other column, identical across it.
+2. **The coverage clamp.** A line now reaches a join the rider provably crossed.
+   Unpainted line ends **6,885 → 4,403 m**; ends over 3 m, 445 → 122. The
+   rebuild left the elevation model **byte-identical**: 6,098 buckets, 0 moved.
+3. **A correction.** Interior bucket gaps do **not** render as blanks — the
+   renderer spans them. An earlier note said they did; it was inferred, never
+   checked, and contradicted a correct note in this same file.
+4. **The out-and-back cause**, traced to the device heading (above).
+
+Two measured rejections, both worth not repeating: folding paths into named
+trails, and every tangent window from 0 to 20 m.
+
 - **Two directions on one path** (deferred). Roads get two ±4 m offset lines,
   as intended. Unresolved for genuine single paths, and coupled to putting
   lines exactly *on* a trail: removing the offset makes both directions overlap.
@@ -1333,10 +1381,11 @@ approaches are the ones already tried.
   So nothing is being thrown away: fix spacing at the wide end simply exceeds
   the 15 m grid. Note 18's `MIN_COVERAGE` is **not** implicated and neither is
   stitching.
-- **NEXT: 6,885 m of drawn segment is unpainted at the ENDS of lines, and
-  3,951 m of that is in the middle of a block.** This is the gap a rider sees,
-  and Julian's screenshot of South Weber Street on 2026-09-30 is what forced it
-  to be measured properly.
+- ~~**6,885 m of drawn segment is unpainted at the ENDS of lines, and
+  3,951 m of that is in the middle of a block.**~~ Fixed 2026-09-30 by the
+  coverage clamp, 6,885 → 4,403 m; the rest is deliberate. This is the gap a
+  rider sees, and Julian's screenshot of South Weber Street on 2026-09-30 is
+  what forced it to be measured properly.
   **Why it looks mid-block.** The map is not one line per street. It is one
   line per segment per direction, each clipped to its own `segment_coverage`,
   so every blank is *between* two lines rather than inside one. And
