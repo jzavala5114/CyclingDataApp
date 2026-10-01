@@ -20,6 +20,7 @@
     "eval:coverage": "tsx src/scripts/evalCoverageClamp.ts",
     "eval:tangent": "tsx src/scripts/evalTangentWindow.ts",
     "eval:heading": "tsx src/scripts/evalHeadingSource.ts",
+    "eval:heading-lines": "tsx src/scripts/enumerateHeadingLines.ts",
     "migrate": "tsx src/scripts/migrate.ts"
   },
   "dependencies": {

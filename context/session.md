@@ -20,21 +20,23 @@ Where to start depends on what you came for:
 |---|---|
 | know what the app is and how a ride becomes a coloured line | "What it is", "Layout", "Data flow" |
 | change anything in the backend | "Bugs already paid for" — 29 failure modes, each one paid for once already |
-| run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:linker` |
+| run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `eval:linker` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | "Open items" — the `NEXT:` bullet, currently the 36 lines the derived heading would cost |
+| pick up the next piece of work | "Open items" — the `NEXT:` bullet, currently **the derived-heading ship decision**: measured, recommended, awaiting a call |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see what is built, measured and waiting on a decision | "Branches awaiting a call", immediately below |
 
 ## Branches awaiting a call
 
-Two branches are committed, tested and **not merged**. Both are read-only or
-behaviour-neutral; neither has touched the database or the deploy.
+Three branches are committed, tested and **not merged**. All three are
+read-only or behaviour-neutral; none has touched the database or the deploy.
+They stack: `enumerate-heading-lines` sits on `trace-out-and-backs`.
 
 | branch | head | what it is |
 |---|---|---|
 | `fold-unnamed-into-trails` | `c3e919f` | Lets a named trail be a fold parent. **Measured and rejected** — 195 real duplicates found, but the matcher replay lost 4 lines, gained none and raised impossible transitions 7.1% → 7.9%. Ships switched off as `TRAIL_PARENTS_SQL`; the candidate query is byte-identical to `main`. Merge to record the negative result, or drop. |
-| `trace-out-and-backs` | `7d49aeb` | The pass detector, the trace, and three sweeps. **Adds no behaviour**: `headingSource` defaults to `"device"` and the device arm reproduces the pre-refactor numbers exactly (39 / 24 / 215/419 / 2228 / 18.4% / 14710 / 225.10 / 966). Merging deploys a no-op change and unlocks `npm run trace-passes`, `eval:tangent`, `eval:heading`. |
+| `trace-out-and-backs` | `a198b9d` | The pass detector, the trace, and three sweeps. **Adds no behaviour**: `headingSource` defaults to `"device"` and the device arm reproduces the pre-refactor numbers exactly (39 / 24 / 215/419 / 2228 / 18.4% / 14710 / 225.10 / 966). Merging deploys a no-op change and unlocks `npm run trace-passes`, `eval:tangent`, `eval:heading`. |
+| `enumerate-heading-lines` | (this branch) | On top of `trace-out-and-backs`. `npm run eval:heading-lines`: names every line the two headings disagree about and gives each a verdict from the bearing-free witness. **Read-only, adds no behaviour.** This is the measurement the ship decision rests on. |
 
 `main` is `e8b7a4d`. **`e8b7a4d` was committed directly on `main` rather than
 through a task branch** — a slip, docs-only, left in place rather than
@@ -1213,19 +1215,56 @@ kills four of the five findings at once. Read this section first; the obvious
 approaches are the ones already tried.
 ## Open items
 
-### NEXT: enumerate the 36 lines the derived heading would cost
+### The 36 lines, enumerated — DONE, and the answer is ship it
 
-The only thing standing between a measurement and a fix. `eval:heading` shows
-the derived heading cuts genuinely-lost passes **63 → 35** and the discard rate
-**18.4% → 12.8%**, with buckets and covered distance flat — but it loses **36
-drawn lines against 26 gained, net −10**. The belief is that most of the 36 are
-consolidation, fixes moving onto the segment they always belonged on, which is
-the intent. **That is a guess.** List the 36, look at each, and only then
-decide. If it ships it needs a full `rebuild-model`, because every bucket on the
-map today was matched with the device heading.
-Do not skip the enumeration. Three hypotheses about this defect, the first two
-measured and both wrong; this is the first that survived and it survived
-*because* it was measured rather than argued.
+`npm run eval:heading-lines` (`enumerateHeadingLines.ts`, 39 tests, 15/15
+mutants as expected). Every line one heading draws and the other does not, each
+with a verdict from `findPasses`, which reads projection and the clock and never
+a heading, so it is **identical under both arms** — 2,565 passes on segments
+both arms touched, **0 disagreements**, printed as a control on every run.
+
+| | lines | metres | what it is |
+|---|---|---|---|
+| ground **lost** | 2 | 63 | a pass whose fixes are drawn nowhere under derived. **the cost** |
+| ground **gained** | 1 | 24 | a pass the device drew nowhere |
+| phantoms **removed** | 13 | 594 | no pass in that direction, ever. paint never earned |
+| phantoms **created** | 4 | 181 | the same mistake, the other way |
+| consolidated away / in | 8 / 13 | 347 / 654 | the same ground, drawn on the neighbour. a wash |
+| under 25 m, lost | 13 | 163 | **unjudgeable** (see below); 11 of 13 drawn elsewhere |
+
+So the `net −10 lines` was never the cost. The real trade is **63 m of ground
+against 413 m of net phantom paint removed**, plus 28 recovered passes and the
+discard rate. The answer is robust: sweeping the next-door share from 0.3 to 0.7
+moves the real-loss count only between 1 and 2.
+
+**One street visibly goes blank:** `#37523 Brenner Place backward`, 26 m,
+session 56 — the only real loss whose segment keeps no paint in either
+direction. The other, `#75456`, is a 36 m footway at 47% (it flips to
+consolidation below 0.47) and its street keeps paint.
+
+**A defect in the first version of this measurement, worth keeping.** It
+reported 26 phantoms. 13 of those were segments **9–24 m long**, and
+`findPasses` needs `MIN_PASS_M` = 25 m of travel, so on them no pass can ever be
+found and silence proves nothing. The traversal gate has a second door the
+detector does not (`spanM >= MIN_SPAN_M || coverageFraction >= MIN_COVERAGE`),
+which is how a 10 m stub gets drawn in the first place. Calling them phantoms
+credited the change with removing 13 lines nothing had judged — **half its
+apparent benefit**. They are now a fourth verdict, `no-witness`, reported on
+their run window and explicitly not counted either way.
+
+**And the obvious fix does not work.** The guess was that derived loses these
+where it returns null (under `MIN_DERIVE_M` = 6 m of motion), so a fallback to
+the device heading would be free. Measured on both real losses: Brenner Place
+has **12 fixes in corridor, 1 null derived, 0 null device, median device/derived
+gap 9°, max 23°**. The two headings agree. The loss is not the derived heading
+being wrong about that segment — it is the greedy matcher, where one different
+decision earlier in the ride moves where the run starts and the traversal gate
+then rejects it. A heading fallback cannot recover it. **Viterbi can**, which is
+the ceiling three other notes already name.
+
+**If it ships** it needs a full `rebuild-model`: every bucket on the map today
+was matched with the device heading. One line changes:
+`segmentMatcher.ts` `headingSource = "device"` → `"derived"`.
 
 ### What landed on 2026-09-30
 
@@ -1586,14 +1625,14 @@ trails, and every tangent window from 0 to 20 m.
   the discard rate falls 18.4% → 12.8%, which is the biggest single move any
   change has made to that number. Buckets are flat (−0.23%) and covered distance
   is flat (−0.16%).
-  **The cost, and it is not nothing: 36 drawn lines lost against 26 gained, net
-  −10.** That is the thing to understand before shipping. Some of the 36 are
-  probably consolidation — fixes moving to the segment they belonged on, which
-  is the intent — but that is a guess until the 36 are listed and looked at.
-  **Do not ship on this alone.** The next step is to enumerate those 36 lines
-  and say which are correct consolidation and which are genuine losses. Shipping
-  would also need a full rebuild, since every bucket on the map was matched with
-  the device heading.
+  **The cost looked like 36 drawn lines lost against 26 gained, net −10.**
+  Enumerated 2026-09-30 with `npm run eval:heading-lines`, and the net line
+  count turned out to be the wrong number entirely: **the real cost is 2 lines
+  and 63 m of ground**, against 13 phantom lines and 594 m of paint the rider
+  never earned. See "The 36 lines, enumerated" for the full ledger, the
+  threshold sweep, and why a device-heading fallback cannot recover the 63 m.
+  Shipping still needs a full rebuild, since every bucket on the map was matched
+  with the device heading.
 - **Stitched runs can have a hole in the middle.** Rejoined fragments contribute
   only their own samples; whatever was between them matched elsewhere or
   nowhere. Endpoints and coverage are right, but interior buckets may be

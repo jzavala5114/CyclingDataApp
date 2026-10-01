@@ -53,7 +53,7 @@ type Cause = "next-door" | "no-run" | "gate" | "wrong-dir" | "dropped";
 // projection sweeps, and most of those the rider never rode. A pass whose fixes
 // all ended up drawn on the line next door is the detector being generous, not
 // the map being wrong. A pass whose fixes are drawn nowhere is the defect.
-const NEXT_DOOR_SHARE = 0.5;
+export const NEXT_DOOR_SHARE = 0.5;
 
 export interface Loss {
   sessionId: number;
@@ -61,6 +61,30 @@ export interface Loss {
   pass: Pass;
   cause: Cause;
   detail: string;
+}
+
+/** One qualifying run: a line the map draws, and what it contributed. */
+export interface DrawnRun {
+  sessionId: number;
+  segmentId: number;
+  direction: Direction;
+  spanM: number;
+  coverage: number;
+  buckets: number;
+  coveredM: number;
+  startedMs: number;
+  endedMs: number;
+}
+
+/** One pass `findPasses` saw. Bearing-free, so identical under every arm. */
+export interface PassRecord {
+  sessionId: number;
+  segmentId: number;
+  direction: Direction;
+  spanM: number;
+  fixes: number;
+  startedMs: number;
+  endedMs: number;
 }
 
 /** What one ride looks like under one matcher setting. */
@@ -77,6 +101,20 @@ export interface SessionTrace {
   coveredM: number;
   /** `segmentId|direction` for every qualifying run, so arms can be compared. */
   drawn: Set<string>;
+  /** The same runs as `drawn`, with their contribution, for naming a difference. */
+  runs: DrawnRun[];
+  /**
+   * Every pass on every segment the matcher touched, in BOTH directions,
+   * regardless of `keepOneWay`. A line one arm draws and another does not is
+   * only judgeable against a witness that does not depend on the arm, and this
+   * is it: `findPasses` reads projection and the clock, never a heading.
+   */
+  passes: PassRecord[];
+  /**
+   * Fix id -> the `segmentId|direction` of the QUALIFYING run holding it.
+   * A fix missing from here is drawn nowhere under this arm.
+   */
+  drawnFix: Map<number, string>;
 }
 
 /** Where every fix of a session falls on one segment. */
@@ -150,6 +188,9 @@ export function traceSession(
   let buckets = 0;
   let coveredM = 0;
   const drawn = new Set<string>();
+  const runRecords: DrawnRun[] = [];
+  const passRecords: PassRecord[] = [];
+  const drawnFix = new Map<number, string>();
   const all = keepOneWay;
 
   {
@@ -205,8 +246,22 @@ export function traceSession(
       if (a.qualified) {
         merged++;
         buckets += a.profile.buckets.length;
-        coveredM += Math.max(0, a.profile.coveredToM - a.profile.coveredFromM);
-        drawn.add(`${run.segmentId}|${run.direction}`);
+        const runCoveredM = Math.max(0, a.profile.coveredToM - a.profile.coveredFromM);
+        coveredM += runCoveredM;
+        const key = `${run.segmentId}|${run.direction}`;
+        drawn.add(key);
+        runRecords.push({
+          sessionId,
+          segmentId: run.segmentId,
+          direction: run.direction,
+          spanM: a.spanM,
+          coverage: a.coverageFraction,
+          buckets: a.profile.buckets.length,
+          coveredM: runCoveredM,
+          startedMs: Date.parse(run.samples[0]!.recordedAt as unknown as string),
+          endedMs: Date.parse(run.samples[run.samples.length - 1]!.recordedAt as unknown as string),
+        });
+        for (const s of run.samples) drawnFix.set(s.id, key);
       } else {
         discarded++;
       }
@@ -220,6 +275,19 @@ export function traceSession(
       const segment = byId.get(segmentId);
       if (!segment) continue;
       const passes = findPasses(projectAll(samples, segment));
+      // Recorded before the one-way and empty cases return, so the witness is
+      // the same list whatever this run of the trace was asked to report.
+      for (const p of passes) {
+        passRecords.push({
+          sessionId,
+          segmentId,
+          direction: p.direction,
+          spanM: p.spanM,
+          fixes: p.fixes,
+          startedMs: p.startedMs,
+          endedMs: p.endedMs,
+        });
+      }
       const dirs = new Set(passes.map((p) => p.direction));
       if (passes.length === 0) continue;
       if (dirs.size < 2) {
@@ -307,7 +375,10 @@ export function traceSession(
     }
   }
 
-  return { losses, bothWays, bothWaysDrawn, onePassSegments, merged, discarded, buckets, coveredM, drawn };
+  return {
+    losses, bothWays, bothWaysDrawn, onePassSegments, merged, discarded, buckets, coveredM,
+    drawn, runs: runRecords, passes: passRecords, drawnFix,
+  };
 }
 
 async function main(): Promise<void> {
