@@ -117,6 +117,63 @@ export const ANCHOR_MAX_GAP_S = 15;
 
 const M_PER_DEG_LAT = 111320;
 
+// How far a rider must have moved across the window for a derived heading to
+// mean anything. Below this the "direction of travel" is the direction of the
+// noise: a stationary fix wanders 2-5m, so a window spanning less than that
+// returns a bearing drawn from multipath rather than from the ride.
+export const MIN_DERIVE_M = 6;
+
+/**
+ * Heading per sample, worked out from where the rider actually moved rather
+ * than from what the device reported.
+ *
+ * Exists to be measured against the device heading, not because it is known to
+ * be better. `matchSamplesToSegments` takes it as an option for the same reason
+ * `tangentWindowM` and `disconnectPenaltyM` are options: the alternative gets
+ * measured through this exact code path instead of a reimplementation of it.
+ *
+ * Central difference -- the bearing from the fix before to the fix after --
+ * because a forward difference reports where the rider is going NEXT, which on
+ * a corner is already the new street. The ends fall back to the one-sided
+ * difference they have.
+ *
+ * `null` where the rider did not move far enough to have a direction, which is
+ * the same value the device reports when stationary and is skipped by the
+ * matcher either way.
+ */
+/**
+ * The alternatives the matcher keeps as options so they can be measured
+ * through this exact code path rather than through a reimplementation.
+ * Exported as a type so a sweep cannot pass one the matcher does not read.
+ */
+export interface MatchOptions {
+  /** 0 or less compares against the segment chord, the behaviour this replaced. */
+  tangentWindowM?: number;
+  /** 0 ignores the network graph, the behaviour this replaced. */
+  disconnectPenaltyM?: number;
+  /** "derived" replaces each fix's reported heading with one computed from
+   * where the rider actually moved. An option so it can be measured. */
+  headingSource?: "device" | "derived";
+}
+
+export function deriveHeadings(
+  samples: readonly SessionSample[],
+  minDeriveM: number = MIN_DERIVE_M,
+): Array<number | null> {
+  return samples.map((_, i) => {
+    const a = samples[Math.max(0, i - 1)]!;
+    const b = samples[Math.min(samples.length - 1, i + 1)]!;
+    if (a === b) return null;
+    const cosLat = Math.cos((a.lat * Math.PI) / 180);
+    const dx = (b.lon - a.lon) * M_PER_DEG_LAT * cosLat;
+    const dy = (b.lat - a.lat) * M_PER_DEG_LAT;
+    if (!Number.isFinite(dx) || !Number.isFinite(dy)) return null;
+    if (Math.hypot(dx, dy) < minDeriveM) return null;
+    // atan2(east, north) is a compass bearing: 0 is north, 90 is east.
+    return ((Math.atan2(dx, dy) * 180) / Math.PI + 360) % 360;
+  });
+}
+
 function bearingDelta(a: number, b: number): number {
   const diff = Math.abs(a - b) % 360;
   return diff > 180 ? 360 - diff : diff;
@@ -235,6 +292,7 @@ function pointToEdgeM(lat: number, lon: number, edge: Edge, cosLat: number): num
 // leg you are actually on win, because it is both near and aligned.
 function nearestAlignedEdge(
   sample: SessionSample,
+  headingDeg: number,
   geometry: SegmentGeometry,
   cosLat: number,
 ): { distanceM: number; direction: Direction } | null {
@@ -245,7 +303,7 @@ function nearestAlignedEdge(
     const distanceM = pointToEdgeM(sample.lat, sample.lon, edge, cosLat);
     // Cheap tests first: an edge that cannot win needs no bearing check.
     if (distanceM > MAX_MATCH_DISTANCE_M || distanceM >= bestDistanceM) continue;
-    const direction = directionForBearing(sample.headingDeg!, edge.tangentDeg);
+    const direction = directionForBearing(headingDeg, edge.tangentDeg);
     if (!direction) continue;
     bestDistanceM = distanceM;
     bestDirection = direction;
@@ -411,8 +469,12 @@ export function matchSamplesToSegments(
   {
     tangentWindowM = TANGENT_WINDOW_M,
     disconnectPenaltyM = DISCONNECT_PENALTY_M,
-  }: { tangentWindowM?: number; disconnectPenaltyM?: number } = {},
+    headingSource = "device",
+  }: MatchOptions = {},
 ): MatchedRun[] {
+  const headings =
+    headingSource === "derived" ? deriveHeadings(samples) : samples.map((s) => s.headingDeg);
+  const headingAt = new Map(samples.map((s, i) => [s.id, headings[i] ?? null]));
   const geometries = new Map(
     candidateSegments.map((s) => [s.id, buildSegmentGeometry(s, tangentWindowM)]),
   );
@@ -427,7 +489,8 @@ export function matchSamplesToSegments(
   let anchorAtMs = 0;
 
   for (const sample of samples) {
-    if (sample.headingDeg == null || sample.headingDeg < 0) continue;
+    const headingDeg = headingAt.get(sample.id) ?? null;
+    if (headingDeg == null || headingDeg < 0) continue;
     if (sample.accuracyM != null && sample.accuracyM > MAX_ACCURACY_M) continue;
 
     const sampleAtMs = Date.parse(sample.recordedAt);
@@ -446,7 +509,7 @@ export function matchSamplesToSegments(
       ) {
         continue;
       }
-      const hit = nearestAlignedEdge(sample, geometry, cosLat);
+      const hit = nearestAlignedEdge(sample, headingDeg, geometry, cosLat);
       if (!hit) continue;
       // With no usable anchor every candidate is treated as connected, so the
       // penalty cancels and ranking is by distance alone, as it was before.

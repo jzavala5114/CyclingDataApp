@@ -1517,13 +1517,34 @@ approaches are the ones already tried.
   change was right**: gate errors 24 → 85, buckets 14,710 → 13,601. (Its line
   count is *higher* at 998 because chord matching scatters a ride across more
   segments, which is the fragmentation the change fixed, not coverage gained.)
-  **Next hypothesis, untested:** the comparison is `sample.headingDeg` against
-  the tangent, and the sweep has now cleared the tangent half. That leaves the
-  heading half — the value the phone reports, which on a switchback at walking
-  pace is the least reliable thing in the record. The test is cheap: at each
-  wrong-dir case, compare the device heading against one derived from
-  consecutive fix positions. Measure before changing anything; this is the
-  third hypothesis about this defect and the first two were both wrong.
+  **THE CAUSE IS THE DEVICE HEADING. Confirmed 2026-09-30, `npm run eval:heading`.**
+  The matcher compares `sample.headingDeg` against the tangent. The tangent half
+  is cleared above; this is the other half, and it is the one.
+  **Part 1, do they even disagree?** Over 29,597 fixes, the device reports a
+  heading on **100%** of them. Against a heading derived from where the rider
+  actually moved (`deriveHeadings`, central difference, `MIN_DERIVE_M` 6 m,
+  null on 2.1% where the rider was stationary): median gap **5.9°**, p75 12.5°,
+  p90 24.2°, **p99 115.2°**. **410 fixes (1.42%) are more than 90° apart** —
+  that is the tail that flips a direction, and it is where the defect lives.
+  **Part 2, does it matter?** Replayed through the real matcher:
+
+  | heading | wrong-dir | gate | both drawn | merged | discard | buckets | covered km | lines |
+  |---|---|---|---|---|---|---|---|---|
+  | **device, shipped** | 39 (1756 m) | 24 (1462 m) | 215/419 | 2228 | 18.4% | 14710 | 225.10 | 966 |
+  | derived | **23 (1073 m)** | **12 (722 m)** | 224/418 | 2208 | **12.8%** | 14676 | 224.74 | 956 |
+
+  **The real defect falls 63 passes / 3,218 m → 35 / 1,795 m, a 44% cut**, and
+  the discard rate falls 18.4% → 12.8%, which is the biggest single move any
+  change has made to that number. Buckets are flat (−0.23%) and covered distance
+  is flat (−0.16%).
+  **The cost, and it is not nothing: 36 drawn lines lost against 26 gained, net
+  −10.** That is the thing to understand before shipping. Some of the 36 are
+  probably consolidation — fixes moving to the segment they belonged on, which
+  is the intent — but that is a guess until the 36 are listed and looked at.
+  **Do not ship on this alone.** The next step is to enumerate those 36 lines
+  and say which are correct consolidation and which are genuine losses. Shipping
+  would also need a full rebuild, since every bucket on the map was matched with
+  the device heading.
 - **Stitched runs can have a hole in the middle.** Rejoined fragments contribute
   only their own samples; whatever was between them matched elsewhere or
   nowhere. Endpoints and coverage are right, but interior buckets may be

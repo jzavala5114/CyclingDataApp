@@ -8,6 +8,7 @@ import {
   matchSamplesToSegments,
   stitchFragmentedRuns,
   MAX_ACCURACY_M,
+  type MatchOptions,
 } from "../services/segmentMatcher.js";
 import { assessRun } from "../services/elevationAggregator.js";
 import { findPasses, CORRIDOR_M, type ProjectedFix, type Pass } from "../services/segmentPasses.js";
@@ -138,7 +139,7 @@ export function traceSession(
   {
     keepOneWay = false,
     matcher,
-  }: { keepOneWay?: boolean; matcher?: { tangentWindowM?: number; disconnectPenaltyM?: number } } = {},
+  }: { keepOneWay?: boolean; matcher?: MatchOptions } = {},
 ): SessionTrace {
   const losses: Loss[] = [];
   let bothWays = 0;
