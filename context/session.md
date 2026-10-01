@@ -1459,13 +1459,44 @@ approaches are the ones already tried.
   both rides, while Ridgeway Trail handled its out-and-backs correctly. One case
   is a genuine duplicate pair — unnamed `6432` beside named Chamberlain `10433`,
   each drawing the opposite direction, so the two passes split across two ways.
-  Stage 1 should help; a cheaper partial fix is extending `link_canonical.mjs`
-  to fold an *unnamed* path into a parallel named **trail**, not only into a
-  road, which would resolve 8 of the 37 duplicate pairs. The other 29 are
-  named-vs-named and no naming rule can touch them. **This got cheap on
-  2026-09-27**: the frontage rewrite already measures a path against a set of
-  candidates, so admitting named trails to that set is a change to one `where
-  r.kind = 'road'` in `linkPlan.mjs` plus a rerun of the read-only sweep.
+  **CORRECTION 2026-09-30: that pair is not a pair, and folding into trails does
+  not fix this.** `#6432` runs alongside Chamberlain for **0.0662** of its length
+  against a 0.60 gate, and widening the offset limit from 20 m to 35 m does not
+  move the number — they are not parallel, they touch and diverge (Hausdorff
+  67.9 m). The wider parent rule was built and measured anyway: it folds 195
+  real duplicates but the full-matcher replay lost 4 lines, gained none, and
+  raised impossible transitions 7.1% → 7.9%. Not shipped; see
+  `TRAIL_PARENTS_SQL` on branch `fold-unnamed-into-trails`.
+  **The cause is now measured.** `npm run trace-passes`
+  (`traceOutAndBack.ts`) finds what the rider did from the projected fixes and
+  the clock alone — `findPasses` in `services/segmentPasses.ts`, no headings, no
+  candidates, no gate — then compares that against a full replay of the matcher.
+  Across all 42 rides: **419 segments ridden both ways in one session, 215
+  (51%) drawing both.** 411 passes are not drawn on the segment the rider made
+  them on, but **344 of those (84%) are drawn next door** — 100% of their fixes
+  land in a qualifying run on a neighbouring line. That is the detector being
+  generous rather than the map losing the ride: `findPasses` has no bearing test
+  by design, so on a braided trail it reports a pass on every line inside the
+  25 m corridor whose projection sweeps.
+  **The real defect is 63 passes, 3,218 m, drawn nowhere**, in two mechanisms:
+  - **wrong-dir, 39 passes, 1,756 m.** The matcher drew the OTHER direction over
+    the same ground at the same time. Almost all on switchback trails — Culebras
+    `#97198`, Palmer Point `#50579`, Ute Valley Upper `#127906`, Ladders
+    `#79705`, Penrose `#23873`, Triple Treat `#47441` — where
+    `TANGENT_WINDOW_M`'s 10 m spans a hairpin and the tangent it averages points
+    nowhere useful. **South Weber `#10247` backward is the exception and the
+    interesting one: a straight road.**
+  - **gate, 24 passes, 1,462 m.** A run existed and covered 0–18% of the
+    segment, so `MIN_SPAN_M` / `MIN_COVERAGE` rejected it: span 21 m of 140 m on
+    Gold Camp `#13308`, 0 m twice, 7–19 m elsewhere. The traversal was
+    fragmented and the pieces were not stitched. **So `MIN_COVERAGE` IS
+    implicated here**, unlike the interior holes where it was cleared.
+  `no-run` (2) and `dropped` (2) are negligible — nothing is being thrown away.
+  **Next, and do not skip the measuring step:** 39 wrong-dir cases concentrated
+  on switchbacks point at the tangent window, and `matchSamplesToSegments`
+  already takes `tangentWindowM` as an option so a sweep runs through the real
+  code path. Measure before changing it; the last two "obvious" fixes here both
+  failed.
 - **Stitched runs can have a hole in the middle.** Rejoined fragments contribute
   only their own samples; whatever was between them matched elsewhere or
   nowhere. Endpoints and coverage are right, but interior buckets may be
