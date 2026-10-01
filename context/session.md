@@ -22,25 +22,24 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 29 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `eval:linker` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | "Open items" — the `NEXT:` bullet, currently **the derived-heading ship decision**: measured, recommended, awaiting a call |
+| pick up the next piece of work | "Open items" — the `NEXT:` bullet, currently **the derived-heading ship decision**: measured and recommended, needs a rebuild dry run first |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see what is built, measured and waiting on a decision | "Branches awaiting a call", immediately below |
 
 ## Branches awaiting a call
 
-Three branches are committed, tested and **not merged**. All three are
-read-only or behaviour-neutral; none has touched the database or the deploy.
-They stack: `enumerate-heading-lines` sits on `trace-out-and-backs`.
+Nothing is waiting. Cleared 2026-10-01: the measurement tooling merged, and two
+branches dropped after their findings were written into this file.
 
-| branch | head | what it is |
+| branch | head | outcome |
 |---|---|---|
-| `fold-unnamed-into-trails` | `c3e919f` | Lets a named trail be a fold parent. **Measured and rejected** — 195 real duplicates found, but the matcher replay lost 4 lines, gained none and raised impossible transitions 7.1% → 7.9%. Ships switched off as `TRAIL_PARENTS_SQL`; the candidate query is byte-identical to `main`. Merge to record the negative result, or drop. |
-| `trace-out-and-backs` | `a198b9d` | The pass detector, the trace, and three sweeps. **Adds no behaviour**: `headingSource` defaults to `"device"` and the device arm reproduces the pre-refactor numbers exactly (39 / 24 / 215/419 / 2228 / 18.4% / 14710 / 225.10 / 966). Merging deploys a no-op change and unlocks `npm run trace-passes`, `eval:tangent`, `eval:heading`. |
-| `enumerate-heading-lines` | (this branch) | On top of `trace-out-and-backs`. `npm run eval:heading-lines`: names every line the two headings disagree about and gives each a verdict from the bearing-free witness. **Read-only, adds no behaviour.** This is the measurement the ship decision rests on. |
+| `trace-out-and-backs` + `enumerate-heading-lines` | `974fa24` | **Merged 2026-10-01.** The pass detector, the trace, four sweeps and the line enumeration. Deployed as a no-op: `headingSource` still defaults to `"device"` and the device arm reproduces the pre-merge numbers exactly (39 / 24 / 215/419 / 2228 / 18.4% / 14710 / 225.10 / 966). |
+| `fold-unnamed-into-trails` | `c3e919f` | **Dropped 2026-10-01.** Measured and rejected; every number and the reason it could come back are in "Riding a segment both ways". |
+| `jzavala5114/drift-round3-wip-8f13d5f2` | `b5c5eab` | **Dropped 2026-10-01.** Round-three fixes for the drift ramp, 5 tests deliberately red. `strip-the-ramp` deleted the ramp from `main`, so this would reinstate a feature four reviews rejected. Its finished half (`c1a250a`) is already in `main`. |
 
-`main` is `e8b7a4d`. **`e8b7a4d` was committed directly on `main` rather than
-through a task branch** — a slip, docs-only, left in place rather than
-force-pushing a shared branch.
+`main` is `974fa24`. (`e8b7a4d`, two commits back, was committed directly on
+`main` rather than through a task branch — a slip, docs-only, left in place
+rather than force-pushing a shared branch.)
 
 This file is ~19k tokens. It is not meant to be read end to end; the headings
 are the index.
@@ -1551,10 +1550,22 @@ trails, and every tangent window from 0 to 20 m.
   not fix this.** `#6432` runs alongside Chamberlain for **0.0662** of its length
   against a 0.60 gate, and widening the offset limit from 20 m to 35 m does not
   move the number — they are not parallel, they touch and diverge (Hausdorff
-  67.9 m). The wider parent rule was built and measured anyway: it folds 195
-  real duplicates but the full-matcher replay lost 4 lines, gained none, and
-  raised impossible transitions 7.1% → 7.9%. Not shipped; see
-  `TRAIL_PARENTS_SQL` on branch `fold-unnamed-into-trails`.
+  67.9 m). The wider parent rule was built and measured anyway, then **dropped
+  2026-10-01** along with its branch. The numbers are kept here because they are
+  the whole value of that work: it folds **195 real duplicates** (unnamed
+  footways at frontage 1.000 along Pikes Peak Greenway, Templeton Gap and 163
+  other trails — the walking half of a shared path mapped twice), 0 folds lost,
+  0 reparents, but `eval:linker` over all 42 rides moved **every** measure the
+  wrong way: impossible transitions **7.1% → 7.9%**, merged 2228 → 2223,
+  discards 18.4% → 18.7%, buckets 14,710 → 14,701, covered 225.10 → 224.91 km,
+  **4 lines lost and none gained**. Hiding a path did not move its fixes onto
+  the parent trail, it lost them.
+  **Its blind spot is the reason it could come back**: 191 of the 195 folds
+  (97.9%) are on paths nobody has ridden, so the replay could not see them. The
+  rule was one SQL clause, `not (${eligibleSql("r")})` in place of
+  `r.kind = 'road'` as the fold parent in `linkPlan.mjs`, reachable at
+  `c3e919f` if it is ever wanted. Worth re-measuring once those trails have been
+  ridden, not before — and the 42-ride replay is the gate it has to pass.
   **The cause is now measured.** `npm run trace-passes`
   (`traceOutAndBack.ts`) finds what the rider did from the projected fixes and
   the clock alone — `findPasses` in `services/segmentPasses.ts`, no headings, no
