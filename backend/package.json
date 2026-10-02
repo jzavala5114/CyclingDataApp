@@ -22,6 +22,7 @@
     "eval:tangent": "tsx src/scripts/evalTangentWindow.ts",
     "eval:heading": "tsx src/scripts/evalHeadingSource.ts",
     "eval:heading-lines": "tsx src/scripts/enumerateHeadingLines.ts",
+    "eval:spikes": "tsx src/scripts/evalPositionFilter.ts",
     "migrate": "tsx src/scripts/migrate.ts"
   },
   "dependencies": {

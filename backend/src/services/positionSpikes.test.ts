@@ -243,3 +243,66 @@ test("quantiles do not mutate the caller's array", () => {
   quantiles(input, [0.5]);
   assert.deepEqual(input, [3, 1, 2]);
 });
+
+// ------------------------------------------- the matcher option is real
+
+test("the matcher drops a spiked fix only when the filter is switched on", async () => {
+  const { matchSamplesToSegments } = await import("./segmentMatcher.js");
+  // A straight run east along one segment, with fix 2 thrown 18m north. The
+  // segment is 200m of due-east road, so the spike is still inside the 25m
+  // corridor and the 30m accuracy filter admits it: nothing today stops it.
+  const segment = {
+    id: 1,
+    osmWayId: "w1",
+    kind: "road",
+    streetName: "Test Street",
+    startNodeId: "n1",
+    endNodeId: "n2",
+    pieceIndex: 0,
+    bearingDeg: 90,
+    lengthM: 200,
+    geom: {
+      type: "LineString" as const,
+      coordinates: [
+        [-104.82, LAT],
+        [-104.82 + 200 / (M_PER_DEG * COS_LAT), LAT],
+      ],
+    },
+  } as unknown as Parameters<typeof matchSamplesToSegments>[1][number];
+
+  const samples = [0, 1, 2, 3, 4].map((i) =>
+    at(i * 20, i === 2 ? 18 : 0, i, { headingDeg: 90 }),
+  );
+
+  const off = matchSamplesToSegments(samples, [segment]);
+  const on = matchSamplesToSegments(samples, [segment], {
+    positionFilter: { minCrossM: 8, crossToChord: 0.3 },
+  });
+
+  const ids = (runs: ReturnType<typeof matchSamplesToSegments>) =>
+    runs.flatMap((r) => r.samples.map((s) => s.id));
+  assert.deepEqual(ids(off), [0, 1, 2, 3, 4], "shipped behaviour keeps every fix");
+  assert.deepEqual(ids(on), [0, 1, 3, 4], "fix 2 is the spike and only it is dropped");
+});
+
+test("CONTROL: the default and an explicit null both keep every fix", async () => {
+  const { matchSamplesToSegments } = await import("./segmentMatcher.js");
+  const segment = {
+    id: 1, osmWayId: "w1", kind: "road", streetName: "Test Street",
+    startNodeId: "n1", endNodeId: "n2", pieceIndex: 0, bearingDeg: 90, lengthM: 200,
+    geom: {
+      type: "LineString" as const,
+      coordinates: [[-104.82, LAT], [-104.82 + 200 / (M_PER_DEG * COS_LAT), LAT]],
+    },
+  } as unknown as Parameters<typeof matchSamplesToSegments>[1][number];
+  const samples = [0, 1, 2, 3, 4].map((i) => at(i * 20, i === 2 ? 18 : 0, i, { headingDeg: 90 }));
+
+  // If the default ever flips, every bucket on the map changes without the
+  // option being passed anywhere. This is the test that would catch it.
+  const byDefault = matchSamplesToSegments(samples, [segment]);
+  const byNull = matchSamplesToSegments(samples, [segment], { positionFilter: null });
+  const count = (runs: ReturnType<typeof matchSamplesToSegments>) =>
+    runs.reduce((n, r) => n + r.samples.length, 0);
+  assert.equal(count(byDefault), 5);
+  assert.equal(count(byNull), 5);
+});

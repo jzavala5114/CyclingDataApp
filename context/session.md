@@ -20,7 +20,7 @@ Where to start depends on what you came for:
 |---|---|
 | know what the app is and how a ride becomes a coloured line | "What it is", "Layout", "Data flow" |
 | change anything in the backend | "Bugs already paid for" — 29 failure modes, each one paid for once already |
-| run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `eval:linker` |
+| run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `eval:linker` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
 | pick up the next piece of work | "Open items" — the `NEXT:` bullet, currently **the derived-heading ship decision**: measured and recommended, needs a rebuild dry run first |
 | understand why there is no drift correction | "What the drift anchor taught us" |
@@ -1649,10 +1649,62 @@ trails, and every tangent window from 0 to 20 m.
   nowhere. Endpoints and coverage are right, but interior buckets may be
   missing, which renders as one long colour span. Pulling the intervening
   samples in would mean re-running the match, so it was left alone.
-- **No position smoothing.** The EMA only touches elevation. A lateral multipath
-  spike downtown (seen clearly on South Weber) passes straight through if it is
-  inside the 30m accuracy filter. A jump filter rejecting physically impossible
-  sideways movement would clip these cheaply.
+- **No position smoothing. Measured 2026-10-01, `npm run diagnose-spikes`.** The
+  smoother only touches elevation; nothing looks at where a fix sits relative to
+  its neighbours, only at the accuracy it claims.
+  **The claim is true.** Over 29,513 measurable fixes the implied ground speed
+  reaches **97.9 m/s (352 km/h)**, and **180 fixes exceed 16 m/s of which 171
+  pass the 30 m accuracy filter**. The device reports these confidently and the
+  pipeline takes them at face value.
+  **The cost is small, and it took one more step to see that.** Existing is not
+  the same as mattering: a fix 12 m off its chord inside a 25 m corridor still
+  matches the same street. So the measure is how many spikes **move the match** —
+  nearest centreline at the reported position versus at the position the chord
+  between the neighbours implies. At cross ≥ 10 m and a cross-to-chord ratio of
+  0.5: **100 spikes, 25 move the match, 9 of those land on another 150 m slice
+  of the SAME OSM way** (a bucket-boundary shuffle, not a wrong street).
+  **16 fixes, 0.054%, land on a different way.** South Weber is two of them,
+  which is the location the note originally named: fix 4908 moves East Cimarron
+  `#687` → South Weber `#10247`, and fix 4961 moves `#10246` → `#687`.
+  **Split the same-way cases by `osmWayId`, never by street name.** `#113884` →
+  `#113890` are both "Ute Valley Regional Trail" and are different ways, so name
+  matching would have called a real cross-street move a harmless shuffle.
+  **`isSpike` needs both of its conditions.** A right-angle turn at speed also
+  sits far off its chord; what makes a spike is covering no ground while doing
+  it. At 15 m off the chord, a 40 m chord is a corner and a 5 m chord is a
+  spike. Deviation alone would clip every corner on the map.
+  **Built as `positionFilter` on `MatchOptions`, defaulting to `null`, then
+  measured and REJECTED — `npm run eval:spikes`.** The control row reproduces
+  the shipped numbers exactly (39 / 24 / 215/419 / 2228 / 18.4% / 14,710 /
+  225.10 / 966), so the comparison is not against a moving baseline.
+
+  | rule | wrong-dir | gate | both drawn | discard | buckets | covered km | lines |
+  |---|---|---|---|---|---|---|---|
+  | off (shipped) | 39 (1756 m) | 24 | 215/419 | 18.4% | 14,710 | 225.10 | 966 |
+  | spikes 8 m / 0.3 | 31 (1444 m) | 24 | 213/418 | 18.2% | 14,594 | 224.56 | 959 |
+  | spikes 12 m / 0.5 | 36 (1655 m) | 24 | 215/419 | 18.4% | 14,696 | 225.02 | 965 |
+  | **derived heading** | **23 (1073 m)** | **12 (722 m)** | 224/418 | **12.8%** | 14,676 | 224.74 | 956 |
+  | derived + spikes 8 / 0.3 | 23 (1096 m) | 12 | 221/417 | 12.1% | 14,578 | 224.31 | 954 |
+  | derived + spikes 12 / 0.5 | 21 (1011 m) | 12 | 223/418 | 12.7% | 14,669 | 224.69 | 956 |
+
+  **It is redundant, which is a different verdict from "too small".** On its own
+  it works: 8 wrong-direction passes recovered. But the derived heading attacks
+  the same counter nearly twice as hard, also halves `gate`, and is the change
+  already queued. **Stacked on the derived heading the aggressive setting buys
+  nothing** (23 → 23, metres UP 1,073 → 1,096) and costs 98 buckets, 0.43 km
+  and three out-and-backs. The cautious setting gains 2 passes / 62 m for one
+  lost out-and-back, which is inside the noise band `eval:tangent` already
+  established at this sample size.
+  `gate` is **unmoved at 24 under every spike arm**, so the filter is purely a
+  direction effect and touches nothing the traversal gate rejects.
+  **The underlying defect stays unfixed, deliberately.** 171 fixes claim over
+  16 m/s and pass the accuracy filter. If it is ever worth fixing, an
+  implied-speed rule is the better tool: one threshold instead of two, and it
+  caught 8 of the 16 cross-street movers on its own with no geometry to tune.
+  The option is kept switched off, with these numbers in its doc comment, for
+  the same reason `tangentWindowM` and `disconnectPenaltyM` are kept — so the
+  alternative is re-measurable through the real code path rather than
+  re-implemented.
 - ~~**Coverage gaps at block ends.**~~ Largely fixed 2026-09-30 by the coverage
   clamp — the first of the two fixes this note proposed, "clamp coverage to the
   full segment when a run has bookend fixes on both sides". 6,893 m → 4,403 m,

@@ -1,4 +1,5 @@
 import * as turf from "@turf/turf";
+import { measurePositionSpikes, isSpike } from "./positionSpikes.js";
 import type { Direction, MatchedRun, Segment, SessionSample } from "../types/index.js";
 
 // Exported because anything asking "would the matcher have looked at this fix"
@@ -154,6 +155,34 @@ export interface MatchOptions {
   /** "derived" replaces each fix's reported heading with one computed from
    * where the rider actually moved. An option so it can be measured. */
   headingSource?: "device" | "derived";
+  /**
+   * Drop fixes that sit far off the line between their neighbours while
+   * covering no ground: a signal bounced off a building, which the accuracy
+   * filter admits because the device reports it confidently.
+   *
+   * `null` (the default) keeps every fix, which is the shipped behaviour.
+   * Dropping rather than straightening, to match `rejectElevationSpikes` and
+   * because straightening would invent a position the rider never reported.
+   *
+   * MEASURED AND REJECTED 2026-10-01, `npm run eval:spikes`. Do not switch this
+   * on without re-reading those numbers. On its own it helps -- wrong-dir
+   * 39 -> 31 at cross 8m / ratio 0.3 -- but it is REDUNDANT with the derived
+   * heading, which attacks the same counter harder (39 -> 23) and is the change
+   * actually queued. Stacked on top of the derived heading the aggressive
+   * setting buys nothing at all (23 -> 23, and the metres go UP 1073 -> 1096)
+   * while costing 98 buckets, 0.43 km of coverage and three out-and-backs
+   * (224/418 -> 221/417 both drawn). The cautious setting, cross 12m /
+   * ratio 0.5, is the only one that gains anything on top: wrong-dir 23 -> 21,
+   * 62 m, for one lost out-and-back -- inside the noise band the tangent sweep
+   * already established at this sample size.
+   *
+   * The defect it was built for is real and stays unaddressed: 171 fixes claim
+   * a ground speed over 16 m/s and pass the 30 m accuracy filter. If that is
+   * ever worth fixing, an implied-speed rule is the better tool. It needs one
+   * threshold rather than two and caught 8 of the 16 cross-street movers on its
+   * own, with no cross-track geometry to tune.
+   */
+  positionFilter?: { minCrossM: number; crossToChord: number } | null;
 }
 
 export function deriveHeadings(
@@ -470,11 +499,22 @@ export function matchSamplesToSegments(
     tangentWindowM = TANGENT_WINDOW_M,
     disconnectPenaltyM = DISCONNECT_PENALTY_M,
     headingSource = "device",
+    positionFilter = null,
   }: MatchOptions = {},
 ): MatchedRun[] {
   const headings =
     headingSource === "derived" ? deriveHeadings(samples) : samples.map((s) => s.headingDeg);
   const headingAt = new Map(samples.map((s, i) => [s.id, headings[i] ?? null]));
+  // Computed from the full sample list up front, like the headings above,
+  // because a fix is judged against its neighbours and the loop below has
+  // already thrown some of them away by the time it reaches each one.
+  const spikeIds = positionFilter
+    ? new Set(
+        measurePositionSpikes(samples)
+          .filter((m) => isSpike(m, positionFilter))
+          .map((m) => m.sampleId),
+      )
+    : null;
   const geometries = new Map(
     candidateSegments.map((s) => [s.id, buildSegmentGeometry(s, tangentWindowM)]),
   );
@@ -492,6 +532,7 @@ export function matchSamplesToSegments(
     const headingDeg = headingAt.get(sample.id) ?? null;
     if (headingDeg == null || headingDeg < 0) continue;
     if (sample.accuracyM != null && sample.accuracyM > MAX_ACCURACY_M) continue;
+    if (spikeIds?.has(sample.id)) continue;
 
     const sampleAtMs = Date.parse(sample.recordedAt);
     const anchored =
