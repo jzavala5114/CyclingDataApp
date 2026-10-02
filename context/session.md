@@ -3,14 +3,19 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-09-27.
+Last updated 2026-10-01.
 
-**Nothing is mid-flight.** The sidewalk fold is applied, rebuilt, merged and
-deployed as of 2026-09-29 — see "The sidewalk fold". 744 paths folded, the
-model rebuilt to 6,098 buckets across 749 segments, `main` at `8deb8fb`,
-production serving `builtAt 2026-09-29T02:31:31.559Z`. Hancock `#17973` draws
-15–90 m of its 91 m where it drew nothing, verified through `/segments` rather
-than from the database alone. The first deploy attempt failed; see note 29,
+**Nothing is mid-flight. One item is queued: the barometer — see "NEXT: keep
+the barometer alive with the screen off".** It is the first piece of work in
+weeks that needs an APK and a test ride rather than a replay against the
+archive.
+
+As of 2026-10-01: `main` at `547fa6c`, the only branch, local and remote.
+Production serving `builtAt 2026-10-02T02:03:27.482Z`. The model is **6,069
+buckets across 745 segments, 951 drawn lines**, rebuilt twice that day — once
+for the derived heading and once for the speed limit — each rebuild predicted
+first by `npm run verify-rebuild` and matching its prediction exactly. 219
+backend tests. The first deploy attempt failed; see note 29,
 which is worth reading before adding anything to `backend/` that imports
 outside it.
 
@@ -22,24 +27,33 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 29 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | "Open items" — nothing is mid-flight. The derived heading and the speed limit both shipped 2026-10-01 |
+| pick up the next piece of work | **"NEXT: keep the barometer alive with the screen off"** — the only item queued, and the first in weeks that needs an APK |
 | understand why there is no drift correction | "What the drift anchor taught us" |
-| see what is built, measured and waiting on a decision | "Branches awaiting a call", immediately below |
+| see the branch and deploy state | "Where things stand", immediately below |
 
-## Branches awaiting a call
+## Where things stand
 
-Nothing is waiting. Cleared 2026-10-01: the measurement tooling merged, and two
-branches dropped after their findings were written into this file.
+**`main` is `547fa6c`, and it is the only branch — local and remote.** Nothing
+is parked, nothing is awaiting a decision, no uncommitted work. 219 backend
+tests.
 
-| branch | head | outcome |
-|---|---|---|
-| `trace-out-and-backs` + `enumerate-heading-lines` | `974fa24` | **Merged 2026-10-01.** The pass detector, the trace, four sweeps and the line enumeration. Deployed as a no-op: `headingSource` still defaults to `"device"` and the device arm reproduces the pre-merge numbers exactly (39 / 24 / 215/419 / 2228 / 18.4% / 14710 / 225.10 / 966). |
-| `fold-unnamed-into-trails` | `c3e919f` | **Dropped 2026-10-01.** Measured and rejected; every number and the reason it could come back are in "Riding a segment both ways". |
-| `jzavala5114/drift-round3-wip-8f13d5f2` | `b5c5eab` | **Dropped 2026-10-01.** Round-three fixes for the drift ramp, 5 tests deliberately red. `strip-the-ramp` deleted the ramp from `main`, so this would reinstate a feature four reviews rejected. Its finished half (`c1a250a`) is already in `main`. |
+Production serves `builtAt 2026-10-02T02:03:27.482Z`. The model is **6,069
+buckets across 745 segments, 745 / 951 lines** on the live API.
 
-`main` is `974fa24`. (`e8b7a4d`, two commits back, was committed directly on
-`main` rather than through a task branch — a slip, docs-only, left in place
-rather than force-pushing a shared branch.)
+Cleared on 2026-10-01: the measurement tooling merged, the derived heading and
+the speed limit shipped with a rebuild each, and two branches were dropped after
+their findings were written into this file —
+`fold-unnamed-into-trails` (`c3e919f`, measured and rejected; the numbers and
+the reason it could come back are in "Riding a segment both ways") and
+`jzavala5114/drift-round3-wip-8f13d5f2` (`b5c5eab`, round-three drift-ramp
+fixes with 5 tests deliberately red, which would reinstate a feature four
+reviews rejected; its finished half `c1a250a` is already in `main`). Both are
+recoverable at tags `dropped/fold-unnamed-into-trails` and
+`dropped/drift-round3-wip`, pushed before the branches were deleted.
+
+Eleven already-merged branches were deleted at the same time, plus
+`fold-missed-sidewalks`, which existed only on the remote and was checked as an
+ancestor of `main` before it went.
 
 This file is ~19k tokens. It is not meant to be read end to end; the headings
 are the index.
@@ -130,18 +144,22 @@ from a query on that date)*
   **name**, not by the `is_sidewalk` tag, which the linker never reads; the
   "2,643 tagged and never folded" figure quoted here until 2026-09-27 was the
   wrong population. See "The sidewalk fold".
-- **Model**: **6,098 buckets across 749 segments**, 0 implausible, rebuilt
-  2026-09-29 after the fold. **54.6% of buckets are blended from more than one
-  pass** — see the note under "Elevation accuracy", because that is the
-  threshold where anchoring stops being preventative and starts setting rendered
-  colours. Rebuilt onto the zero-phase smoother on 2026-09-24 (5,953 buckets
-  then) and again after the fold. Lines are clipped to what was ridden, and
-  **140 of the 966 drawn lines have a hole somewhere in the middle** — the
-  current `NEXT:`, see "Open items". These carry the single-number anchor, which
+- **Model**: **6,069 buckets across 745 segments, 951 drawn lines**, 0
+  implausible, rebuilt 2026-10-01 for the derived heading and then again for the
+  speed limit. **54.6% of buckets are blended from more than one pass** — see
+  the note under "Elevation accuracy", because that is the threshold where
+  anchoring stops being preventative and starts setting rendered colours.
+  Earlier states, for reading older notes against: 5,953 buckets on 2026-09-24
+  (zero-phase smoother), 6,098 / 749 segments / 966 lines from the sidewalk fold
+  on 2026-09-29 through to 2026-10-01. Lines are clipped to what was ridden, and
+  **140 of them have a bucket gap somewhere in the middle — which is NOT a
+  defect**: the renderer spans a gap, so nothing appears blank. That was
+  verified on 2026-09-30 after an earlier note claimed otherwise.
+  These carry the single-number anchor, which
   is now the only anchor there is; the sliding version was deleted on 2026-09-23
   after five reviews. See "The sliding anchor is gone".
-- **Rides**: **41 usable** of 44 recorded, measured by `eval:quality` on
-  2026-09-26 (39 on 09-24, 36 on 09-16, 34 on 09-13). **Sessions 5 and 6
+- **Rides**: **42 usable**, the count every 2026-10-01 measurement replayed
+  (41 on 09-26, 39 on 09-24, 36 on 09-16, 34 on 09-13). **Sessions 5 and 6
   are permanently corrupt** — `rebuildModel.ts` excludes them by elevation
   scale. Session 45 is excluded for being spikes rather than a ride (20.7% of
   its steps impossible); 46 and 50 were restored when the roughness test was
@@ -1233,7 +1251,7 @@ both arms touched, **0 disagreements**, printed as a control on every run.
 
 So the `net −10 lines` was never the cost. The real trade is **63 m of ground
 against 413 m of net phantom paint removed**, plus 28 recovered passes and the
-discard rate. The answer is robust: sweeping the next-door share from 0.3 to 0.7
+discard rate. The answer holds either way: sweeping the next-door share from 0.3 to 0.7
 moves the real-loss count only between 1 and 2.
 
 **One street visibly goes blank:** `#37523 Brenner Place backward`, 26 m,
@@ -1287,6 +1305,87 @@ reading are noisier even where today's gradient looks fine.
 consequential constant in the matcher. The new test was verified by flipping
 the default back and watching it go red, not by assuming it would.
 
+### NEXT: keep the barometer alive with the screen off
+
+**The biggest accuracy lever left, and the first item in weeks that cannot be
+finished from this machine.** Everything shipped on 2026-09-30 and 2026-10-01
+was backend work provable against the archive. This one needs an **APK build and
+a test ride**, because the thing being fixed is an Android sensor lifecycle and
+no replay can tell you whether it worked.
+
+**The defect, already measured — do not re-measure it.** `expo-sensors`
+unregisters the pressure sensor itself: `SensorProxy.kt` has
+`OnActivityEntersBackground → stopObserving()`. Android is not refusing to
+deliver, the library stops asking. Screen on gives 100% barometer; screen off
+and it dies in **11–19 s** and GPS altitude takes over.
+**The cost is 2× on the only thing this app computes.** Median elevation change
+per 15 m bucket: barometer **0.29 m (1.96% slope error)**, GPS altitude
+**0.65 m (4.35%)**. Against 3-point colour bands, GPS altitude alone can shift a
+piece a whole band. Session 61 (screen off and left off) lost **93.5%** of its
+fixes to GPS; session 64, locked and woken twice on purpose, lost 13%.
+**It is bounded, which is why this is not an emergency.** `isObserving` survives
+the pause, so the first fix after the screen wakes is already barometric with no
+code from us — confirmed on session 64: barometer 60 s → gps 17 s → barometer
+46 s → gps 4 s → barometer 83 s. The damage is proportional to screen-off time,
+not to ride length. But it bites hardest on exactly the rides that matter most:
+a long trail descent with the phone pocketed.
+
+**Route one already shipped** (2026-08-30): `expo-keep-awake` held for the
+length of a ride, keyed on `isTracking`. It defeats the **idle timeout only** —
+pressing the power button still backgrounds the activity and still costs the
+sensor until the next wake. **A mounted phone is covered; a pocketed one is
+not.**
+
+**What is left is the native module, and nothing cheaper closes it.** A
+`SensorEventListener` held against the **foreground service** rather than the
+activity, which is what `expo-location` already does for GPS. The middle option
+— patching out `OnActivityEntersBackground` — was considered and should not be
+attempted: it is unsupported, and the pressure sensor is typically a non-wake
+sensor, so delivery may stop when the CPU suspends regardless.
+
+**How to know it worked**, since the archive cannot tell you: `session_samples.
+elevation_source` already records `barometer` or `gps` per fix. The test is one
+ride with the screen deliberately locked for most of it, then
+`select elevation_source, count(*) from session_samples where session_id = $1
+group by 1`. Today that returns mostly `gps`; the fix means it returns ~100%
+`barometer`. Session 62 is the screen-on reference: 842 fixes, 45 minutes,
+186 m of climb, **829 distinct values, 100% barometer**.
+
+**Do not confuse this with the oversampling work**, which is separate and also
+done: oversampling cut sensor noise 2.5× but end-to-end slope error only
+5.00% → 3.90%, because on trails the barometer is **not** the dominant error
+term — the DEM sampled along an OSM centreline that on singletrack is not where
+the rider actually was accounts for more. Fixing the screen-off gap raises
+screen-off rides to screen-on quality; it does not make trail rides as good as
+street rides.
+
+### What landed on 2026-10-01
+
+Three things shipped, each verified by `builtAt` and a live query, never by
+deploy status:
+
+1. **The derived heading** (`builtAt 01:32:09.613Z`, then a rebuild). The cause
+   of out-and-backs drawing one direction. Lost passes **63 → 35**, discards
+   **18.4% → 12.8%**. Cost enumerated first: **2 lines and 63 m** of real
+   ground against **13 phantom lines and 594 m** of paint never earned.
+2. **A speed limit on the data** (`builtAt 01:53:50.539Z`, then a rebuild).
+   `MAX_PLAUSIBLE_MPS = 20`, drops 16 of 29,597 fixes. The device had been
+   reporting 352 km/h.
+3. **`npm run verify-rebuild`** — the rebuild dry run, which does the real
+   rebuild in a rolled-back transaction. `rebuild-model` cannot be undone, and
+   `--dry-run` only lists which rides qualify.
+
+**Two measured rejections**, both worth not repeating: the cross-track position
+filter (works alone, **redundant** once the derived heading lands — 23 → 23 on
+top of it) and folding paths into named trails.
+
+**The lesson that cost the most to learn.** My rebuild dry run reported buckets
+and heights but not line counts, so the speed limit's only visible effect —
+lines 956 → 951 — was found by querying the live API **after** the irreversible
+step. A bucket total cannot see a line disappear: a line losing its last bucket
+and a line losing one of twelve are the same number in a sum. Fixed in
+`547fa6c`. If you add a measure to that script, ask what it would miss.
+
 ### What landed on 2026-09-30
 
 Four things shipped to production, in order, each verified before the next:
@@ -1329,6 +1428,9 @@ trails, and every tangent window from 0 to 20 m.
   activity and still costs the sensor until the next wake. So a mounted phone
   is now covered and a pocketed one is not. The native-module route is what
   closes the remainder, and nothing cheaper will.
+  **This is the queued item as of 2026-10-01 — see "NEXT: keep the barometer
+  alive with the screen off"** for what is left, what not to attempt, and how to
+  tell whether a test ride actually fixed it.
 - ~~**Reverse the roughness quarantine.**~~ Replaced 2026-08-30, and **not** by
   reversing it — that would have been wrong. Sessions 45, 46 and 50 really do
   contain impossible data (45: `1971.0 → 1984.1 → 1962.9` across 4.4 m of
