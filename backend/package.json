@@ -16,6 +16,7 @@
     "prune-sessions": "tsx src/scripts/pruneEmptySessions.ts",
     "find-holes": "tsx src/scripts/findHoles.ts",
     "diagnose-holes": "tsx src/scripts/diagnoseHoles.ts",
+    "diagnose-spikes": "tsx src/scripts/diagnosePositionSpikes.ts",
     "trace-passes": "tsx src/scripts/traceOutAndBack.ts",
     "eval:coverage": "tsx src/scripts/evalCoverageClamp.ts",
     "eval:tangent": "tsx src/scripts/evalTangentWindow.ts",
