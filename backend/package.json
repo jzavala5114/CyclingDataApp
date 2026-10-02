@@ -13,6 +13,7 @@
     "eval:smoothing": "tsx src/scripts/evalSmoothingLag.ts",
     "eval:linker": "tsx src/scripts/evalLinkerFold.ts",
     "rebuild-model": "tsx src/scripts/rebuildModel.ts",
+    "verify-rebuild": "tsx src/scripts/verifyRebuild.ts",
     "prune-sessions": "tsx src/scripts/pruneEmptySessions.ts",
     "find-holes": "tsx src/scripts/findHoles.ts",
     "diagnose-holes": "tsx src/scripts/diagnoseHoles.ts",

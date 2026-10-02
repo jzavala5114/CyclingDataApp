@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { deriveHeadings, MIN_DERIVE_M } from "./segmentMatcher.js";
+import { deriveHeadings, matchSamplesToSegments, MIN_DERIVE_M } from "./segmentMatcher.js";
 import type { SessionSample } from "../types/index.js";
 
 // If this is wrong, the arm it feeds looks worse than the device heading for a
@@ -131,4 +131,38 @@ test("one heading per sample, in order", () => {
   const samples = track(90, 20, 7);
   const h = deriveHeadings(samples);
   assert.equal(h.length, samples.length);
+});
+
+test("THE DEFAULT is the derived heading, and this is what pins it", () => {
+  // Flipping `headingSource`'s default rewrites every height on the map, and
+  // when it was flipped from "device" to "derived" on 2026-10-01 all 204 tests
+  // stayed green. Nothing watched the single most consequential constant in the
+  // matcher. This is that watch: it does not re-test what derived means, it
+  // asserts which one you get when you ask for nothing.
+  const M_PER_DEG = 111320;
+  const cosLat = Math.cos((38.82 * Math.PI) / 180);
+  const seg = {
+    id: 1, osmWayId: "w1", kind: "road", streetName: "Pinned Street",
+    startNodeId: "n1", endNodeId: "n2", pieceIndex: 0, bearingDeg: 90, lengthM: 200,
+    geom: {
+      type: "LineString" as const,
+      coordinates: [[-104.82, 38.82], [-104.82 + 200 / (M_PER_DEG * cosLat), 38.82]],
+    },
+  } as unknown as Parameters<typeof matchSamplesToSegments>[1][number];
+
+  // Riding due east while the device insists it is heading north. Derived reads
+  // the movement and matches; device reads 0 and is rejected by the bearing
+  // test, so the two arms cannot be confused for one another here.
+  const samples = [0, 1, 2, 3, 4].map((i) =>
+    at(38.82, -104.82 + (i * 25) / (M_PER_DEG * cosLat), i),
+  ).map((s) => ({ ...s, headingDeg: 0 }) as SessionSample);
+
+  const count = (runs: ReturnType<typeof matchSamplesToSegments>) =>
+    runs.reduce((n, r) => n + r.samples.length, 0);
+  const byDefault = count(matchSamplesToSegments(samples, [seg]));
+  const asDerived = count(matchSamplesToSegments(samples, [seg], { headingSource: "derived" }));
+  const asDevice = count(matchSamplesToSegments(samples, [seg], { headingSource: "device" }));
+
+  assert.equal(byDefault, asDerived, "the default must be the derived heading");
+  assert.notEqual(asDerived, asDevice, "or this fixture proves nothing about the default");
 });

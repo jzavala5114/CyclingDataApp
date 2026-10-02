@@ -498,7 +498,7 @@ export function matchSamplesToSegments(
   {
     tangentWindowM = TANGENT_WINDOW_M,
     disconnectPenaltyM = DISCONNECT_PENALTY_M,
-    headingSource = "device",
+    headingSource = "derived",
     positionFilter = null,
   }: MatchOptions = {},
 ): MatchedRun[] {
