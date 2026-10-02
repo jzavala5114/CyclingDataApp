@@ -131,6 +131,39 @@ async function main(): Promise<void> {
   console.log(`  before ${before.size}   after ${after.size}   (${after.size - before.size >= 0 ? "+" : ""}${after.size - before.size})`);
   console.log(`  added ${added.length}   removed ${removed.length}   in both ${shared.length}`);
 
+  // Reported because the first version of this script did not, and the one
+  // thing a rebuild visibly changed was the line count: the speed limit on
+  // 2026-10-01 moved buckets 6,080 -> 6,069 (predicted) and lines 956 -> 951
+  // (not predicted, and only noticed by querying the live API afterwards).
+  // A bucket count cannot see a line disappear, because a line losing its last
+  // bucket and a line losing one of twelve look the same in a total.
+  const linesOf = (m: Map<string, Bucket>) =>
+    new Set([...m.values()].map((b) => `${b.segmentId}|${b.direction}`));
+  const linesBefore = linesOf(before);
+  const linesAfter = linesOf(after);
+  const lostLines = [...linesBefore].filter((k) => !linesAfter.has(k));
+  const newLines = [...linesAfter].filter((k) => !linesBefore.has(k));
+  console.log(`\nDRAWN LINES (segment + direction)`);
+  console.log(
+    `  before ${linesBefore.size}   after ${linesAfter.size}   ` +
+      `(${linesAfter.size - linesBefore.size >= 0 ? "+" : ""}${linesAfter.size - linesBefore.size})`,
+  );
+  console.log(`  lost ${lostLines.length}   gained ${newLines.length}`);
+  const segmentsOf = (s: Set<string>) => new Set([...s].map((k) => k.split("|")[0]));
+  const segBefore = segmentsOf(linesBefore);
+  const segAfter = segmentsOf(linesAfter);
+  const blanked = [...segBefore].filter((id) => !segAfter.has(id));
+  console.log(
+    `  segments drawn ${segBefore.size} -> ${segAfter.size}` +
+      (blanked.length
+        ? `   ${blanked.length} STREET(S) GO BLANK in both directions: ${blanked.join(", ")}`
+        : `   no segment loses both directions`),
+  );
+  for (const k of lostLines.slice(0, 20)) console.log(`    lost   ${k}`);
+  if (lostLines.length > 20) console.log(`    ...${lostLines.length - 20} more`);
+  for (const k of newLines.slice(0, 20)) console.log(`    gained ${k}`);
+  if (newLines.length > 20) console.log(`    ...${newLines.length - 20} more`);
+
   console.log(`\nHEIGHTS, over the ${shared.length} buckets present both ways`);
   console.log(`  moved more than 5mm: ${moved} (${((100 * moved) / Math.max(1, shared.length)).toFixed(1)}%)`);
   console.log(

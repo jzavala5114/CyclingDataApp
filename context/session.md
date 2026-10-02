@@ -1757,6 +1757,19 @@ trails, and every tangent window from 0 to 20 m.
   16 of 29,597 fixes (0.054%) across 6 of 42 rides, worst ride 2.07%. Buckets
   6,080 → 6,069. Only **7.4%** of buckets move at all (the heading change moved
   86%), median 0.0 mm, p99 6.3 cm, max 1.08 m.
+  **It also cost 6 drawn lines and gained 1, net −5 (956 → 951), and the dry run
+  did not predict that.** `verifyRebuild.ts` reported buckets and heights but no
+  line count, so the only visible change was found by querying the live API
+  afterwards. A bucket total cannot see a line disappear: a line losing its last
+  bucket and a line losing one of twelve look identical in a sum. The script now
+  reports lines, segments, and which segments go blank.
+  **Nothing went blank:** each of the 6 is one direction of a segment that still
+  draws the other. They are `#29053/54/55 forward` South El Paso (78/78/82 m),
+  `#22331 backward` and `#30951 backward` Shooks Run Trail, and `#10505 forward`
+  North Weber — whose backward direction was the one gained, so that is a flip.
+  **Four were lines the derived heading had just gained**, all classified
+  `next-door` (the same ground the device drew on a neighbour), so the speed
+  limit reverted part of that consolidation rather than removing ground.
 - ~~**Coverage gaps at block ends.**~~ Largely fixed 2026-09-30 by the coverage
   clamp — the first of the two fixes this note proposed, "clamp coverage to the
   full segment when a run has bookend fixes on both sides". 6,893 m → 4,403 m,
