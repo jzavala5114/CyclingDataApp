@@ -45,6 +45,7 @@ const client = await pool.connect();
 let totalMatched = 0;
 let totalDiscarded = 0;
 let totalSpikes = 0;
+let totalSpeeds = 0;
 const allDiscards: Array<DiscardedRun & { sessionId: number }> = [];
 try {
   await client.query("begin");
@@ -56,19 +57,21 @@ try {
 
   for (const session of usable) {
     const { matchedRuns, discardedRuns, demOffsetM, demPoints,
-            rejectedSpikes, discards } = await processSession(client, session.id);
+            rejectedSpikes, rejectedSpeeds, discards } = await processSession(client, session.id);
     totalMatched += matchedRuns;
     totalDiscarded += discardedRuns;
     totalSpikes += rejectedSpikes;
+    totalSpeeds += rejectedSpeeds;
     for (const discard of discards) allDiscards.push({ ...discard, sessionId: session.id });
     // demOffsetM is (ours - DEM); the correction applied is its negation.
     const anchor =
       demOffsetM == null
         ? "unanchored"
         : `shifted ${(-demOffsetM).toFixed(2)}m onto the DEM datum (${demPoints} points)`;
-    const spikes = rejectedSpikes > 0 ? `, ${rejectedSpikes} spikes dropped` : "";
+    const spikes = rejectedSpikes > 0 ? `, ${rejectedSpikes} height spikes dropped` : "";
+    const speeds = rejectedSpeeds > 0 ? `, ${rejectedSpeeds} unreachable fixes dropped` : "";
     console.log(
-      `  session ${session.id}: ${session.samples} samples -> ${matchedRuns} runs merged, ${discardedRuns} discarded${spikes}, ${anchor}`,
+      `  session ${session.id}: ${session.samples} samples -> ${matchedRuns} runs merged, ${discardedRuns} discarded${spikes}${speeds}, ${anchor}`,
     );
   }
 
@@ -179,7 +182,7 @@ if (allDiscards.length > 0) {
 }
 
 console.log(
-  `\nmerged ${totalMatched} runs, discarded ${totalDiscarded}, dropped ${totalSpikes} impossible fixes`,
+  `\nmerged ${totalMatched} runs, discarded ${totalDiscarded}, dropped ${totalSpikes} impossible heights and ${totalSpeeds} unreachable positions`,
 );
 console.log(
   `model: ${summary[0].buckets} buckets across ${summary[0].segments} segments, ${summary[0].implausible} implausible`,

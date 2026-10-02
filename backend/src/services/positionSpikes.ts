@@ -158,3 +158,72 @@ export function quantiles(
       : NaN,
   }));
 }
+
+// How fast a fix may claim to have travelled before it is not a bicycle.
+//
+// Read off the archive rather than chosen: over 30,342 fixes the device's own
+// speedometer -- Doppler-derived, and independent of the position differencing
+// a multipath bounce corrupts -- never exceeded 17.3 m/s (62.4 km/h). Two
+// fixes top 17 m/s and NONE tops 20. Position differencing over the same rides
+// claims up to 97.9 m/s, 352 km/h.
+//
+// So 20 m/s sits above every speed this rider's device has ever reported, which
+// is the property that matters: the limit cannot reject real riding. It is a
+// plausibility floor, not a performance ceiling. For context, a fast road
+// descent is 50-70 km/h and this rider's fastest recorded is 62.4; a rider who
+// starts bombing 90 km/h descents would need this raised, and the measurement
+// to justify it is `select max(speed_mps) from session_samples`.
+export const MAX_PLAUSIBLE_MPS = 20;
+
+/**
+ * Drops fixes that could only be reached by travelling impossibly fast.
+ *
+ * Judged in BOTH directions, and that is the whole design. A spike is a jump
+ * out and a jump back, so it is impossible to reach AND impossible to leave.
+ * The good fix immediately after a spike is impossible to reach but perfectly
+ * ordinary to leave -- and a backward-only test would reject it, then the next,
+ * and keep rejecting until enough time had elapsed to make the distance
+ * plausible. On a 1km opening spike that is fifty discarded fixes.
+ *
+ * The backward comparison is against the last fix KEPT, so a run of
+ * consecutive spikes cannot drag the reference along with it. The forward
+ * comparison is against the raw next fix, which has not been judged yet; that
+ * is deliberate, because the question it answers is "is there a plausible way
+ * out of here", and the raw neighbour is the honest answer to it.
+ *
+ * The first and last fix are always kept, matching `rejectElevationSpikes`:
+ * neither has the pair of neighbours this test needs, and a ride's endpoints
+ * are where a rider is most likely to be genuinely stationary.
+ */
+export function rejectImpossibleSpeeds(
+  samples: readonly SessionSample[],
+  maxMps = MAX_PLAUSIBLE_MPS,
+): { kept: SessionSample[]; rejected: SessionSample[] } {
+  if (samples.length < 3) return { kept: [...samples], rejected: [] };
+
+  const kept: SessionSample[] = [samples[0]!];
+  const rejected: SessionSample[] = [];
+
+  /** Ground speed between two fixes, or null when the clock says nothing. */
+  const speedBetween = (a: SessionSample, b: SessionSample): number | null => {
+    const dt = (Date.parse(b.recordedAt) - Date.parse(a.recordedAt)) / 1000;
+    if (!(dt > 0)) return null;
+    const d = hypot(offsetM(a, b));
+    return Number.isFinite(d) ? d / dt : null;
+  };
+
+  for (let i = 1; i < samples.length - 1; i++) {
+    const sample = samples[i]!;
+    const inbound = speedBetween(kept[kept.length - 1]!, sample);
+    const outbound = speedBetween(sample, samples[i + 1]!);
+    // A null leg is not evidence of anything, so it cannot condemn the fix.
+    if (inbound != null && outbound != null && inbound > maxMps && outbound > maxMps) {
+      rejected.push(sample);
+      continue;
+    }
+    kept.push(sample);
+  }
+
+  kept.push(samples[samples.length - 1]!);
+  return { kept, rejected };
+}

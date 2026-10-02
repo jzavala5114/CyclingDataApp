@@ -20,9 +20,9 @@ Where to start depends on what you came for:
 |---|---|
 | know what the app is and how a ride becomes a coloured line | "What it is", "Layout", "Data flow" |
 | change anything in the backend | "Bugs already paid for" — 29 failure modes, each one paid for once already |
-| run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `eval:linker` |
+| run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | "Open items" — the `NEXT:` bullet, currently **the derived-heading ship decision**: measured and recommended, needs a rebuild dry run first |
+| pick up the next piece of work | "Open items" — nothing is mid-flight. The derived heading and the speed limit both shipped 2026-10-01 |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see what is built, measured and waiting on a decision | "Branches awaiting a call", immediately below |
 
@@ -1214,7 +1214,7 @@ kills four of the five findings at once. Read this section first; the obvious
 approaches are the ones already tried.
 ## Open items
 
-### The 36 lines, enumerated — DONE, and the answer is ship it
+### The 36 lines, enumerated — DONE, and it SHIPPED 2026-10-01
 
 `npm run eval:heading-lines` (`enumerateHeadingLines.ts`, 39 tests, 15/15
 mutants as expected). Every line one heading draws and the other does not, each
@@ -1261,9 +1261,31 @@ decision earlier in the ride moves where the run starts and the traversal gate
 then rejects it. A heading fallback cannot recover it. **Viterbi can**, which is
 the ceiling three other notes already name.
 
-**If it ships** it needs a full `rebuild-model`: every bucket on the map today
-was matched with the device heading. One line changes:
-`segmentMatcher.ts` `headingSource = "device"` → `"derived"`.
+**SHIPPED 2026-10-01**, `builtAt 2026-10-02T01:32:09.613Z`, followed by a full
+`rebuild-model`. The dry run — `npm run verify-rebuild`, which does the real
+rebuild inside a rolled-back transaction rather than reimplementing the
+averaging — predicted 6,080 buckets, and the rebuild produced exactly **6,080
+across 745 segments, 0 implausible**. Live `/segments` returns 745 segments and
+956 lines against the predicted 745 / 956.
+
+**What the dry run was for.** 86% of the 5,961 shared buckets moved: median
+2.8 cm, p90 8.6 cm, but **p99 1.15 m and worst 14.6 m** (`#19477` backward at
+0 m, where the readings collapse 3 → 1). The big movers are nearly all bucket 0
+of a line whose averaging disappears, which is a thinner number rather than a
+better one.
+**What made it shippable is the gradient, because that is what gets painted.**
+Adjacent-bucket `|grade|` is flat to better at every threshold: >15% 136 → 132,
+>25% 34 → 34, >40% 9 → 7, >60% 5 → 4, >100% 1 → 1, and p50/p90/p99
+3.6/9.4/20.6 → 3.6/9.4/21.0. The absurd ones that exist (103%, −76%) are
+identical before and after, so they are pre-existing and not this change. Four
+line-starts gained a spurious cliff (`#19477` −21% → +75%, `#19475`, `#23848`,
+`#14359`) and two worse ones elsewhere went away.
+**Residual risk, stated rather than resolved:** buckets that drop to a single
+reading are noisier even where today's gradient looks fine.
+**The default is now pinned by a test.** Flipping `headingSource` from
+`"device"` to `"derived"` left all 204 tests green — nothing watched the most
+consequential constant in the matcher. The new test was verified by flipping
+the default back and watching it go red, not by assuming it would.
 
 ### What landed on 2026-09-30
 
@@ -1705,6 +1727,36 @@ trails, and every tangent window from 0 to 20 m.
   the same reason `tangentWindowM` and `disconnectPenaltyM` are kept — so the
   alternative is re-measurable through the real code path rather than
   re-implemented.
+  **What DID ship for this, 2026-10-01: a speed limit on the data.**
+  `rejectImpossibleSpeeds` in `positionSpikes.ts`, called from
+  `sessionProcessor.ts` immediately before `rejectElevationSpikes` and for a
+  reason — the height test scales a fix's deviation by the distance to its
+  neighbours, so a fix claiming to be 300 m away corrupts the judgement of the
+  fixes either side of it before its own height is considered.
+  **`MAX_PLAUSIBLE_MPS = 20` (72 km/h), and the threshold rests on the device's
+  own speedometer rather than on a kink in the data.** Doppler-derived reported
+  speed over 30,342 fixes: median 11.9 km/h, p90 24.3, p99 35.0, p99.9 48.7,
+  **max 62.4 (17.3 m/s), and zero fixes above 20 m/s**. On roads the median is
+  15.8 and the max 52.7; on trails 11.3 and 55.0. So 20 m/s sits above
+  everything the device has ever claimed, which is the property that matters:
+  **the limit cannot reject real riding.**
+  **There is no cliff to find**, which is why the safety argument is doing the
+  work. Dropped fixes by limit: 12 m/s 91 (16 rides), 14 → 43, 16 → 25,
+  18 → 20, **20 → 16 (6 rides)**, 25 → 12, 30 → 5, 40 → 1, 60 → 0. A smooth
+  decay, no natural boundary. 12 m/s is only 43 km/h and would delete ordinary
+  descents, so anything at or below the device's 17.3 m/s maximum is unsafe by
+  construction.
+  **Both directions, and that is the design.** A spike is impossible to reach
+  AND impossible to leave. The good fix right after a spike is impossible to
+  reach but ordinary to leave, and a backward-only test would reject it, then
+  the next, until enough time had passed to make the distance plausible — on a
+  1 km opening spike, about fifty discarded fixes. The backward comparison is
+  against the last fix KEPT so a burst cannot drag the reference; the forward
+  one is against the raw next fix. First and last fix are always kept.
+  **Cost, measured by `verify-rebuild` against the live heading-fixed model:**
+  16 of 29,597 fixes (0.054%) across 6 of 42 rides, worst ride 2.07%. Buckets
+  6,080 → 6,069. Only **7.4%** of buckets move at all (the heading change moved
+  86%), median 0.0 mm, p99 6.3 cm, max 1.08 m.
 - ~~**Coverage gaps at block ends.**~~ Largely fixed 2026-09-30 by the coverage
   clamp — the first of the two fixes this note proposed, "clamp coverage to the
   full segment when a run has bookend fixes on both sides". 6,893 m → 4,403 m,

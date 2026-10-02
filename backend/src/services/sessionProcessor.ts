@@ -16,6 +16,7 @@ import {
   type BucketSample,
 } from "./elevationAggregator.js";
 import { rejectElevationSpikes, smoothElevations } from "./elevationSmoothing.js";
+import { rejectImpossibleSpeeds } from "./positionSpikes.js";
 import { demKey, ensureDemElevations, type DemPosition } from "./demElevation.js";
 import { fitAnchor, MIN_POINTS_FOR_ANCHOR } from "./anchorFit.js";
 import type { Direction, Segment, SessionSample } from "../types/index.js";
@@ -63,6 +64,11 @@ export interface ProcessResult {
   // Fixes dropped for claiming a physically impossible height. Reported so a
   // ride that is mostly spikes is visible rather than silently thinned.
   rejectedSpikes: number;
+  // Fixes dropped for claiming a physically impossible position: a multipath
+  // bounce that would need the rider to exceed MAX_PLAUSIBLE_MPS to reach and
+  // to leave. Counted separately from the height spikes above because they are
+  // different defects with different causes.
+  rejectedSpeeds: number;
   // Diagnostics only -- never written to the database, and stripped from the
   // API response. The rebuild script aggregates these.
   discards: DiscardedRun[];
@@ -131,7 +137,7 @@ export async function processSession(
   if (sampleRows.length === 0) {
     return {
       matchedRuns: 0, discardedRuns: 0, demOffsetM: null,
-      demPoints: 0, rejectedSpikes: 0, discards: [],
+      demPoints: 0, rejectedSpikes: 0, rejectedSpeeds: 0, discards: [],
     };
   }
 
@@ -159,7 +165,12 @@ export async function processSession(
   // Spikes are removed before the EMA, not after: smoothing an impossible
   // reading spreads it over the fixes around it instead of deleting it, so by
   // the time it reaches the buckets it has contaminated its neighbours too.
-  const { kept, rejected: rejectedSpikes } = rejectElevationSpikes(sampleRows);
+  // Impossible positions go first, because the elevation test scales a fix's
+  // deviation by the distance to its neighbours -- so a fix that claims to be
+  // 300m away corrupts the judgement of the fixes either side of it before its
+  // own height is ever considered.
+  const { kept: reachable, rejected: rejectedSpeeds } = rejectImpossibleSpeeds(sampleRows);
+  const { kept, rejected: rejectedSpikes } = rejectElevationSpikes(reachable);
   const smoothed = smoothElevations(kept);
   // Rejoined before gating, not after: the gate judges whether a run covered
   // ground, and a traversal chopped into pieces cannot answer that honestly.
@@ -357,6 +368,7 @@ export async function processSession(
     demOffsetM: anchorM,
     demPoints,
     rejectedSpikes: rejectedSpikes.length,
+    rejectedSpeeds: rejectedSpeeds.length,
     discards,
   };
 }

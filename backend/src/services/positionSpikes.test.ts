@@ -4,6 +4,8 @@ import {
   measurePositionSpikes,
   isSpike,
   quantiles,
+  rejectImpossibleSpeeds,
+  MAX_PLAUSIBLE_MPS,
   MIN_CHORD_M,
   type SpikeMeasure,
 } from "./positionSpikes.js";
@@ -305,4 +307,138 @@ test("CONTROL: the default and an explicit null both keep every fix", async () =
     runs.reduce((n, r) => n + r.samples.length, 0);
   assert.equal(count(byDefault), 5);
   assert.equal(count(byNull), 5);
+});
+
+// -------------------------------------------- rejectImpossibleSpeeds
+
+// The one that goes into the data path. If it rejects too eagerly it deletes
+// real riding from the only durable record there is; if the both-directions
+// rule is wrong it eats the whole stretch after a spike rather than the spike.
+
+test("MAX_PLAUSIBLE_MPS sits above every speed this device has reported", () => {
+  // 20 m/s = 72 km/h. The archive's device-reported maximum is 17.3 m/s
+  // (62.4 km/h) over 30,342 fixes, with zero above 20. That headroom is the
+  // reason the limit cannot reject real riding, so it is asserted rather than
+  // left as a comment.
+  assert.equal(MAX_PLAUSIBLE_MPS, 20);
+  assert.ok(MAX_PLAUSIBLE_MPS > 17.3, "must clear the fastest fix in the archive");
+});
+
+test("ordinary riding is untouched", () => {
+  // 20m per second is 72 km/h -- right at the limit but not over it.
+  const ride = [0, 1, 2, 3, 4, 5].map((i) => at(i * 10, 0, i));
+  const { kept, rejected } = rejectImpossibleSpeeds(ride);
+  assert.equal(rejected.length, 0);
+  assert.equal(kept.length, ride.length);
+});
+
+test("THE CASE THIS EXISTS FOR: a 352 km/h jump out and back", () => {
+  // Fix 2 is thrown 100m sideways and returns: 100 m/s in, 100 m/s out.
+  const ride = [at(0, 0, 0), at(10, 0, 1), at(20, 100, 2), at(30, 0, 3), at(40, 0, 4)];
+  const { kept, rejected } = rejectImpossibleSpeeds(ride);
+  assert.deepEqual(rejected.map((s) => s.id), [2]);
+  assert.deepEqual(kept.map((s) => s.id), [0, 1, 3, 4]);
+});
+
+test("BOTH DIRECTIONS: a good fix after a spike is kept, not eaten", () => {
+  // The failure mode a backward-only test has. The opening fix is 1km out, so
+  // every later fix is impossible to REACH from it -- but each is perfectly
+  // ordinary to LEAVE. Backward-only would reject fix after fix until enough
+  // time had passed to make 1km plausible, taking ~50 fixes with it.
+  const ride = [at(0, 1000, 0), ...[1, 2, 3, 4, 5].map((i) => at(i * 10, 0, i))];
+  const { kept, rejected } = rejectImpossibleSpeeds(ride);
+  assert.equal(rejected.length, 0, "the ride survives one bad opening fix");
+  assert.equal(kept.length, ride.length);
+});
+
+test("the backward reference is the last fix KEPT, so a burst cannot drag it", () => {
+  // Three consecutive spikes. Measured against raw neighbours each one would
+  // look plausible relative to the last spike; against the last KEPT fix they
+  // are all impossible.
+  const ride = [
+    at(0, 0, 0),
+    at(5, 300, 1), at(10, 600, 2), at(15, 300, 3),
+    at(20, 0, 4), at(30, 0, 5),
+  ];
+  const { rejected } = rejectImpossibleSpeeds(ride);
+  assert.deepEqual(rejected.map((s) => s.id), [1, 2, 3]);
+});
+
+test("the first and last fix are always kept", () => {
+  // Neither has the pair of neighbours the test needs, and a ride's endpoints
+  // are where a rider is most likely genuinely stopped.
+  const ride = [at(0, 5000, 0), at(10, 0, 1), at(20, 0, 2), at(30, 5000, 3)];
+  const { kept } = rejectImpossibleSpeeds(ride);
+  assert.ok(kept.some((s) => s.id === 0), "first kept");
+  assert.ok(kept.some((s) => s.id === 3), "last kept");
+});
+
+test("BOUNDARY: the limit bites, and either side of it behaves", () => {
+  // Deliberately NOT exactly 20 m/s. These fixtures build a position from a
+  // metre offset and the check converts it back, and the round trip lands a
+  // hair either side of the threshold -- an exact-boundary fixture here passes
+  // or fails on the last bit of a double, which tests the floating point and
+  // not the rule. 18 and 22 are unambiguous.
+  const under = [at(0, 0, 0), at(0, 18, 1), at(0, 36, 2), at(0, 54, 3)];
+  assert.equal(rejectImpossibleSpeeds(under).rejected.length, 0, "18 m/s is riding");
+  const over = [at(0, 0, 0), at(0, 2100, 1), at(0, 0, 2), at(0, 10, 3)];
+  assert.equal(rejectImpossibleSpeeds(over).rejected.length, 1, "2100 m/s is not");
+});
+
+test("the comparison is strictly greater, so the limit itself is allowed", () => {
+  // Checked against the predicate's own arithmetic rather than through a
+  // coordinate round trip, for the reason the test above gives.
+  const ride = [at(0, 0, 0), at(0, 100, 1), at(0, 0, 2), at(0, 10, 3)];
+  // The jump is ~100 m/s. At a limit of exactly 100 it must survive.
+  assert.equal(rejectImpossibleSpeeds(ride, 101).rejected.length, 0, "under the limit");
+  assert.equal(rejectImpossibleSpeeds(ride, 99).rejected.length, 1, "over the limit");
+});
+
+test("the limit is overridable, so a sweep runs through this code", () => {
+  const ride = [at(0, 0, 0), at(10, 50, 1), at(20, 0, 2), at(30, 0, 3), at(40, 0, 4)];
+  assert.equal(rejectImpossibleSpeeds(ride, 100).rejected.length, 0, "~51 m/s allowed at 100");
+  assert.deepEqual(
+    rejectImpossibleSpeeds(ride, 20).rejected.map((s) => s.id),
+    [1],
+    "and the one spike is rejected at 20",
+  );
+});
+
+test("a zero or backwards time step cannot condemn a fix", () => {
+  // Two fixes sharing a timestamp give an undefined speed, not an infinite
+  // one. Treating that as impossible would delete every duplicate-timestamp
+  // fix in the archive on no evidence at all.
+  const ride = [at(0, 0, 0), at(500, 0, 0), at(20, 0, 1), at(30, 0, 2)];
+  assert.equal(rejectImpossibleSpeeds(ride).rejected.length, 0);
+});
+
+test("a long gap makes a big jump plausible, which is correct", () => {
+  // 1km in 10 minutes is 1.7 m/s. A dropout is not a teleport.
+  const ride = [at(0, 0, 0), at(0, 1000, 600), at(0, 1010, 601), at(0, 1020, 602)];
+  assert.equal(rejectImpossibleSpeeds(ride).rejected.length, 0);
+});
+
+test("degenerate inputs are returned untouched", () => {
+  assert.deepEqual(rejectImpossibleSpeeds([]).kept, []);
+  assert.equal(rejectImpossibleSpeeds([at(0, 0, 0)]).kept.length, 1);
+  assert.equal(rejectImpossibleSpeeds([at(0, 0, 0), at(9999, 0, 1)]).kept.length, 2);
+  assert.equal(rejectImpossibleSpeeds([at(0, 0, 0), at(9999, 0, 1)]).rejected.length, 0);
+});
+
+test("kept and rejected together account for every fix, in order", () => {
+  const ride = [at(0, 0, 0), at(10, 400, 1), at(20, 0, 2), at(30, 0, 3), at(40, 900, 4), at(50, 0, 5)];
+  const { kept, rejected } = rejectImpossibleSpeeds(ride);
+  assert.equal(kept.length + rejected.length, ride.length);
+  assert.deepEqual(
+    [...kept, ...rejected].map((s) => s.id).sort((a, b) => a - b),
+    ride.map((s) => s.id),
+  );
+  assert.deepEqual(kept.map((s) => s.id), [...kept].map((s) => s.id).sort((a, b) => a - b), "order preserved");
+});
+
+test("it does not mutate the samples it is given", () => {
+  const ride = [at(0, 0, 0), at(10, 400, 1), at(20, 0, 2), at(30, 0, 3)];
+  const before = JSON.stringify(ride);
+  rejectImpossibleSpeeds(ride);
+  assert.equal(JSON.stringify(ride), before);
 });
