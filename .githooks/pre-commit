@@ -32,3 +32,27 @@ if echo "$staged" | grep -q '^osm-pipeline/'; then
   echo "pre-commit: pipeline gate tests"
   (cd osm-pipeline && node --test "scripts/**/*.test.mjs")
 fi
+
+# The app's gate lane. It covers the two modules that decide elevation --
+# `barometerWindow` (which pressure readings belong to which GPS fix) and
+# `barometerHealth` (whether the sensor is working, and when to give up on it
+# mid-ride) -- both of which are deliberately import-free so they run under
+# node:test with no emulator, no bridge and no sensor.
+#
+# Worth gating because the thing they protect cannot be checked any other way:
+# a mistake here does not crash, it silently records GPS altitude for a whole
+# ride and nobody finds out until the ride is uploaded.
+#
+# `npm run` rather than `npx`, because this project has no node_modules/.bin and
+# a bare `npx tsc` resolves to an unrelated package of that name.
+if echo "$staged" | grep -q '^mobile/'; then
+  if [ -d mobile/node_modules ]; then
+    echo "pre-commit: mobile typecheck"
+    (cd mobile && npm run --silent typecheck)
+
+    echo "pre-commit: mobile gate tests"
+    (cd mobile && npm run --silent test)
+  else
+    echo "pre-commit: mobile/node_modules missing, skipping mobile gate tests"
+  fi
+fi
