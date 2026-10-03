@@ -3,20 +3,22 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-10-02.
+Last updated 2026-10-03.
 
-**Nothing is mid-flight. One thing waits on Julian rather than on code: a test
-ride with the screen deliberately locked — see "The barometer, shipped
-2026-10-02".** The code is merged and an APK builds; the feature cannot be
-verified any other way.
+**Nothing is mid-flight, and nothing is left that this machine can do.** The
+barometer work is merged AND the release APK is installed on the phone. The one
+remaining step is physical: **ride with the screen deliberately locked, then run
+`npm run verify-barometer`.** See "The barometer: shipped, installed, awaiting
+one ride".
 
-As of 2026-10-02: `main` at `902e5c8`, the only branch, local and remote.
+As of 2026-10-03: `main` at `957c8fb`, the only branch, local and remote.
 Production serving `builtAt 2026-10-03T00:33:14.010Z`. The model is **6,069
 buckets across 745 segments, 951 drawn lines**, unchanged by the barometer work
-— nothing in it touches the matcher or the model. 253 backend tests and 54 app
-tests; `mobile/` has a gate lane for the first time. The first deploy attempt
-back on 2026-09-30 failed; see note 29, which is worth reading before adding
-anything to `backend/` that imports outside it.
+— nothing in it touches the matcher or the model, and that was re-queried after
+the merge rather than assumed. 253 backend tests and 56 app tests; `mobile/` has
+a gate lane for the first time. The first deploy attempt back on 2026-09-30
+failed; see note 29, which is worth reading before adding anything to
+`backend/` that imports outside it.
 
 Where to start depends on what you came for:
 
@@ -26,15 +28,15 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 29 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"The barometer, shipped 2026-10-02"** — the code is merged; what is left is one test ride and `npm run verify-barometer` |
+| pick up the next piece of work | **"The barometer: shipped, installed, awaiting one ride"** — nothing left but the ride itself |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
 ## Where things stand
 
-**`main` is `902e5c8`, and it is the only branch — local and remote.** Nothing
+**`main` is `957c8fb`, and it is the only branch — local and remote.** Nothing
 is parked, nothing is awaiting a decision, no uncommitted work. 253 backend
-tests, 54 app tests.
+tests, 56 app tests.
 
 Production serves `builtAt 2026-10-03T00:33:14.010Z`. The model is **6,069
 buckets across 745 segments, 745 / 951 lines** on the live API, confirmed
@@ -1305,12 +1307,13 @@ reading are noisier even where today's gradient looks fine.
 consequential constant in the matcher. The new test was verified by flipping
 the default back and watching it go red, not by assuming it would.
 
-### The barometer, shipped 2026-10-02 — one test ride still owed
+### The barometer: shipped, installed, awaiting one ride
 
-**The code is merged (`4f0038d`). What is left is a ride, and it cannot be done
-from this machine.** Everything shipped on 2026-09-30 and 2026-10-01 was backend
-work provable against the archive; this was an Android sensor lifecycle, and no
-replay reaches it.
+**DONE and merged (`4f0038d`, `957c8fb`). DONE and installed on the phone.
+LEFT: one ride with the screen locked, then `npm run verify-barometer`.** That
+is the whole remaining list. Everything shipped on 2026-09-30 and 2026-10-01 was
+backend work provable against the archive; this was an Android sensor lifecycle,
+and no replay reaches it.
 
 **The defect.** `expo-sensors` unregistered the pressure sensor itself:
 `SensorProxy.kt:99` has `OnActivityEntersBackground → stopObserving()`. Android
@@ -1332,19 +1335,49 @@ native module is ever added. It registers a `SensorEventListener` against the
 **application context** on its own `HandlerThread`, and has **no
 `OnActivityEntersBackground` hook at all**; that omission is the whole feature.
 
-**Readings go into a 1024-entry ring buffer with wall-clock timestamps**, pulled
-once per task invocation, rather than pushed as bridge events: 5 Hz into a paused
-JS context for a twenty-minute screen-off stretch is 6,000 crossings nothing is
+**Readings go into a ring buffer with wall-clock timestamps**, pulled once per
+task invocation, rather than pushed as bridge events: 5 Hz into a paused JS
+context for a twenty-minute screen-off stretch is 6,000 crossings nothing is
 listening to. The consumer changed shape to match. A running sum drained once per
 fix was bounded at 1-4 s only because the drain and the sampling shared a
 context; once readings accumulate natively nothing bounds it, and **a mean over
 sixty seconds is a height at no particular place** -- 15 m of error at 5 m/s on a
-5% grade. Each fix now averages readings within **±500 ms of its own timestamp**,
-half of `MIN_INTERVAL_MS`, so neighbouring fixes never share a reading. They must
-not: shared readings correlate their noise and the backend differences
-neighbours to get a gradient.
+5% grade. Each fix now averages readings within **+/-500 ms of its own
+timestamp**, half of `MIN_INTERVAL_MS`, so neighbouring fixes never share a
+reading. They must not: shared readings correlate their noise and the backend
+differences neighbours to get a gradient.
 
-**A cold review rejected the first version. Read this before touching it.**
+#### The hardware, measured over USB on 2026-10-03 — do not re-measure
+
+The test device is a **Pixel 10 Pro** (`59150DLCH000E8`). `adb shell dumpsys
+sensorservice` reports:
+
+```
+SPL07003 Barometer | Goermicro | type: android.sensor.pressure(6) | flags: 0x0
+  continuous | minRate=1.00Hz | maxRate=25.00Hz
+  FIFO (max,reserved) = (3000, 3000) events | non-wakeUp
+```
+
+Four things follow, and they are why two constants are what they are:
+
+- **5 Hz is comfortable.** Max rate is 25 Hz, so the 200 ms request is well
+  inside the part.
+- **It is `non-wakeUp`**, so `getDefaultSensor(TYPE_PRESSURE, true)` returns null
+  and the module takes the normal variant. Expected, not a fault. The status line
+  reports it by omitting "wake-up".
+- **The FIFO holds 3000 events**, which is ten minutes at 5 Hz and fifty at the
+  1 Hz floor. A non-wake sensor keeps filling that FIFO while the SoC is
+  suspended and flushes it on wake, so **readings legitimately arrive carrying
+  true timestamps minutes old.** This is good news for screen-off riding: the
+  sensor queues rather than stopping.
+- A live reading of **821.80 hPa** converts to 1731.9 m by our formula against a
+  real elevation near 1840 m. That gap is correct and expected: the formula
+  assumes a fixed sea-level pressure, only differences are used, and the DEM
+  anchor sets the level per ride.
+
+#### What the cold review caught, and what the hardware caught after it
+
+A cold review rejected the first version. Read this before touching any of it.
 
 - **`startAsync` returning true means Android ACCEPTED the registration, not
   that a reading arrived.** The hook treated it as success and never subscribed
@@ -1352,35 +1385,75 @@ neighbours to get a gradient.
   barometer end to end -- including the screen-on part that worked before any of
   this. A real regression, reproduced against the running code.
   `shouldAbandonNative` now falls back after 20 s with no barometric fix, judged
-  on the **fixes actually stored**, not on the module's own counters, because a
-  skewed sensor clock delivers thousands of readings that land in no fix's
-  window.
+  on the **fixes actually stored**, not on the module's own counters.
 - **The instrument was wrong in both directions.** A flat 10 s bracket in
   `verifyBarometer.ts` reported `alive` for a barometer blackout of any length
   that contained one GPS fix (30 s, 60 s, 300 s, 900 s, 3600 s all scored 20 s)
   and `stopped` for an honest 20 s blip containing two. It was tracking fix
   density, not barometer health, **and a test defended it**. The bracket now
   comes from the ride's own median gap, gaps past 30 s are never charged, and a
-  ride too sparse to judge gets its own `unmeasured` verdict -- the `no-witness`
-  idea the heading-lines work already settled.
-- Three smaller ones, each now with a regression test naming what the broken
-  version printed: the on-bike line read `5.0 Hz, 12000 readings` while every
-  stored height was GPS; an unregistered sensor rendered as `Barometer starting`
-  for the rest of the ride; `start()`'s idempotent early return left counters
-  cumulative across rides.
-- **Not fixed:** a dev-build-only remount race, if Fast Refresh lands inside
-  `startAsync`'s first few milliseconds. The watchdog cuts it from losing a ride
-  to losing 20 seconds.
+  ride too sparse to judge gets its own `unmeasured` verdict.
+- Three smaller ones, each with a regression test naming what the broken version
+  printed: the on-bike line read `5.0 Hz, 12000 readings` while every stored
+  height was GPS; an unregistered sensor rendered as `Barometer starting` for the
+  rest of the ride; `start()`'s idempotent early return left counters cumulative
+  across rides.
 
-**What NOT to attempt.** Patching out `OnActivityEntersBackground` in
-`node_modules`: unsupported, and no build reproduces it. A `PARTIAL_WAKE_LOCK`:
-the 11-19 s signature says suspend was never the cause, and it would cost
-battery for the whole ride. Both were considered and rejected on evidence.
+**Then the hardware caught the fix for the first one** (`957c8fb`). Answering the
+review I had narrowed `MAX_EVENT_AGE_MS` from 120 s to 5 s, reasoning that
+`maxReportLatencyUs = 0` disables batching so nothing could legitimately be old.
+The 3000-event FIFO above proves that false. The 5 s guard would have stamped
+every flushed reading "now" -- hundreds spanning minutes, collapsed onto one
+instant and averaged into a single fix, which is exactly the error the windowing
+exists to prevent, caused by the guard meant to protect it.
 
-**HOW TO FINISH IT.** Build and install, then ride with the screen deliberately
-locked for several minutes in the middle. While riding, the map shows one line:
-`Barometer 100% of fixes, 5.0 Hz` is healthy, and anything red names what is
-wrong. Then:
+**The lesson under it: that guard was never the filter.** `altitudeAtFix` is. An
+old reading matches no fix's window and is already handled correctly by being
+ignored; repairing it to "now" is the only thing that breaks that. The guard is
+now a backstop for one case alone, a sensor clock on a different BASE from the
+boot clock. `MAX_EVENT_AGE_MS` is an hour and `RING_CAPACITY` is 4096, both sized
+to the measured FIFO rather than guessed.
+
+**Still not fixed, known:** a dev-build-only remount race, if Fast Refresh lands
+inside `startAsync`'s first few milliseconds. The watchdog cuts it from losing a
+ride to losing 20 seconds. Also: the Kotlin has no test harness in this repo, so
+`PressureRing` is covered only by a throwaway JVM probe a reviewer wrote (400
+differential-fuzz trials, 2.4 M concurrent reads, zero divergence) and not by
+anything that runs again on its own.
+
+#### What NOT to attempt
+
+Patching out `OnActivityEntersBackground` in `node_modules`: unsupported, and no
+build reproduces it. A `PARTIAL_WAKE_LOCK`: the 11-19 s signature says suspend
+was never the cause, and it would cost battery for the whole ride. Both were
+considered and rejected on evidence.
+
+**And do not try wireless debugging on the current network.** Measured
+2026-10-03: this machine sits on `100.110.132.17/26` and the phone on
+`100.110.146.104`, different subnets behind carrier-grade NAT, mutually
+unreachable (ICMP and TCP to the phone both time out). Multicast never crosses
+subnets, so `adb mdns services` is empty even with the pairing dialog open and
+Android Studio's pairing spins forever. **USB works and is the answer.** A phone
+hotspot also works, since the phone then hosts the network itself.
+
+#### HOW TO FINISH IT
+
+The release APK is **already built and installed** (`lastUpdateTime 2026-10-03
+08:38:01`). To rebuild and reinstall after a change:
+
+```
+cd mobile/android && ./gradlew :app:assembleRelease
+"$ANDROID_HOME/platform-tools/adb.exe" install -r \
+  app/build/outputs/apk/release/app-release.apk
+```
+
+Note **release, not debug**: `assembleDebug` produces an APK with no
+`index.android.bundle` in it, which loads JS from the Metro dev server and dies
+the moment the phone leaves the laptop's network. That would waste a ride.
+
+Then ride with the screen deliberately locked for several minutes in the middle.
+While riding, the map shows one line: `Barometer 100% of fixes, 5.0 Hz` is
+healthy, and anything red names what is wrong. Afterwards:
 
 ```
 cd backend && npm run verify-barometer
@@ -1396,12 +1469,43 @@ in that script's output; roughly half the labelled rides read `stopped`, with
 sessions 76 and 79 losing 17 minutes each.
 
 **Do not confuse this with the oversampling work**, which is separate and also
-done: oversampling cut sensor noise 2.5× but end-to-end slope error only
+done: oversampling cut sensor noise 2.5x but end-to-end slope error only
 5.00% → 3.90%, because on trails the barometer is **not** the dominant error
 term -- the DEM sampled along an OSM centreline that on singletrack is not where
 the rider actually was accounts for more. Closing the screen-off gap raises
 screen-off rides to screen-on quality; it does not make trail rides as good as
 street rides.
+
+### What landed on 2026-10-03
+
+A short day, and all of it was the hardware correcting the code.
+
+1. **`957c8fb`** — `MAX_EVENT_AGE_MS` 5 s → 1 hour and `RING_CAPACITY` 1024 →
+   4096, both sized to the Pixel's measured 3000-event FIFO instead of to a
+   guess. The 5 s value had been set the previous day answering a cold review,
+   and it would have collapsed every FIFO flush onto one instant. See "The
+   barometer: shipped, installed, awaiting one ride" for the full reasoning.
+2. **The release APK is built and on the phone** (`lastUpdateTime 08:38:01`).
+   `assembleRelease` signs with the debug keystore out of the box here, so no
+   keystore setup is needed.
+3. **Wireless debugging was ruled out on this network, with measurements**, after
+   it was tried properly: different subnets behind carrier-grade NAT, phone
+   unreachable by ICMP and TCP, `adb mdns services` empty with the pairing dialog
+   open. USB is the route. Written into the barometer section so nobody spends
+   another hour on it.
+
+**The lesson, and it is the third of this shape in three days.** On 10-01 the
+rebuild dry run counted buckets but not lines, so a change's only visible effect
+was found by querying the live API afterwards. On 10-02 the instrument that
+grades the test ride passed a nine-minute blackout, with a test defending it. On
+10-03 a guard sized by reasoning rather than by measurement would have
+reintroduced the exact error the feature exists to prevent.
+
+Every one of them is the same failure: **a number chosen by argument instead of
+by measurement, with nothing checking the case where it should have said no.**
+The cure each time was cheap and the same -- go and read what the real thing
+actually does. Thirty seconds of `adb shell dumpsys sensorservice` was worth more
+than a day of careful reasoning about batching.
 
 ### What landed on 2026-10-02
 
@@ -1481,7 +1585,15 @@ trails, and every tangent window from 0 to 20 m.
 - **Two directions on one path** (deferred). Roads get two ±4 m offset lines,
   as intended. Unresolved for genuine single paths, and coupled to putting
   lines exactly *on* a trail: removing the offset makes both directions overlap.
-- **Keep the barometer alive with the screen off.** The measured 2× slope-error
+- ~~**Keep the barometer alive with the screen off.**~~ **Code done 2026-10-02,
+  APK installed 2026-10-03, one test ride still owed.** The third route below is
+  the one that shipped, as predicted: a native module holding the
+  `SensorEventListener` against the process. See "The barometer: shipped,
+  installed, awaiting one ride" for what was built, the two defects a cold review
+  caught in it, the Pixel's measured sensor limits, and how the ride is graded.
+  The original note is kept below because its reasoning is why the third route
+  was chosen.
+  The measured 2× slope-error
   penalty applies to every screen-off ride, silently. Three routes, cheapest
   first: `expo-keep-awake` while tracking, so the activity never backgrounds
   (two lines, works today, costs battery and leaves the screen exposed);
