@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as Location from "expo-location";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { Barometer } from "expo-sensors";
+import * as RideBarometer from "../../modules/ride-barometer";
 import {
   CRUISE_OPTIONS,
   LOCATION_TASK_NAME,
@@ -12,33 +13,30 @@ import {
   resetTrackingState,
   setActiveSession,
 } from "../services/backgroundLocationTask";
+import { altitudeFromPressureHpa } from "../services/barometerWindow";
+import {
+  HEALTH_WINDOW_FIXES,
+  recentBarometerShare,
+  shouldAbandonNative,
+  type BarometerHealth,
+} from "../services/barometerHealth";
 import type { TrackedSample } from "../types";
 
-// iOS's Barometer reports `relativeAltitude` (metres, relative to wherever
-// tracking started) directly. Android only exposes raw `pressure` (hPa), so
-// there we derive altitude from the barometric formula and subtract the
-// session's first reading to get the same relative measure. The absolute
-// value from this formula depends on the day's sea-level pressure and isn't
-// trustworthy, but the *changes* are -- which is why it's anchored to a GPS
-// baseline in backgroundLocationTask.ts rather than used as-is.
-const SEA_LEVEL_HPA = 1013.25;
-
-function pressureToAltitudeM(pressureHpa: number): number {
-  return 44330 * (1 - Math.pow(pressureHpa / SEA_LEVEL_HPA, 1 / 5.255));
-}
-
-// Poll the barometer far faster than fixes arrive and average the readings
-// (see `drainBarometerRelativeM` in backgroundLocationTask.ts). At one reading
-// per fix there was nothing to average and the single value carried its full
-// noise into the elevation series; at 5Hz a 1-4s fix interval collects 5-20
-// readings, cutting noise by roughly sqrt(n).
+// Poll the barometer far faster than fixes arrive and average the readings. At
+// one reading per fix there was nothing to average and the single value carried
+// its full noise into the elevation series; at 5Hz a 1-4s fix interval collects
+// 5-20 readings, cutting noise by roughly sqrt(n).
 //
 // Android 12 caps every sensor at 200Hz, so 5Hz is far inside the limit, and a
 // pressure sensor costs almost nothing next to the GPS this app already runs.
 // The interval is a request, not a guarantee -- the OS may deliver faster or
-// slower, which is why the accumulator counts readings instead of assuming a
-// rate.
+// slower, which is why both paths count readings instead of assuming a rate.
 const BAROMETER_INTERVAL_MS = 200;
+
+// How often to re-read the native module's counters while a ride is running.
+// Matched to the breadcrumb poll because they are both "refresh what the screen
+// shows", and a second interval timer for one line of text is not worth it.
+const BAROMETER_POLL_MS = 5000;
 
 // Tag for the screen lock below. Named rather than defaulted so it cannot be
 // released by anything else that happens to call deactivateKeepAwake().
@@ -65,7 +63,22 @@ export function useTrackingSession() {
   const [startedAt, setStartedAt] = useState<string | null>(null);
   const [samples, setSamples] = useState<TrackedSample[]>([]);
   const [unsavedRide, setUnsavedRide] = useState<UnsavedRide | null>(null);
+  const [barometer, setBarometer] = useState<BarometerHealth | null>(null);
+  // One way, reset when a ride ends. Set by the watchdog below when the native
+  // module is registered but no fix is coming out barometric, which is the one
+  // state that used to cost a whole ride silently.
+  const [nativeAbandoned, setNativeAbandoned] = useState(false);
 
+  // The watchdog judges on the fixes actually being stored, and it runs on an
+  // interval. Holding them in a ref rather than as a dependency keeps that
+  // interval from being torn down and rebuilt every two seconds as the
+  // breadcrumb updates.
+  const samplesRef = useRef<TrackedSample[]>([]);
+  samplesRef.current = samples;
+
+  // Only the `expo-sensors` fallback needs this. On Android the native module
+  // hands over raw pressure and the baseline is taken in
+  // backgroundLocationTask.ts, where the GPS anchor it pairs with already lives.
   const baselinePressureAltitudeM = useRef<number | null>(null);
 
   // Reconcile with whatever the OS is still doing from a previous launch.
@@ -131,49 +144,185 @@ export function useTrackingSession() {
   // currently is, and `elevationFor` re-anchors it to the next GPS altitude, so
   // the series stays continuous across the restart to within GPS accuracy
   // instead of stepping.
+  //
+  // TWO PATHS, AND THE ORDER MATTERS. The native module is tried first because
+  // it is the one that survives a locked screen: it registers the sensor
+  // against the process, where `expo-sensors` registers it against the activity
+  // and tears it down in `OnActivityEntersBackground` (SensorProxy.kt:99). Only
+  // if the native module is not in this build, or the phone has no pressure
+  // sensor, does `expo-sensors` get subscribed -- and the two are never
+  // subscribed at once, because two listeners on one sensor is two sources of
+  // truth for the same height.
   useEffect(() => {
     if (!isTracking) return;
 
     let cancelled = false;
     let subscription: ReturnType<typeof Barometer.addListener> | null = null;
     baselinePressureAltitudeM.current = null;
+    setBarometer(null);
 
     (async () => {
-      if (!(await Barometer.isAvailableAsync())) return;
+      // A stop before every start, awaited. `start` only resets its counters
+      // and clears its ring when it was not already registered, so a ride
+      // beginning while a previous registration was still live would inherit
+      // the last ride's reading count and start time, and report a healthy
+      // rate averaged across both. The cleanup below is fire-and-forget, so
+      // this is the one that is guaranteed to have landed.
+      await RideBarometer.stopAsync();
+      if (cancelled) return;
+
+      // `nativeAbandoned` means the watchdog already caught this module
+      // registering and then producing nothing. Skipping straight to
+      // `expo-sensors` is the whole point of that signal.
+      const usingNative = nativeAbandoned
+        ? false
+        : await RideBarometer.startAsync(BAROMETER_INTERVAL_MS);
+      if (cancelled) {
+        // The ride stopped while this await was in flight. The cleanup below
+        // has already run and called `stopAsync` on a sensor that was not yet
+        // registered, so without this the listener outlives the ride.
+        if (usingNative) await RideBarometer.stopAsync();
+        return;
+      }
+      if (usingNative) {
+        const status = await RideBarometer.getStatusAsync();
+        if (cancelled) return;
+        setBarometer({
+          path: "native",
+          registered: true,
+          hz: null,
+          readings: 0,
+          repaired: 0,
+          wakeUp: status?.wakeUp ?? false,
+          usedShare: null,
+        });
+        return;
+      }
+
+      // Fallback: iOS, Expo Go, or a phone with no pressure sensor. iOS reports
+      // `relativeAltitude` (metres from where tracking started) directly; on
+      // Android `expo-sensors` gives raw pressure, so the same relative measure
+      // has to be derived here. Either way this listener stops at the next
+      // screen lock, which is the behaviour the native path exists to replace.
+      const available = await Barometer.isAvailableAsync();
       if (cancelled) return; // stopped while we were awaiting availability
+      if (!available) {
+        setBarometer({
+          path: "none", registered: false, hz: null, readings: null,
+          repaired: null, wakeUp: false, usedShare: null,
+        });
+        return;
+      }
       Barometer.setUpdateInterval(BAROMETER_INTERVAL_MS);
       subscription = Barometer.addListener(({ pressure, relativeAltitude }) => {
         if (relativeAltitude != null) {
           recordBarometerAltitude(relativeAltitude);
           return;
         }
-        const absoluteAltitudeM = pressureToAltitudeM(pressure);
+        const absoluteAltitudeM = altitudeFromPressureHpa(pressure);
         if (baselinePressureAltitudeM.current == null) {
           baselinePressureAltitudeM.current = absoluteAltitudeM;
         }
         recordBarometerAltitude(absoluteAltitudeM - baselinePressureAltitudeM.current);
+      });
+      setBarometer({
+        path: "sensors", registered: false, hz: null, readings: null,
+        repaired: null, wakeUp: false, usedShare: null,
       });
     })().catch((err) => console.warn("failed to start barometer", err));
 
     return () => {
       cancelled = true;
       subscription?.remove();
+      // Unconditional, and harmless when the native path was never started --
+      // the facade answers false rather than throwing. Conditioning it on
+      // `usingNative` would leave the sensor registered in the one case that
+      // matters, where `startAsync` succeeded after the effect was torn down.
+      RideBarometer.stopAsync().catch(() => {});
     };
+  }, [isTracking, nativeAbandoned]);
+
+  // A ride that gave up on the native module gets a clean slate at the next
+  // one: the give-up is about this sensor on this run, not a permanent verdict
+  // on the phone.
+  useEffect(() => {
+    if (!isTracking) setNativeAbandoned(false);
   }, [isTracking]);
 
-  // Hold the screen on for the length of the ride. `expo-sensors` unregisters
-  // the barometer itself when the activity backgrounds -- SensorProxy.kt has
-  // `OnActivityEntersBackground -> stopObserving()` -- and after
-  // BAROMETER_STALE_AFTER_MS the task falls back to GPS altitude, which is
-  // about twice as noisy per bucket and can shift a segment a whole colour
-  // band. Keeping the activity in the foreground keeps the better sensor.
+  // Re-read the native counters while the ride runs, and WATCH THE OUTPUT.
   //
-  // This only defeats the *idle timeout*. Pressing the power button still
-  // backgrounds the activity and still costs the barometer; it comes back by
-  // itself on the next wake, so the loss is bounded by how long the screen
-  // stays dark. Making screen-off riding as good as screen-on needs the sensor
-  // held against the foreground service instead of the activity, which is a
-  // native module.
+  // Two jobs. The first is the status line on the map, which is the only
+  // instrument available during the one measurement that matters -- a ride
+  // taken with the screen deliberately locked -- because there is no debugger
+  // attached to a bicycle.
+  //
+  // The second is the watchdog, and it is the more important of the two.
+  // `startAsync` returning true means Android accepted the sensor
+  // registration; it does not mean a reading ever arrives. Without this, a
+  // sensor that registered and then stayed quiet cost the ride its barometer
+  // from end to end, because `expo-sensors` was never subscribed -- a
+  // regression against the behaviour this change was meant to improve on. The
+  // test is run against the fixes actually being stored rather than against the
+  // native module's own counters, because a sensor whose clock disagrees with
+  // the phone's delivers thousands of readings that land in no fix's window.
+  useEffect(() => {
+    if (!isTracking || nativeAbandoned) return;
+    let stopped = false;
+    const read = async () => {
+      const counters = await RideBarometer.getCountersAsync();
+      if (stopped || counters == null) return;
+
+      const recentSources = samplesRef.current
+        .slice(-HEALTH_WINDOW_FIXES)
+        .map((sample) => sample.elevationSource);
+      const elapsedMs = counters.startedAtMs == null ? NaN : Date.now() - counters.startedAtMs;
+
+      if (counters.registered && shouldAbandonNative(elapsedMs, recentSources)) {
+        // One way, and it takes effect by re-running the effect above, which
+        // skips `startAsync` and subscribes `expo-sensors` instead.
+        console.warn("ride-barometer: no barometric fixes, falling back to expo-sensors");
+        setNativeAbandoned(true);
+        return;
+      }
+
+      const elapsedS = elapsedMs / 1000;
+      setBarometer({
+        path: "native",
+        registered: counters.registered,
+        // Guarded against a zero elapsed time on the first read, which would
+        // otherwise show Infinity Hz for five seconds at the start of a ride.
+        hz: Number.isFinite(elapsedS) && elapsedS >= 1 ? counters.delivered / elapsedS : null,
+        readings: counters.delivered,
+        repaired: counters.repaired,
+        wakeUp: counters.wakeUp,
+        usedShare: recentBarometerShare(recentSources),
+      });
+    };
+    read().catch(() => {});
+    const interval = setInterval(() => void read().catch(() => {}), BAROMETER_POLL_MS);
+    return () => {
+      stopped = true;
+      clearInterval(interval);
+    };
+  }, [isTracking, nativeAbandoned]);
+
+  // Hold the screen on for the length of the ride.
+  //
+  // ITS ORIGINAL REASON IS GONE. This was here because `expo-sensors`
+  // unregisters the barometer when the activity backgrounds, so keeping the
+  // activity in the foreground was the only way to keep the better sensor. The
+  // native module now holds the sensor against the process instead, which is
+  // what the old comment here said would be needed, so on Android this no
+  // longer protects the elevation data at all.
+  //
+  // Kept anyway, for a smaller reason: a phone on a handlebar mount is being
+  // looked at, and a ride that blanks the map every thirty seconds is worse to
+  // use. It costs battery for a benefit that is now only cosmetic, so it is a
+  // fair thing to drop -- that is Julian's call, not a silent one, and the test
+  // ride is the wrong time to change two things at once.
+  //
+  // On the `expo-sensors` fallback path (iOS, Expo Go) the original reason
+  // still holds in full.
   useEffect(() => {
     if (!isTracking) return;
     activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch((err) =>
@@ -272,6 +421,7 @@ export function useTrackingSession() {
     startedAt,
     samples,
     unsavedRide,
+    barometer,
     start,
     stop,
     adoptSession,

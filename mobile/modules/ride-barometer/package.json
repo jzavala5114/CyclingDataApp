@@ -1,0 +1,7 @@
+{
+  "name": "ride-barometer",
+  "version": "0.1.0",
+  "description": "Holds the pressure sensor open for the length of a ride, including while the screen is off.",
+  "main": "index.ts",
+  "private": true
+}

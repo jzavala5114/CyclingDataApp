@@ -1,6 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Location from "expo-location";
 import * as TaskManager from "expo-task-manager";
+import * as RideBarometer from "../../modules/ride-barometer";
+import { altitudeAtFix, decodeReadings, type PressureReading } from "./barometerWindow";
 import type { ElevationSource, TrackedSample } from "../types";
 
 export const LOCATION_TASK_NAME = "cyclingdataapp-location-updates";
@@ -96,35 +98,68 @@ function headingDelta(a: number, b: number): number {
 
 // --- Elevation sources -----------------------------------------------------
 //
-// expo-sensors has no background counterpart to expo-location's task, so
-// barometer readings stop arriving once the screen goes off. We keep the
-// newest reading in module scope with the time it arrived: fresh readings get
-// used, stale ones are ignored in favour of GPS altitude.
-//
-// The two sources are on different scales -- the barometer gives metres
-// *relative* to where tracking started, GPS gives absolute metres above sea
-// level (~1800m here). Mixing them raw would put an ~1800m cliff into the
-// elevation series every time the screen turned off, which would swamp the
-// real gradient entirely. Anchoring the relative readings to the session's
-// first GPS altitude keeps every sample on one absolute scale.
-const BAROMETER_STALE_AFTER_MS = 5000;
+// Two scales, one series. The barometer gives metres *relative* to where
+// tracking started; GPS gives absolute metres above sea level (~1800m here).
+// Mixing them raw would put an ~1800m cliff into the elevation series every
+// time one took over from the other, which would swamp the real gradient
+// entirely. Anchoring the relative readings to the session's first GPS altitude
+// keeps every sample on one absolute scale.
 let baselineGpsAltitudeM: number | null = null;
 
-// --- Oversampling ----------------------------------------------------------
+// --- Where the pressure comes from -----------------------------------------
 //
-// The barometer is polled far faster than fixes arrive (5Hz here against a
-// fix every 1-4s), so instead of keeping only the newest reading we sum them
-// and hand `elevationFor` the mean of everything since the last fix. Averaging
-// n independent readings cuts noise by roughly sqrt(n) -- about 2.2x at the
-// 1s floor and 4.5x at the 4s ceiling. This used to overwrite a single
-// variable, throwing away every reading between two fixes but the last.
+// TWO PATHS, chosen by what is in the build, not by a setting.
+//
+// 1. `modules/ride-barometer`, on Android. It holds a SensorEventListener
+//    against the process and keeps filling a ring buffer while the screen is
+//    off, and this task pulls the readings belonging to each fix. This is the
+//    path that matters: `expo-sensors` unregisters the sensor when the activity
+//    backgrounds (SensorProxy.kt has `OnActivityEntersBackground ->
+//    stopObserving()`), so a locked screen cost the barometer within 11-19
+//    seconds and dropped the ride onto GPS altitude -- 0.65m of error per 15m
+//    bucket against the barometer's 0.29m, a whole colour band on the map.
+//    Session 61, ridden locked, lost 93.5% of its fixes that way.
+//
+// 2. `expo-sensors`, everywhere else: iOS, Expo Go, and any build where the
+//    native module did not link. Subscribed by `useTrackingSession` and fed in
+//    through `recordBarometerAltitude` below. It dies on a locked screen, which
+//    is the behaviour this app had until now.
+//
+// Path 1 is tried per fix and path 2 is the fallback, so a native module that
+// is missing, broken, or on a phone with no pressure sensor produces exactly
+// the old behaviour rather than a new failure.
+
+// How far either side of a fix to ask the ring for readings. The windowing
+// itself (which of them belong to the fix) is `altitudeAtFix`; this is only the
+// span handed across the bridge, and it is wider than the window so that the
+// window never clips against the edge of what was fetched.
+const READ_LOOKBACK_MS = 4000;
+const READ_LOOKAHEAD_MS = 2000;
+
+// Absolute barometric altitude at the session's first used reading. The sensor
+// gives pressure, and the absolute altitude the barometric formula returns from
+// it depends on the day's sea-level pressure, so it is not trustworthy -- but
+// the *changes* are, which is why this is subtracted off and the remainder is
+// anchored to GPS above.
+let baselinePressureAltitudeM: number | null = null;
+
+// --- Oversampling, the fallback path ---------------------------------------
+//
+// On the `expo-sensors` path the barometer is polled far faster than fixes
+// arrive (5Hz against a fix every 1-4s), so instead of keeping only the newest
+// reading we sum them and use the mean of everything since the last fix.
+// Averaging n independent readings cuts noise by roughly sqrt(n) -- about 2.2x
+// at the 1s floor and 4.5x at the 4s ceiling.
 //
 // The mean is centred on the middle of the window rather than on the fix, so
 // elevation lags position by about half a fix interval. That does not hurt:
 // `TARGET_SPACING_M` holds the gap between fixes near-constant in *distance*,
 // so the lag is a near-constant ~5m shift along the segment, and a constant
-// shift cancels out of a slope. Only the absolute level moves, and the DEM
-// anchor sets that per ride anyway.
+// shift cancels out of a slope.
+//
+// The native path does not have that lag at all, because it windows on the
+// fix's own timestamp rather than on whatever arrived since the last drain.
+const BAROMETER_STALE_AFTER_MS = 5000;
 let barometerSumM = 0;
 let barometerCount = 0;
 let barometerAtMs = 0;
@@ -164,6 +199,32 @@ export function resetTrackingState(): void {
   barometerAtMs = 0;
   lastBarometerRelativeM = null;
   baselineGpsAltitudeM = null;
+  baselinePressureAltitudeM = null;
+}
+
+/**
+ * One bridge call per task invocation, covering every location in the batch.
+ *
+ * Deliberately not one call per location: a batch delivered after a stretch
+ * with the screen off can hold a dozen locations, and twelve round trips to
+ * fetch overlapping spans of the same ring buffer is twelve times the work for
+ * the same readings.
+ */
+async function pressureReadingsFor(
+  locations: readonly Location.LocationObject[],
+): Promise<PressureReading[]> {
+  if (locations.length === 0 || !RideBarometer.isLinked()) return [];
+  let earliest = Infinity;
+  let latest = -Infinity;
+  for (const location of locations) {
+    if (location.timestamp < earliest) earliest = location.timestamp;
+    if (location.timestamp > latest) latest = location.timestamp;
+  }
+  const flat = await RideBarometer.readWindowAsync(
+    earliest - READ_LOOKBACK_MS,
+    latest + READ_LOOKAHEAD_MS,
+  );
+  return decodeReadings(flat);
 }
 
 // Which branch below was taken, recorded with the sample. Measuring the
@@ -178,19 +239,59 @@ interface ElevationReading {
   altitudeAccuracyM: number | null;
 }
 
-function elevationFor(location: Location.LocationObject): ElevationReading | null {
+/**
+ * Metres relative to the session's first used reading, from the native ring.
+ *
+ * Returns null when no reading belongs to this fix, which is the no-regression
+ * door: an unlinked module, a phone with no pressure sensor, a sensor that went
+ * quiet, and a fix older than anything in the ring all arrive here as null and
+ * fall through to the `expo-sensors` path and then to GPS altitude.
+ */
+function nativeRelativeM(
+  fixAtMs: number,
+  readings: readonly PressureReading[],
+): number | null {
+  const windowed = altitudeAtFix(readings, fixAtMs);
+  if (windowed == null) return null;
+  if (baselinePressureAltitudeM == null) baselinePressureAltitudeM = windowed.absoluteM;
+  return windowed.absoluteM - baselinePressureAltitudeM;
+}
+
+/**
+ * The `expo-sensors` accumulator. Draining is a side effect, so this is only
+ * reached when the native path produced nothing.
+ *
+ * THE TWO PATHS MUST NEVER BOTH FEED ONE RIDE, and that is an invariant held in
+ * `useTrackingSession`, not here. Each carries metres relative to its own zero:
+ * the native path subtracts `baselinePressureAltitudeM` above, the sensors path
+ * subtracts a baseline taken in the hook. Mixing them inside one ride would put
+ * a step into the elevation series at the handover, of whatever the rider had
+ * climbed between the two baselines. The hook subscribes `expo-sensors` only
+ * when the native module did not start, so on Android this accumulator never
+ * fills and `barometerAtMs` stays at 0, which reads as stale forever.
+ */
+function sensorsRelativeM(): number | null {
+  const isFresh = Date.now() - barometerAtMs < BAROMETER_STALE_AFTER_MS;
+  const mean = drainBarometerRelativeM();
+  return isFresh ? mean : null;
+}
+
+function elevationFor(
+  location: Location.LocationObject,
+  readings: readonly PressureReading[],
+): ElevationReading | null {
   const gpsAltitude = location.coords.altitude;
   if (baselineGpsAltitudeM == null && gpsAltitude != null) baselineGpsAltitudeM = gpsAltitude;
-
-  const barometerIsFresh = Date.now() - barometerAtMs < BAROMETER_STALE_AFTER_MS;
-  const barometerRelativeM = drainBarometerRelativeM();
 
   // Vertical accuracy. Deliberately not `coords.accuracy`, which is horizontal
   // and says nothing about altitude -- confusing the two is how screen-off
   // stretches passed for good data.
   const altitudeAccuracyM = location.coords.altitudeAccuracy ?? null;
 
-  if (barometerIsFresh && barometerRelativeM != null && baselineGpsAltitudeM != null) {
+  const barometerRelativeM =
+    nativeRelativeM(location.timestamp, readings) ?? sensorsRelativeM();
+
+  if (barometerRelativeM != null && baselineGpsAltitudeM != null) {
     return {
       elevationM: baselineGpsAltitudeM + barometerRelativeM,
       source: "barometer",
@@ -317,9 +418,14 @@ TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
   const locations = (data as { locations?: Location.LocationObject[] } | undefined)?.locations;
   if (!locations?.length) return;
 
+  // Fetched once for the whole batch, before the loop, so that every location
+  // in it is windowed against the same set of readings rather than racing the
+  // sensor thread as it adds more.
+  const readings = await pressureReadingsFor(locations);
+
   const samples: TrackedSample[] = [];
   for (const location of locations) {
-    const elevation = elevationFor(location);
+    const elevation = elevationFor(location, readings);
     if (elevation == null) continue; // no usable altitude yet -- skip rather than invent one
     samples.push({
       recordedAt: new Date(location.timestamp).toISOString(),

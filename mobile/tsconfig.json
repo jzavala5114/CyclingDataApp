@@ -1,6 +1,21 @@
 {
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "strict": true
+    "strict": true,
+    // `expo/tsconfig.base` sets `lib: ["DOM", "ESNext"]` and no `types`, and
+    // under `moduleResolution: bundler` with the `react-native` condition that
+    // leaves `node:test` and `node:assert` unresolvable -- so the test files,
+    // which are the only node-flavoured code here, would be the one part of
+    // this project with no typechecking at all. Naming the packages explicitly
+    // is also what stops a future `@types/*` install from silently joining the
+    // the app global scope.
+    //
+    // THE COST, STATED: `@types/node` is global, so `Buffer`, `process` and
+    // `__dirname` now typecheck inside app code that has no Node runtime to
+    // provide them. Nothing in `src/` uses them and nothing should; the gain is
+    // that the test files are typechecked at all, and the alternative -- a
+    // second tsconfig for tests -- does not actually prevent this, because
+    // TypeScript picks up `@types/*` from node_modules either way.
+    "types": ["node", "react"]
   }
 }

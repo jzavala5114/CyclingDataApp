@@ -22,6 +22,7 @@ import {
 import { MIN_SAVEABLE_EXTENT_M, rideExtentM } from "../services/rideStats";
 import { buildColoredLineFeatures } from "../services/gradientRendering";
 import { useTrackingSession } from "../hooks/useTrackingSession";
+import { describeBarometer, verdictFor } from "../services/barometerHealth";
 import { dropBufferedSamples, readBufferedSamples } from "../services/backgroundLocationTask";
 import { MAP_STYLE_URL } from "../config";
 import type { SegmentWithGradients, TrackedSample } from "../types";
@@ -65,12 +66,19 @@ export function MapScreen() {
     startedAt,
     samples,
     unsavedRide,
+    barometer,
     start,
     stop,
     adoptSession,
     discardBuffered,
   } = useTrackingSession();
   const currentPosition = useCurrentPosition();
+
+  // Shown only while tracking, and coloured only when something is wrong, so
+  // the ordinary case is one quiet line and the failure case is not.
+  const barometerIsBad = ["silent", "offline", "patchy", "slow", "absent"].includes(
+    verdictFor(barometer),
+  );
 
   // While the camera follows the rider, region changes fire continuously and
   // several fetches can be in flight at once. Without ordering, a slower
@@ -403,6 +411,11 @@ export function MapScreen() {
           )}
         </Pressable>
         {isSaving && <Text style={styles.savingHint}>Keep the app open until this finishes</Text>}
+        {isTracking && !isSaving && (
+          <Text style={[styles.savingHint, barometerIsBad && styles.barometerBad]}>
+            {describeBarometer(barometer)}
+          </Text>
+        )}
       </View>
     </View>
   );
@@ -417,6 +430,7 @@ const styles = StyleSheet.create({
   buttonSaving: { backgroundColor: "#6b7280" },
   buttonText: { color: "white", fontSize: 16, fontWeight: "600" },
   savingRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  barometerBad: { color: "#b91c1c", fontWeight: "600" },
   savingHint: {
     marginTop: 8,
     color: "#111827",

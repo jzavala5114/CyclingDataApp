@@ -1,0 +1,6 @@
+<manifest>
+  <!-- TYPE_PRESSURE needs no permission. HIGH_SAMPLING_RATE_SENSORS is only
+       required above 200Hz and this module asks for 5Hz, so nothing is
+       declared here on purpose: an unnecessary permission in the manifest is a
+       play-store prompt for nothing. -->
+</manifest>

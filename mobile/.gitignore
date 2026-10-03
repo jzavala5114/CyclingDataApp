@@ -11,6 +11,10 @@ expo-env.d.ts
 
 # Native
 .kotlin/
+# Gradle state from a local module build. `build/` is already covered by the
+# repo root, but a module under `modules/` is a gradle project of its own and
+# leaves a `.gradle/` beside its sources, full of lock files and binary caches.
+.gradle/
 *.orig.*
 *.jks
 *.p8
