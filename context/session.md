@@ -3,21 +3,20 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-10-01.
+Last updated 2026-10-02.
 
-**Nothing is mid-flight. One item is queued: the barometer — see "NEXT: keep
-the barometer alive with the screen off".** It is the first piece of work in
-weeks that needs an APK and a test ride rather than a replay against the
-archive.
+**Nothing is mid-flight. One thing waits on Julian rather than on code: a test
+ride with the screen deliberately locked — see "The barometer, shipped
+2026-10-02".** The code is merged and an APK builds; the feature cannot be
+verified any other way.
 
-As of 2026-10-01: `main` at `547fa6c`, the only branch, local and remote.
-Production serving `builtAt 2026-10-02T02:03:27.482Z`. The model is **6,069
-buckets across 745 segments, 951 drawn lines**, rebuilt twice that day — once
-for the derived heading and once for the speed limit — each rebuild predicted
-first by `npm run verify-rebuild` and matching its prediction exactly. 219
-backend tests. The first deploy attempt failed; see note 29,
-which is worth reading before adding anything to `backend/` that imports
-outside it.
+As of 2026-10-02: `main` at `902e5c8`, the only branch, local and remote.
+Production serving `builtAt 2026-10-03T00:33:14.010Z`. The model is **6,069
+buckets across 745 segments, 951 drawn lines**, unchanged by the barometer work
+— nothing in it touches the matcher or the model. 253 backend tests and 54 app
+tests; `mobile/` has a gate lane for the first time. The first deploy attempt
+back on 2026-09-30 failed; see note 29, which is worth reading before adding
+anything to `backend/` that imports outside it.
 
 Where to start depends on what you came for:
 
@@ -27,18 +26,19 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 29 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT: keep the barometer alive with the screen off"** — the only item queued, and the first in weeks that needs an APK |
+| pick up the next piece of work | **"The barometer, shipped 2026-10-02"** — the code is merged; what is left is one test ride and `npm run verify-barometer` |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
 ## Where things stand
 
-**`main` is `547fa6c`, and it is the only branch — local and remote.** Nothing
-is parked, nothing is awaiting a decision, no uncommitted work. 219 backend
-tests.
+**`main` is `902e5c8`, and it is the only branch — local and remote.** Nothing
+is parked, nothing is awaiting a decision, no uncommitted work. 253 backend
+tests, 54 app tests.
 
-Production serves `builtAt 2026-10-02T02:03:27.482Z`. The model is **6,069
-buckets across 745 segments, 745 / 951 lines** on the live API.
+Production serves `builtAt 2026-10-03T00:33:14.010Z`. The model is **6,069
+buckets across 745 segments, 745 / 951 lines** on the live API, confirmed
+unchanged after the barometer merge.
 
 Cleared on 2026-10-01: the measurement tooling merged, the derived heading and
 the speed limit shipped with a rebuild each, and two branches were dropped after
@@ -1305,59 +1305,132 @@ reading are noisier even where today's gradient looks fine.
 consequential constant in the matcher. The new test was verified by flipping
 the default back and watching it go red, not by assuming it would.
 
-### NEXT: keep the barometer alive with the screen off
+### The barometer, shipped 2026-10-02 — one test ride still owed
 
-**The biggest accuracy lever left, and the first item in weeks that cannot be
-finished from this machine.** Everything shipped on 2026-09-30 and 2026-10-01
-was backend work provable against the archive. This one needs an **APK build and
-a test ride**, because the thing being fixed is an Android sensor lifecycle and
-no replay can tell you whether it worked.
+**The code is merged (`4f0038d`). What is left is a ride, and it cannot be done
+from this machine.** Everything shipped on 2026-09-30 and 2026-10-01 was backend
+work provable against the archive; this was an Android sensor lifecycle, and no
+replay reaches it.
 
-**The defect, already measured — do not re-measure it.** `expo-sensors`
-unregisters the pressure sensor itself: `SensorProxy.kt` has
-`OnActivityEntersBackground → stopObserving()`. Android is not refusing to
-deliver, the library stops asking. Screen on gives 100% barometer; screen off
-and it dies in **11–19 s** and GPS altitude takes over.
-**The cost is 2× on the only thing this app computes.** Median elevation change
-per 15 m bucket: barometer **0.29 m (1.96% slope error)**, GPS altitude
-**0.65 m (4.35%)**. Against 3-point colour bands, GPS altitude alone can shift a
-piece a whole band. Session 61 (screen off and left off) lost **93.5%** of its
-fixes to GPS; session 64, locked and woken twice on purpose, lost 13%.
-**It is bounded, which is why this is not an emergency.** `isObserving` survives
-the pause, so the first fix after the screen wakes is already barometric with no
-code from us — confirmed on session 64: barometer 60 s → gps 17 s → barometer
-46 s → gps 4 s → barometer 83 s. The damage is proportional to screen-off time,
-not to ride length. But it bites hardest on exactly the rides that matter most:
-a long trail descent with the phone pocketed.
+**The defect.** `expo-sensors` unregistered the pressure sensor itself:
+`SensorProxy.kt:99` has `OnActivityEntersBackground → stopObserving()`. Android
+was not refusing to deliver, the library stopped asking. Screen on gave 100%
+barometer; screen off and it died in **11-19 s**, then GPS altitude took over.
+Per 15 m bucket that is **0.29 m (1.96% slope error) against 0.65 m (4.35%)** --
+a whole colour band. Session 61, left locked, lost **93.5%** of its fixes.
 
-**Route one already shipped** (2026-08-30): `expo-keep-awake` held for the
-length of a ride, keyed on `isTracking`. It defeats the **idle timeout only** —
-pressing the power button still backgrounds the activity and still costs the
-sensor until the next wake. **A mounted phone is covered; a pocketed one is
-not.**
+**That 11-19 s was the diagnosis, not just the symptom.** A clean stop at a
+repeatable delay is an explicit unregister. CPU suspend starving a non-wake
+sensor would look intermittent instead. **So no wake lock was needed and none is
+taken** -- which was the expensive thing this was expected to cost.
 
-**What is left is the native module, and nothing cheaper closes it.** A
-`SensorEventListener` held against the **foreground service** rather than the
-activity, which is what `expo-location` already does for GPS. The middle option
-— patching out `OnActivityEntersBackground` — was considered and should not be
-attempted: it is unsupported, and the pressure sensor is typically a non-wake
-sensor, so delivery may stop when the CPU suspends regardless.
+**What shipped: `mobile/modules/ride-barometer/`,** a local Expo module.
+Autolinked from `./modules` with no config (`nativeModulesDir` defaults there).
+It is NOT under `mobile/android/`, which is gitignored `expo prebuild` output and
+would be wiped by the next prebuild -- that is the trap to remember if another
+native module is ever added. It registers a `SensorEventListener` against the
+**application context** on its own `HandlerThread`, and has **no
+`OnActivityEntersBackground` hook at all**; that omission is the whole feature.
 
-**How to know it worked**, since the archive cannot tell you: `session_samples.
-elevation_source` already records `barometer` or `gps` per fix. The test is one
-ride with the screen deliberately locked for most of it, then
-`select elevation_source, count(*) from session_samples where session_id = $1
-group by 1`. Today that returns mostly `gps`; the fix means it returns ~100%
-`barometer`. Session 62 is the screen-on reference: 842 fixes, 45 minutes,
-186 m of climb, **829 distinct values, 100% barometer**.
+**Readings go into a 1024-entry ring buffer with wall-clock timestamps**, pulled
+once per task invocation, rather than pushed as bridge events: 5 Hz into a paused
+JS context for a twenty-minute screen-off stretch is 6,000 crossings nothing is
+listening to. The consumer changed shape to match. A running sum drained once per
+fix was bounded at 1-4 s only because the drain and the sampling shared a
+context; once readings accumulate natively nothing bounds it, and **a mean over
+sixty seconds is a height at no particular place** -- 15 m of error at 5 m/s on a
+5% grade. Each fix now averages readings within **±500 ms of its own timestamp**,
+half of `MIN_INTERVAL_MS`, so neighbouring fixes never share a reading. They must
+not: shared readings correlate their noise and the backend differences
+neighbours to get a gradient.
+
+**A cold review rejected the first version. Read this before touching it.**
+
+- **`startAsync` returning true means Android ACCEPTED the registration, not
+  that a reading arrived.** The hook treated it as success and never subscribed
+  `expo-sensors`, so a sensor that registered and went quiet cost the ride its
+  barometer end to end -- including the screen-on part that worked before any of
+  this. A real regression, reproduced against the running code.
+  `shouldAbandonNative` now falls back after 20 s with no barometric fix, judged
+  on the **fixes actually stored**, not on the module's own counters, because a
+  skewed sensor clock delivers thousands of readings that land in no fix's
+  window.
+- **The instrument was wrong in both directions.** A flat 10 s bracket in
+  `verifyBarometer.ts` reported `alive` for a barometer blackout of any length
+  that contained one GPS fix (30 s, 60 s, 300 s, 900 s, 3600 s all scored 20 s)
+  and `stopped` for an honest 20 s blip containing two. It was tracking fix
+  density, not barometer health, **and a test defended it**. The bracket now
+  comes from the ride's own median gap, gaps past 30 s are never charged, and a
+  ride too sparse to judge gets its own `unmeasured` verdict -- the `no-witness`
+  idea the heading-lines work already settled.
+- Three smaller ones, each now with a regression test naming what the broken
+  version printed: the on-bike line read `5.0 Hz, 12000 readings` while every
+  stored height was GPS; an unregistered sensor rendered as `Barometer starting`
+  for the rest of the ride; `start()`'s idempotent early return left counters
+  cumulative across rides.
+- **Not fixed:** a dev-build-only remount race, if Fast Refresh lands inside
+  `startAsync`'s first few milliseconds. The watchdog cuts it from losing a ride
+  to losing 20 seconds.
+
+**What NOT to attempt.** Patching out `OnActivityEntersBackground` in
+`node_modules`: unsupported, and no build reproduces it. A `PARTIAL_WAKE_LOCK`:
+the 11-19 s signature says suspend was never the cause, and it would cost
+battery for the whole ride. Both were considered and rejected on evidence.
+
+**HOW TO FINISH IT.** Build and install, then ride with the screen deliberately
+locked for several minutes in the middle. While riding, the map shows one line:
+`Barometer 100% of fixes, 5.0 Hz` is healthy, and anything red names what is
+wrong. Then:
+
+```
+cd backend && npm run verify-barometer
+```
+
+A pass is **`alive`** with a barometer share near the reference. Read the
+`unseen` column beside it: that is how much of the ride produced no fixes and so
+could not testify either way. **`unmeasured` is not a pass** -- it means the ride
+was too sparse to conclude anything, and the answer is to ride again. Session 62
+is the screen-on reference: 842 fixes, 45 minutes, 186 m of climb, 829 distinct
+values, 100% barometer. The pre-change baseline for every ride in the archive is
+in that script's output; roughly half the labelled rides read `stopped`, with
+sessions 76 and 79 losing 17 minutes each.
 
 **Do not confuse this with the oversampling work**, which is separate and also
 done: oversampling cut sensor noise 2.5× but end-to-end slope error only
 5.00% → 3.90%, because on trails the barometer is **not** the dominant error
-term — the DEM sampled along an OSM centreline that on singletrack is not where
-the rider actually was accounts for more. Fixing the screen-off gap raises
+term -- the DEM sampled along an OSM centreline that on singletrack is not where
+the rider actually was accounts for more. Closing the screen-off gap raises
 screen-off rides to screen-on quality; it does not make trail rides as good as
 street rides.
+
+### What landed on 2026-10-02
+
+One thing shipped, and it is the first change in this project that **cannot be
+verified from this machine** -- see "The barometer, shipped 2026-10-02" above.
+
+1. **`mobile/modules/ride-barometer`** (`4f0038d`), a local Expo module that
+   holds the pressure sensor against the process instead of the activity. The
+   backend deployed (`builtAt 2026-10-03T00:33:14.010Z`) because the commit
+   touched `backend/`, and the live API was re-queried afterwards: **745
+   segments / 951 lines, unchanged.** Nothing in this work touches the matcher
+   or the model, and that was confirmed rather than assumed.
+2. **`mobile/` has a test lane for the first time** (54 tests, `tsx` +
+   `node:test`, matching `backend/`), a mutation harness
+   (`npm run mutate:barometer`), and a pre-commit gate (`902e5c8`). The decision
+   logic was deliberately pushed into two import-free modules so that any of it
+   could be tested at all without a phone.
+3. **`npm run verify-barometer`** -- the instrument that grades the test ride,
+   with the whole archive's pre-change baseline as its control.
+
+**The lesson that cost the most, and it is the same shape as 2026-10-01's.**
+That day the dry run reported buckets but not lines, so the speed limit's only
+visible effect was found by querying the live API afterwards. This time the
+instrument that will grade the test ride reported `alive` for a barometer
+blackout of any length that happened to contain one GPS fix -- and a test I had
+written was defending that behaviour. Both are the same failure: **the
+measurement was not checked against a case where it should have said no.** A
+cold review found the second one by constructing that case. Build the failing
+case first, and make sure the instrument fails on it, before trusting a pass.
 
 ### What landed on 2026-10-01
 
@@ -1428,9 +1501,10 @@ trails, and every tangent window from 0 to 20 m.
   activity and still costs the sensor until the next wake. So a mounted phone
   is now covered and a pocketed one is not. The native-module route is what
   closes the remainder, and nothing cheaper will.
-  **This is the queued item as of 2026-10-01 — see "NEXT: keep the barometer
-  alive with the screen off"** for what is left, what not to attempt, and how to
-  tell whether a test ride actually fixed it.
+  **The native module shipped 2026-10-02 — see "The barometer, shipped
+  2026-10-02"** for what it does, the two defects a cold review caught in it,
+  what not to attempt, and how a test ride is graded. The code is merged; the
+  ride is still owed.
 - ~~**Reverse the roughness quarantine.**~~ Replaced 2026-08-30, and **not** by
   reversing it — that would have been wrong. Sessions 45, 46 and 50 really do
   contain impossible data (45: `1971.0 → 1984.1 → 1962.9` across 4.4 m of
