@@ -676,3 +676,49 @@ test("a fix past the end of the payload gets null, not the last reading it can f
   const readings = decodeReadings([base, 840.12, base + 200, 840.13]);
   assert.equal(altitudeAtFix(readings, base + 60_000), null);
 });
+
+test("A FIFO FLUSH does not poison the fix: old readings are ignored, not averaged in", () => {
+  // The Pixel 10 Pro's barometer has a 3000-event hardware FIFO and is a
+  // non-wake sensor, so it keeps sampling through a CPU suspend and delivers
+  // the whole backlog on wake. Those readings carry TRUE timestamps minutes
+  // old, and they arrive in the same array as the current ones.
+  //
+  // The correct handling is to do nothing: they fall outside the fix's window
+  // and are ignored. This test exists because the native module briefly had a
+  // guard that stamped anything older than five seconds with "now", which would
+  // have dragged every one of them into the current fix's mean -- hundreds of
+  // readings spanning minutes, collapsed onto one instant. That is exactly the
+  // error the window exists to prevent, caused by the guard meant to protect it.
+  const base = 1_700_000_000_000;
+  const flushed: PressureReading[] = [];
+  // Ten minutes of backlog at 5Hz, ending five minutes before the fix. The
+  // pressure is far away from the current reading so any leakage shows up.
+  for (let i = 0; i < 3000; i++) flushed.push({ atMs: base - 900_000 + i * 200, hPa: 900 });
+  // And the readings that actually belong to the fix.
+  const current: PressureReading[] = [];
+  for (let i = -2; i <= 2; i++) current.push({ atMs: base + i * 200, hPa: 840 });
+
+  const result = altitudeAtFix([...flushed, ...current], base);
+  assert.ok(result != null);
+  assert.equal(result.readingCount, 5, "only the five readings around the fix");
+  assert.equal(
+    result.absoluteM,
+    altitudeFromPressureHpa(840),
+    "the 900 hPa backlog contributed nothing",
+  );
+});
+
+test("a batch of fixes spanning a suspend each take their own slice of the backlog", () => {
+  // `expo-location` batches locations across the same suspend the sensor FIFO
+  // buffered through, so the task can be handed an old fix and a new one at
+  // once. Each must find the readings from its own moment.
+  const base = 1_700_000_000_000;
+  const readings: PressureReading[] = [];
+  for (let i = 0; i < 3000; i++) readings.push({ atMs: base - 600_000 + i * 200, hPa: 850 - i * 0.001 });
+
+  const early = altitudeAtFix(readings, base - 600_000 + 1000);
+  const late = altitudeAtFix(readings, base - 600_000 + 599_000);
+  assert.ok(early != null && late != null, "both fixes find their own readings");
+  assert.notEqual(early.absoluteM, late.absoluteM, "and they are not the same height");
+  assert.ok(early.readingCount >= 5 && late.readingCount >= 5);
+});

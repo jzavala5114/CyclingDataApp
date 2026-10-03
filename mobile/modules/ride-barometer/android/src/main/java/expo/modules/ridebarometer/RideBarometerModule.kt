@@ -12,12 +12,18 @@ import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
-// At the 200ms this app asks for, 1024 readings is about 3.4 minutes of
-// history. Nothing reads further back than a couple of seconds, but a batched
-// delivery after a doze window can land readings that are already old, and the
-// diagnostics want to see them. The whole ring is two primitive arrays, about
-// 16KB, so there is no reason to size it tightly.
-private const val RING_CAPACITY = 1024
+// Sized to hold one whole hardware FIFO flush, which is the largest burst that
+// can arrive at once. The Pixel 10 Pro's barometer reports
+// `FIFO (max,reserved) = (3000, 3000) events`, and a non-wake sensor fills that
+// FIFO while the SoC is suspended then delivers the lot on wake. At 1024 the
+// ring would keep only the newest third of such a flush, and `expo-location`
+// batches its own locations across the same suspend -- so the older locations in
+// that batch would be asking for readings that had just been evicted.
+//
+// 4096 covers a full flush with headroom, and is about 2.7 minutes of history at
+// the 5Hz this module asks for. Two primitive arrays, roughly 64KB, which is
+// nothing against the reason for having it.
+private const val RING_CAPACITY = 4096
 
 // Guard rails on the sampling period. Below 20ms (50Hz) a pressure sensor is
 // reporting its own noise faster than the air changes, and above 2s there is
@@ -26,22 +32,41 @@ private const val MIN_INTERVAL_MS = 20
 private const val MAX_INTERVAL_MS = 2_000
 
 // How far back and forward a reading's derived wall-clock time may land before
-// it is treated as a broken timestamp rather than an old one.
+// it is treated as a broken clock rather than an old reading.
 //
-// SIZED AGAINST THE WINDOW IT GUARDS, which an earlier version was not. It held
-// 120 seconds, on the reasoning that a reading held in a hardware FIFO across a
-// doze window can be tens of seconds old -- but this module registers with
-// `maxReportLatencyUs = 0` and asks for no batching, so that case is one the
-// code deliberately disabled. A cold review measured the cost: against a
-// +/-500ms per-fix window, a sensor clock skewed anywhere from 0.5s to 120s
-// backwards put every reading outside every fix while `repaired` stayed at zero
-// and `delivered` kept climbing. A silent band 239 times wider than the window.
+// THIS IS A BACKSTOP, NOT THE FILTER, and getting that backwards has now cost
+// two revisions. The filter is `altitudeAtFix`, which averages only readings
+// within +/-500ms of a fix's own timestamp. An old reading is therefore already
+// handled correctly by doing nothing: it matches no fix's window and is ignored.
+// Repairing it to "now" is what breaks that, because it drags a reading from
+// minutes ago into the current fix's mean.
 //
-// Five seconds still covers an unbatched delivery hiccup and a short CPU
-// suspend, and it is ten times the window rather than 239 times it. A reading
-// from the future cannot be anything but a bad clock conversion, so the forward
-// bound stays tight.
-private const val MAX_EVENT_AGE_MS = 5_000L
+// So this exists for one case only: a device whose sensor clock is on a
+// different BASE from its boot clock, where every reading is unusable and the
+// barometer would otherwise contribute nothing at all. Stamping those "now"
+// degrades to "the newest readings", which is what the old accumulator did, and
+// is better than silence.
+//
+// THE SIZE COMES FROM THE HARDWARE, measured on the Pixel 10 Pro this is being
+// tested on:
+//
+//   SPL07003 Barometer | continuous | minRate=1.00Hz | maxRate=25.00Hz
+//   FIFO (max,reserved) = (3000, 3000) events | non-wakeUp
+//
+// A 3000-event FIFO is ten minutes of buffering at the 5Hz this module asks
+// for, and fifty minutes at the 1Hz floor. Non-wake sensors keep filling that
+// FIFO while the SoC is suspended and flush it on wake, so readings legitimately
+// arrive carrying true timestamps many minutes old. The previous value of five
+// seconds would have stamped every one of them "now" -- hundreds of readings
+// spanning minutes, all collapsed onto one instant and averaged into one fix.
+// That is the "a height at no particular place" error the windowing exists to
+// prevent, reintroduced by the guard meant to protect it.
+//
+// An hour clears the FIFO at its slowest rate with room to spare, while a true
+// base mismatch (epoch nanoseconds where boot nanoseconds were expected) lands
+// decades out and is still caught. A reading from the future cannot be anything
+// but a bad conversion, so the forward bound stays tight.
+private const val MAX_EVENT_AGE_MS = 3_600_000L
 private const val FUTURE_SLOP_MS = 2_000L
 
 /**
