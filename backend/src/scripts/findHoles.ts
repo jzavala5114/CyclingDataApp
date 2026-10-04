@@ -160,9 +160,21 @@ async function main(): Promise<void> {
     console.log(`  ... ${unexplained.length - top} more. Re-run with --all.`);
   }
 
-  // A covered segment that draws nothing at all is the other half of the same
-  // story: not a hole in a line, an absent line. Counted separately because it
-  // would otherwise look like coverage we are missing.
+  // A segment UNDER A STRUCTURE that draws nothing at all is the other half of
+  // the same story: not a hole in a line, an absent line.
+  //
+  // "COVERED" HERE MEANS ROOFED, NOT RIDDEN, and the wording below used to say
+  // "covered segments" without saying which. A later session read that line as
+  // "segments with ride coverage that draw nothing", turned it into an open item
+  // claiming 2,344m of road was missing from the map, and recommended exposing
+  // `is_tunnel` on `/segments` to paint it. Measured 2026-10-04, the real figure
+  // is **one 55m segment** (Gold Camp Road `#49704`): of the 67 dataless
+  // canonical tunnel segments, that is the only one with drawn neighbours at
+  // BOTH ends, which is the only arrangement where a rider sees paint, break,
+  // paint. The other 66 (2,110m) have no drawn neighbour at all, so they look
+  // like any other street nobody has ridden. Every number in the census below
+  // was correct; only the label was ambiguous, and it cost a month-old open item
+  // that overstated the work by roughly 40x.
   const { rows: [census] } = await pool.query<{
     flagged: number; canonical: number; drawing: number; blank: number; metres: string;
   }>(
@@ -176,9 +188,9 @@ async function main(): Promise<void> {
        from segments s where s.is_tunnel`,
   );
   console.log(
-    `\ncovered segments: ${census.flagged} flagged (${census.metres}m), ` +
+    `\nsegments UNDER A STRUCTURE (roofed, not ridden): ${census.flagged} flagged (${census.metres}m), ` +
       `${census.canonical} canonical, ${census.drawing} drawing something, ` +
-      `${census.blank} drawing nothing at all`,
+      `${census.blank} drawing nothing at all (expected: no fix under a roof)`,
   );
   if (census.flagged === 0) {
     console.log(

@@ -2300,15 +2300,34 @@ trails, and every tangent window from 0 to 20 m.
   `backend/tmp-segment-digest.mjs` is the script; it is throwaway by the
   `tmp-*.mjs` rule, but the query is worth rewriting the next time a bulk
   upsert claims to be a no-op.
-- **67 of the 69 canonical covered segments draw nothing at all** — the other
-  half of the tunnel story, and a different problem from the holes above. These
-  are absent lines rather than gaps in lines: Union Boulevard Underpass, the
-  Carefree underpasses, three pieces of Gold Camp Road, Sinton and Templeton Gap
-  and Cottonwood Creek where they duck under a road. 2,344 m in total. They are
-  physics and should stay unpainted, but the map has no way to say so, so they
-  read as coverage still to be earned. Cheapest honest fix is to expose
-  `is_tunnel` on `/segments` and have the app draw them in a flat "no data
-  possible" colour. Nothing reads the column today.
+- ~~**67 of the 69 canonical covered segments draw nothing at all.**~~
+  **DROPPED 2026-10-04. The item was a misreading of `find-holes`'s own output,
+  and the real defect is 55 m, not 2,344 m.**
+  **The root cause is one ambiguous word.** That census line read "covered
+  segments", where **covered meant ROOFED, not RIDDEN**. A later session read it
+  as "segments with ride coverage that draw nothing", and wrote this item
+  claiming 2.3 km of road was missing from the map. Every number in the census
+  was correct; only the label was ambiguous. It now reads "segments UNDER A
+  STRUCTURE (roofed, not ridden) ... drawing nothing at all (expected: no fix
+  under a roof)", and the comment above it carries this whole story.
+  **Measured 2026-10-04.** 73 tunnel segments / 2,344 m exist, 69 canonical, 2
+  with elevation data, 67 without (2,165 m). Of those 67, **exactly one has
+  drawn neighbours at BOTH ends** — Gold Camp Road `#49704`, 55 m — and that is
+  the only arrangement in which a rider sees paint, break, paint. The other 66
+  (2,110 m) have no drawn neighbour at all, so they render like any other street
+  nobody has ridden: invisible, not misleading. Also measured: **0** canonical
+  segments have coverage rows but no buckets, so nothing is being excluded from
+  `/segments` for that reason either.
+  **The proposed fix was also at odds with the route it would change.**
+  `/segments` deliberately returns only segments that have buckets, because the
+  network spans a whole city and dataless rows would be "tens of thousands of
+  unusable rows per viewport" (its own comment). Painting tunnels means
+  returning dataless segments, which is a design change, for 55 m.
+  **And the half of this that was genuinely worth having already exists.**
+  `findHoles.ts` splits holes into "under a structure (physics, leave alone)"
+  and "everything else (defects to explain)", so `is_tunnel` is already doing
+  the job it was imported for. Nothing on the request path needs it.
+  **LEFT, only if someone wants it:** 55 m of Gold Camp Road.
 - **`SessionVerdict.id` is typed `number` and arrives as a string.**
   `usableSessions.ts:52` declares `id: number`, but `sessions.id` is `bigserial`
   and node-postgres returns bigint as text. Found 2026-09-28 when
