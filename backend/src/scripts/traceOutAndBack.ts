@@ -42,7 +42,147 @@ import type { Direction, Segment, SessionSample } from "../types/index.js";
 
 const BBOX_PAD_DEG = 0.005;
 
-type Cause = "next-door" | "no-run" | "gate" | "wrong-dir" | "dropped";
+export type Cause = "next-door" | "no-run" | "gate" | "wrong-dir" | "dropped";
+
+/**
+ * What is known about one lost pass before a cause is chosen.
+ *
+ * Every cause is a claim about where the pass's fixes went, so the evidence is
+ * gathered first and `classifyLoss` only orders the claims. Pulled out of the
+ * replay loop so the ORDER is testable without driving the whole matcher
+ * through contrived geometry -- the defect this fixed was an ordering bug, and
+ * ordering was the one thing nothing could reach.
+ */
+export interface LossEvidence {
+  /** Runs on this segment, this direction, overlapping the pass. */
+  right: readonly { qualified: boolean; spanM: number; coverage: number }[];
+  /** Runs on this segment, the OTHER direction, overlapping the pass. */
+  opposite: readonly { qualified: boolean; direction: Direction }[];
+  /** Fixes recorded during the pass, raw -- including ones never offered to the matcher. */
+  fixesInPass: number;
+  /** ...of which the matcher never saw: spike, no heading, or accuracy past MAX_ACCURACY_M. */
+  fixesUnavailable: number;
+  /**
+   * ...of which landed in a drawn run on a DIFFERENT segment.
+   *
+   * The same segment in the other direction is excluded by the caller: those
+   * fixes are `wrong-dir`'s evidence, and counting them here would make every
+   * wrong-dir case read as next-door.
+   */
+  fixesDrawnElsewhere: number;
+  /** ...of which landed in the (rejected) run on this segment and direction. */
+  fixesInRunHere: number;
+  /**
+   * ...of `fixesDrawnElsewhere`, how many landed on another piece of THIS OSM
+   * way. A neighbour inside the corridor is detector generosity; the next piece
+   * of the same street is the map painting the wrong stretch of it.
+   */
+  fixesOnSameWay: number;
+  /** Top destinations, pre-formatted, for the detail string. */
+  destinations: string;
+  noHeading: number;
+  looseAccuracy: number;
+  spikes: number;
+}
+
+/**
+ * Why one pass the rider made is not drawn.
+ *
+ * **The order is the whole content of this function**, and it used to be
+ * wrong. `gate` was tried first and fired on the mere EXISTENCE of a run on
+ * this segment and direction, so one stray fix forming a 1-fix run beat the
+ * share test below it, and a pass whose fixes were all drawn on the segment
+ * next door was filed as a traversal-gate rejection.
+ *
+ * Measured over the 42 usable rides on 2026-10-04, that mislabelled **9 of 12
+ * `gate` losses, 605m of the 784m the ledger called a gate defect** -- which
+ * was the evidence behind a standing proposal to lower the gate. The note under
+ * "The 36 lines, enumerated" predicted it ("`on_touching > 0` is a one-fix
+ * threshold ... a share threshold matching NEXT_DOOR_SHARE would be consistent
+ * with the project"); this is that fix.
+ *
+ * Claims are tried strongest first, where strongest means "makes the most
+ * specific statement that the evidence can refute".
+ */
+export function classifyLoss(e: LossEvidence): { cause: Cause; detail: string; sameWay: boolean } {
+  const share = e.fixesInPass > 0 ? e.fixesDrawnElsewhere / e.fixesInPass : 0;
+  const pct = (x: number) => `${(x * 100).toFixed(0)}%`;
+  // A SHARE, not `> 0`, and the reason is the defect this function was just
+  // fixed for. The first version of this flag used `fixesOnSameWay > 0` and
+  // fired on 202 passes / 11.6km -- which is not a positional-error class, it is
+  // a long trail cut into pieces where a rider always leaves a fix or two on the
+  // piece next door at the boundary. One fix is not evidence of anything, which
+  // is the entire lesson of the `gate` ordering bug above, reintroduced one
+  // function later by the person who fixed it.
+  const sameWayShare = e.fixesInPass > 0 ? e.fixesOnSameWay / e.fixesInPass : 0;
+  const sameWay = sameWayShare >= NEXT_DOOR_SHARE;
+  // Said on every verdict that reports a destination, because `next-door`
+  // otherwise reads as "fine, drawn on the neighbour" for a case that is the
+  // map painting a different stretch of the street the rider was actually on.
+  const wayNote = sameWay
+    ? ` [${e.fixesOnSameWay}/${e.fixesInPass} on ANOTHER PIECE OF THE SAME WAY, not a neighbour]`
+    : "";
+
+  // A QUALIFYING run over the same ground at the same time, pointing the other
+  // way. The rider sees a line; it is the wrong one. Nothing else explains that
+  // better, so this is tried before any share.
+  const backwards = e.opposite.find((r) => r.qualified);
+  if (backwards) {
+    return {
+      cause: "wrong-dir",
+      detail: `the matcher drew ${backwards.direction} over the same ground and time`,
+      sameWay,
+    };
+  }
+
+  // The ride IS drawn, on another segment. Checked before `gate` because a run
+  // existing here says nothing when most of the pass went elsewhere.
+  if (share >= NEXT_DOOR_SHARE) {
+    return {
+      cause: "next-door",
+      detail:
+        `${pct(share)} of ${e.fixesInPass} fixes drawn on another segment: ${e.destinations}` +
+        wayNote,
+      sameWay,
+    };
+  }
+
+  // If most of the pass never reached the matcher, no downstream stage can be
+  // blamed for what it did with what it never got.
+  if (e.fixesUnavailable > e.fixesInPass / 2) {
+    return {
+      cause: "dropped",
+      detail:
+        `${e.fixesUnavailable}/${e.fixesInPass} fixes filtered out: ${e.noHeading} no heading, ` +
+        `${e.looseAccuracy} accuracy, ${e.spikes} spike`,
+      sameWay,
+    };
+  }
+
+  // Only now is the gate the explanation: a run over this ground, in this
+  // direction, that the gate rejected, with nothing better to blame. The fix
+  // share is in the detail because a `gate` verdict on a run holding 2 of 29
+  // fixes is not a gate problem and the number gets quoted as one.
+  if (e.right.length > 0) {
+    const widest = e.right.reduce((a, b) => (a.spanM > b.spanM ? a : b));
+    return {
+      cause: "gate",
+      detail:
+        `run existed, span ${widest.spanM.toFixed(0)}m / ${pct(widest.coverage)} of segment, ` +
+        `holding ${e.fixesInRunHere}/${e.fixesInPass} of the pass's fixes; ` +
+        `${pct(share)} drawn elsewhere: ${e.destinations}` + wayNote,
+      sameWay,
+    };
+  }
+
+  return {
+    cause: "no-run",
+    detail:
+      `${pct(share)} of ${e.fixesInPass} fixes drawn on another segment: ${e.destinations}` +
+      wayNote,
+    sameWay,
+  };
+}
 
 // How much of a pass's fixes must land in a qualifying run elsewhere before the
 // ride counts as drawn on a neighbour rather than lost.
@@ -61,6 +201,18 @@ export interface Loss {
   pass: Pass;
   cause: Cause;
   detail: string;
+  /**
+   * The pass was drawn on another PIECE OF THE SAME OSM WAY, not a neighbour.
+   *
+   * `next-door` means "the detector was generous, the map is fine": the rider
+   * was really on the parallel line inside the corridor. That reading does not
+   * survive when the ground is drawn on the adjacent piece of the same street.
+   * East Fountain Boulevard `#30947` -> `#30948` is the case: the rider swept
+   * 31m of a 38m piece and the map paints the piece after it. That is a ~38m
+   * positional error, and without this flag it is invisible inside a bucket of
+   * 363 entries that is excluded from the defect total.
+   */
+  sameWay: boolean;
 }
 
 /** One qualifying run: a line the map draws, and what it contributed. */
@@ -310,67 +462,78 @@ export function traceSession(
         const right = mine.filter((r) => r.direction === pass.direction);
         if (right.some((r) => r.qualified)) continue; // the matcher got it
 
-        let cause: Cause;
-        let detail: string;
         const opposite = mine.filter((r) => r.direction !== pass.direction);
-        if (right.length > 0) {
-          const worst = right.reduce((a, b) => (a.spanM > b.spanM ? a : b));
-          cause = "gate";
-          detail = `run existed, span ${worst.spanM.toFixed(0)}m / ${(worst.coverage * 100).toFixed(0)}% of segment`;
-        } else if (opposite.some((r) => r.qualified)) {
-          cause = "wrong-dir";
-          detail = `the matcher drew ${opposite[0]!.direction} over the same ground and time`;
-        } else {
-          // Were the fixes even available to match?
-          const inPass = samples.filter((s) => {
-            const t = Date.parse(s.recordedAt as unknown as string);
-            return t >= pass.startedMs && t <= pass.endedMs;
-          });
-          const lost = inPass.filter(
-            (s) =>
-              spikeIds.has(s.id) ||
-              s.headingDeg == null ||
-              s.headingDeg < 0 ||
-              (s.accuracyM != null && s.accuracyM > MAX_ACCURACY_M),
-          );
-          if (lost.length > inPass.length / 2) {
-            const noHeading = inPass.filter((s) => s.headingDeg == null || s.headingDeg < 0).length;
-            const loose = inPass.filter((s) => (s.accuracyM ?? 0) > MAX_ACCURACY_M).length;
-            cause = "dropped";
-            detail = `${lost.length}/${inPass.length} fixes filtered out: ${noHeading} no heading, ${loose} accuracy, ${inPass.filter((s) => spikeIds.has(s.id)).length} spike`;
-          } else {
-            // Where DID they go? "No run here" with the fixes all on one
-            // neighbour is a different problem from "no run here" with the
-            // fixes matching nothing at all, and the fixes are the only way to
-            // tell. Reported as the top destinations by share.
-            const went = new Map<string, number>();
-            for (const s of inPass) {
-              const to = landedOn.get(s.id);
-              const key = to == null
-                ? "nothing"
-                : (() => {
-                    const seg = byId.get(to);
-                    const dir = landedDirection.get(s.id);
-                    return `#${to} ${seg?.streetName ?? "(unnamed)"} ${dir}`;
-                  })();
-              went.set(key, (went.get(key) ?? 0) + 1);
-            }
-            const top3 = [...went].sort((a, b) => b[1] - a[1]).slice(0, 3);
-            const drawnElsewhere = inPass.filter((s) => {
-              const to = landedOn.get(s.id);
-              if (to == null) return false;
-              const dir = landedDirection.get(s.id);
-              return records.some((r) => r.segmentId === to && r.direction === dir && r.qualified);
-            }).length;
-            const share = inPass.length > 0 ? drawnElsewhere / inPass.length : 0;
-            cause = share >= NEXT_DOOR_SHARE ? "next-door" : "no-run";
-            detail =
-              `${(share * 100).toFixed(0)}% of ${inPass.length} fixes drawn elsewhere: ` +
-              top3.map(([k, n]) => `${n}x ${k}`).join(", ") +
-              (went.size > 3 ? `, +${went.size - 3} more` : "");
-          }
+
+        // THE EVIDENCE. Gathered here, ordered in `classifyLoss`.
+        const inPass = samples.filter((s) => {
+          const t = Date.parse(s.recordedAt as unknown as string);
+          return t >= pass.startedMs && t <= pass.endedMs;
+        });
+        const unavailable = inPass.filter(
+          (s) =>
+            spikeIds.has(s.id) ||
+            s.headingDeg == null ||
+            s.headingDeg < 0 ||
+            (s.accuracyM != null && s.accuracyM > MAX_ACCURACY_M),
+        );
+        // Drawn on ANOTHER segment. The same segment in the other direction is
+        // `wrong-dir`'s territory and is excluded here deliberately: counting
+        // it would make every wrong-dir case read as next-door, since those
+        // fixes are by definition drawn on this segment backwards.
+        const drawnElsewhere = inPass.filter((s) => {
+          const to = landedOn.get(s.id);
+          if (to == null || to === segmentId) return false;
+          const dir = landedDirection.get(s.id);
+          return records.some((r) => r.segmentId === to && r.direction === dir && r.qualified);
+        }).length;
+        // How much of the pass the run here actually claimed.
+        const inRunHere = inPass.filter(
+          (s) => landedOn.get(s.id) === segmentId && landedDirection.get(s.id) === pass.direction,
+        ).length;
+
+        // Where the fixes went, for the detail strings. "nothing" is a
+        // destination too: matched nowhere is a different defect from matched
+        // next door.
+        const went = new Map<string, number>();
+        for (const s of inPass) {
+          const to = landedOn.get(s.id);
+          const key =
+            to == null
+              ? "nothing"
+              : `#${to} ${byId.get(to)?.streetName ?? "(unnamed)"} ${landedDirection.get(s.id)}`;
+          went.set(key, (went.get(key) ?? 0) + 1);
         }
-        losses.push({ sessionId, segment, pass, cause, detail });
+        const destinations =
+          [...went]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 3)
+            .map(([k, n]) => `${n}x ${k}`)
+            .join(", ") + (went.size > 3 ? `, +${went.size - 3} more` : "");
+
+        // Of the fixes drawn elsewhere, the ones on another piece of THIS way.
+        // Same test as `drawnElsewhere`, narrowed by `osmWayId`.
+        const onSameWay = inPass.filter((s) => {
+          const to = landedOn.get(s.id);
+          if (to == null || to === segmentId) return false;
+          if (byId.get(to)?.osmWayId !== segment.osmWayId) return false;
+          const dir = landedDirection.get(s.id);
+          return records.some((r) => r.segmentId === to && r.direction === dir && r.qualified);
+        }).length;
+
+        const { cause, detail, sameWay } = classifyLoss({
+          right,
+          opposite,
+          fixesInPass: inPass.length,
+          fixesUnavailable: unavailable.length,
+          fixesDrawnElsewhere: drawnElsewhere,
+          fixesInRunHere: inRunHere,
+          fixesOnSameWay: onSameWay,
+          destinations,
+          noHeading: inPass.filter((s) => s.headingDeg == null || s.headingDeg < 0).length,
+          looseAccuracy: inPass.filter((s) => (s.accuracyM ?? 0) > MAX_ACCURACY_M).length,
+          spikes: inPass.filter((s) => spikeIds.has(s.id)).length,
+        });
+        losses.push({ sessionId, segment, pass, cause, detail, sameWay });
       }
     }
   }
@@ -423,6 +586,36 @@ async function main(): Promise<void> {
     const list = byCause.get(cause) ?? [];
     const metres = list.reduce((n, l) => n + l.pass.spanM, 0);
     console.log(`  ${cause.padEnd(10)} ${String(list.length).padStart(4)}  ${metres.toFixed(0).padStart(6)}m`);
+  }
+
+  // `next-door` is excluded from the defect total on the grounds that the ride
+  // IS drawn, just on the parallel line the detector was generous about. That
+  // reading fails when the neighbour is the next piece of the same street, so
+  // the exception is counted here rather than left inside the bucket.
+  const sameWay = losses.filter((l) => l.cause === "next-door" && l.sameWay);
+  if (sameWay.length > 0) {
+    console.log(
+      `\n${sameWay.length} of those next-door passes (${sameWay.reduce((n, l) => n + l.pass.spanM, 0).toFixed(0)}m) ` +
+        `are drawn MOSTLY on another piece of the SAME OSM WAY.\n` +
+        `  Worth separating because "drawn on the neighbour, the map is fine" is the reason ` +
+        `next-door is\n  excluded from the defect total, and that reading is weaker here: the ` +
+        `rider rode one stretch of\n  a street and the paint is on a different stretch of the ` +
+        `same street. NOT asserted to be a\n  defect -- on a long way cut into pieces the ` +
+        `boundary is approximate by construction, and\n  whether these are mispainted or just ` +
+        `shifted by a few metres is not measured here.\n` +
+        `  Observed but NOT explained: almost every street here is a mountain switchback trail\n` +
+        `  (Sinuosa, Culebras, Ladders, Ridgeway, Ridge, Red Rover, Palmer Point, Ute Valley),\n` +
+        `  where sibling pieces of one way can run parallel inside the ${CORRIDOR_M}m corridor and ` +
+        `so\n  fool a bearing-free detector the same way two parallel streets do. Two guesses at ` +
+        `the\n  mechanism were made on 2026-10-04 and both were wrong. It needs its own measurement.`,
+    );
+    for (const l of [...sameWay].sort((a, b) => b.pass.spanM - a.pass.spanM)) {
+      console.log(
+        `  s${String(l.sessionId).padStart(2)} seg ${String(l.segment.id).padStart(6)} ` +
+          `${l.pass.direction.padEnd(8)} ${(l.segment.streetName ?? "(unnamed)").padEnd(26)} ` +
+          `way ${l.segment.osmWayId}  len ${l.segment.lengthM.toFixed(0)}m  pass ${l.pass.spanM.toFixed(0)}m`,
+      );
+    }
   }
 
   // The two causes that are defects rather than detector generosity. A

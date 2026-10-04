@@ -20,3 +20,7 @@ tmp-*.mjs
 # which is not worth carrying in git history for files a script rebuilds.
 osm-pipeline/data/extract.json
 osm-pipeline/data/segments.geojson
+
+# Throwaway diagnostics written in TypeScript, so they can import the real
+# services instead of reimplementing them. Same rule as tmp-*.mjs above.
+tmp-*.ts
