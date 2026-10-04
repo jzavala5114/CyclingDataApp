@@ -39,8 +39,10 @@ fix beat the next-door share test below it. **9 of 12 `gate` losses, 605 m of
 - **Direction is REOPENED.** "The tangent window trades wrong-dir for gate at a
   net 38 m" was an artifact of the mislabelled `gate` column. Re-run under the
   fixed classifier, **14 m is 286 m better, not 38 m.** See "Lever 2".
-- **The 45 s stitch window has lost its stated basis.** It rests on "nothing
-  between 45 s and 90 s"; there are now **17 gaps in that band.**
+- **The 45 s stitch window was swept and KEPT.** Its stated basis was
+  overstated (the empty band is 45-60 s, not 45-90 s), and widening it extends
+  existing lines onto ground no witness backs: 90 s adds 249 m of which 214 m is
+  uncorroborated, and the line count never moves.
 
 **SIX FOR SIX, AND FOUR OF THE SIX WERE MINE, WRITTEN THE DAY BEFORE.** Every
 stale number in this file has been wrong when re-measured: the
@@ -69,7 +71,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 29 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **a witness that can see under 25 m**, because three open levers (gate, stitch window, tangent) all now turn on evidence `findPasses` cannot give. See "The gate sweep: ATTEMPTED" |
+| pick up the next piece of work | **a witness that can see under 25 m**, because the two open levers (the traversal gate and `TANGENT_WINDOW_M`) both turn on evidence `findPasses` cannot give. See "The gate sweep: ATTEMPTED" |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
@@ -77,8 +79,9 @@ Where to start depends on what you came for:
 
 **`main` is the only branch — local and remote, last code change `9c13174`.**
 Nothing is parked, no uncommitted work. **287 backend tests, 56 app tests.**
-**Three constants are awaiting a decision and all three wait on the same
-missing instrument** — see "What is left for the matcher".
+**Two constants are awaiting a decision and both wait on the same missing
+instrument** — see "What is left for the matcher". A third, `STITCH_WINDOW_S`,
+was swept the same day and kept.
 
 Production serves `builtAt 2026-10-04T15:45:52.836Z`. The model is **745
 segments / 951 lines** on the live API, re-queried after the last merge and
@@ -391,19 +394,43 @@ Keep these in mind before "simplifying" anything.
     so re-measure before changing it. Discards 169 → 94, fragments 75 → 2,
     while genuine clips held at 94 → 92, which is the proof that no phantom
     lines came back. No threshold moved.
-    **RE-MEASURED 2026-10-04 and the basis is GONE.** Over the same 42 rides the
-    counts have moved with the archive — runs 2724 → 2532, discards 443 → 324 —
-    which is expected and harmless. What is not harmless: **the empty band is no
-    longer empty.** Of 207 gaps between consecutive same-key runs, **17 sit
-    between 45 s and 90 s** (min 48 s, median 1359 s, max 11170 s). The "nothing
-    between" that justified 45 s does not hold on today's archive, so **no value
-    is defensible until the distribution is re-derived**, including 45.
-    And a wider window is not free of value either: **90 s adds +249 m of
-    covered ground and clears 18 discards**, which was measured by a cold review
-    after the first attempt here reported "0 m" from a test that could not
-    return anything else. **Whether those 249 m are honest paint is NOT
-    measured** — joining runs more than 45 s apart is exactly the full-length
-    phantom this note exists to prevent.
+    **RE-MEASURED AND SWEPT 2026-10-04. The stated basis was overstated, 45
+    still sits at the edge of a real trough, and widening buys mostly phantom,
+    so it STAYS AT 45.** Counts moved with the archive (runs 2724 → 2532,
+    discards 443 → 324), which is expected. The distribution over 399 same-key
+    pre-stitch gaps:
+
+    | gap | 0-10s | 10-30s | 30-45s | **45-60s** | 60-75s | 75-90s | 90-300s | 300s+ |
+    |---|---|---|---|---|---|---|---|---|
+    | gaps | 145 | 35 | 12 | **1** | 10 | 6 | 26 | 164 |
+
+    **"Nothing between 45 s and 90 s" is wrong as written** — 17 gaps sit in that
+    band — **but the trough is real and 45 is at its near edge**: the 45-60 s bin
+    holds 1 gap of 399. The honest correction is that the empty band is 45-60 s,
+    not 45-90 s. A first version of this entry said "no value is defensible,
+    including 45", which overstated it in the other direction.
+    **And the window was properly swept, which closes the lever.** Re-stitching
+    every ride at each window and re-assessing every run through `assessRun`:
+
+    | window | discards | covered m | vs 45 s | lines | UNWITNESSED runs | unwit m |
+    |---|---|---|---|---|---|---|
+    | **45 s shipped** | 324 | 224745 | 0 | 956 | 115 | 2180 |
+    | 75 s | 312 | 225004 | **+259** | 956 | 117 | 2394 |
+    | 90 s | 306 | 224994 | **+249** | 956 | 117 | 2394 |
+    | 300 s | 285 | 224891 | +146 | 956 | 116 | 2390 |
+
+    The +249 m at 90 s reproduces a cold review's figure exactly, and that review
+    said plainly it had not tested whether the paint is honest. It mostly is not:
+    **of the +249 m, +214 m lands on runs with no witness pass** (2180 → 2394),
+    and **the line count never moves** — 956 at every window. A wider window
+    therefore extends existing lines over ground nothing corroborates, which is
+    the full-length phantom this note exists to prevent, appearing in the
+    measurement rather than in the argument. **Left at 45.**
+    **Caveat, the same one that wrecked the gate sweep:** "unwitnessed" inherits
+    `findPasses`'s 25 m floor, so a run that qualified on COVERAGE over a segment
+    shorter than 25 m is unwitnessABLE, not unwitnessed. **+214 m is an upper
+    bound on the phantom, not a measurement of it** — which is enough to decline
+    a change, and would not be enough to justify one.
 27. **A wider bbox orphans existing segments.** `load` upserts on
     `(osm_way_id, start_node_id, end_node_id, piece_index)`, so it can only add
     or update. But a segment boundary is "a node shared by two or more kept
@@ -2013,9 +2040,12 @@ it:
 1. **The traversal gate.** Open, see above. Needs a `rebuild-model` if moved.
 2. **`TANGENT_WINDOW_M`.** Reopened: 14 m is 286 m better than the shipped 10 m
    once the `gate` column is correct. Needs a `rebuild-model` if moved.
-3. **`STITCH_WINDOW_S`.** Its stated basis is gone (17 gaps in the "empty"
-   45-90 s band) and 90 s buys +249 m of covered ground, unverified for phantom
-   risk. Needs a `rebuild-model` if moved.
+3. ~~**`STITCH_WINDOW_S`.**~~ **SWEPT AND CLOSED 2026-10-04** — the one of the
+   three that did not need the new witness, because its cost shows up as
+   uncorroborated metres on lines that already exist. 90 s does buy +249 m, but
+   +214 m of it has no witness and the line count never moves. Its stated basis
+   was overstated (the empty band is 45-60 s, not 45-90 s) and 45 is at the edge
+   of a real trough. **Left at 45.** See note 26.
 
 **All three are the same shape**: a constant whose cost side is a phantom line,
 measured by a detector that cannot see lines that short.
@@ -2082,11 +2112,13 @@ assertion wrong.
    first 20 tests; restoring the original order fails 4 of them. Backend suite
    267 → 287. The bucket is now 4 passes / 179 m, and **not one of the four has
    a majority of its pass's fixes in the rejected run.**
-6. **Three "closed" things reopened by that one fix**: the gate (the witness
-   cannot see under 25 m, so the sweep's cost side was counting its silence as
-   proof), the tangent window (14 m is 286 m better, not a 38 m wash), and the
-   stitch window (its "nothing between 45 s and 90 s" basis now has 17 gaps in
-   it). **Nothing was shipped and no constant moved**, because all three are
+6. **Three "closed" things reopened by that one fix**, and one of the three
+   closed again the same day. The gate: the witness cannot see under 25 m, so
+   the sweep's cost side was counting its silence as proof. The tangent window:
+   14 m is 286 m better, not a 38 m wash. The stitch window: its stated basis
+   was overstated, but a proper sweep shows 90 s adds 249 m of which 214 m has
+   no witness, with the line count unmoved, so it **stays at 45**.
+   **Nothing was shipped and no constant moved.** The two still open are
    measured by an instrument that cannot see the lines they turn on.
 
 **THE LESSON, and it is the same one five days running.** On 10-01 the dry run
@@ -2139,7 +2171,7 @@ would make it say no.
 
 **Written 2026-10-04 believing the gate sweep would finish the matcher. It did
 not** -- see "What is left for the matcher", which is now one instrument and
-three constants waiting on it. The list below is still the right list for
+two constants waiting on it. The list below is still the right list for
 AFTER that, and is unaffected by any of it.
 
 What remains is small, and splits into three honest groups.
