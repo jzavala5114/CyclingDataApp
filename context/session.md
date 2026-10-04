@@ -3,7 +3,7 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-10-03.
+Last updated 2026-10-04.
 
 **The barometer work is finished and verified on a real ride.** Session 84 on
 2026-10-03: 61.9 minutes, screen deliberately locked twice and the app
@@ -19,16 +19,24 @@ rider's real movement, and its upper bound is **28 m** of genuine fork anyway.
 metric and not the map** -- a 35% cut in impossible transitions for 70 m of
 ground in 225 km, so it is off by default. **Direction, the biggest class at
 1073 m, is also closed on measurement (2026-10-04)**: three explanations tested,
-three dead, and `maxBearingDeltaDeg` added and left at 45. **What remains for the
-matcher is the gate sweep.** See "Does the matcher need Viterbi?".
+three dead, and `maxBearingDeltaDeg` added and left at 45. **And the tunnel item
+turned out to be a misread label, not 2,344 m of missing map** -- the real defect
+is 55 m, see the struck entry in Open items. **The only matcher item left is the
+gate sweep.** See "Does the matcher need Viterbi?".
 
-As of 2026-10-03: `main` is the only branch, local and remote. Its last code
-change is `957c8fb`; everything after it is notes.
-Production serving `builtAt 2026-10-03T00:33:14.010Z`. The model is **6,069
-buckets across 745 segments, 951 drawn lines**, unchanged by the barometer work
-— nothing in it touches the matcher or the model, and that was re-queried after
-the merge rather than assumed. 253 backend tests and 56 app tests; `mobile/` has
-a gate lane for the first time. The first deploy attempt back on 2026-09-30
+**FIVE FOR FIVE: every stale number in this file has been wrong when
+re-measured.** The impossible-transition residual, the hairpin explanation for
+wrong-dir, the tangent sweep's conclusion, Viterbi's prize and the tunnel
+census. Measure before building is not a style preference here, it is the only
+thing that has worked. See "What landed on 2026-10-04".
+
+As of 2026-10-04: `main` is `28aed51`, the only branch, local and remote.
+Production serving `builtAt 2026-10-04T15:31:54.060Z`, verified by the timestamp
+moving rather than by status. The model is **6,069 buckets across 745 segments,
+951 drawn lines**, re-queried on the live API after each merge rather than
+assumed, and **unchanged by everything on 2026-10-03 and 2026-10-04** -- every
+option added on those days defaults to the shipped value. **267 backend tests
+and 56 app tests**; `mobile/` has a gate lane. The first deploy attempt back on 2026-09-30
 failed; see note 29, which is worth reading before adding anything to
 `backend/` that imports outside it.
 
@@ -40,19 +48,20 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 29 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"Does the matcher need Viterbi?"** — no; repair segment connectivity first (89 pairs meet within 1 m sharing no node) |
+| pick up the next piece of work | **the traversal gate sweep** — the last matcher item, ~196 m, and read the `MIN_PASS_M` trap first. After that see "What is next after the gate" |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
 ## Where things stand
 
-**`main` is the only branch — local and remote, last code change `957c8fb`.** Nothing
-is parked, nothing is awaiting a decision, no uncommitted work. 253 backend
-tests, 56 app tests.
+**`main` is `28aed51`, the only branch — local and remote.** Nothing is parked,
+nothing is awaiting a decision, no uncommitted work. **267 backend tests, 56 app
+tests.**
 
-Production serves `builtAt 2026-10-03T00:33:14.010Z`. The model is **6,069
-buckets across 745 segments, 745 / 951 lines** on the live API, confirmed
-unchanged after the barometer merge.
+Production serves `builtAt 2026-10-04T15:31:54.060Z`. The model is **745
+segments / 951 lines** on the live API, re-queried after the last merge and
+unchanged, which is what every change on 2026-10-03 and 2026-10-04 predicts:
+all of them are options defaulting to the shipped value.
 
 Cleared on 2026-10-01: the measurement tooling merged, the derived heading and
 the speed limit shipped with a rebuild each, and two branches were dropped after
@@ -172,7 +181,10 @@ from a query on that date)*
   These carry the single-number anchor, which
   is now the only anchor there is; the sliding version was deleted on 2026-09-23
   after five reviews. See "The sliding anchor is gone".
-- **Rides**: **43 usable** since session 84 landed on 2026-10-03. Every
+- **Rides**: **44 usable** as of 2026-10-04, and the count is 44 rather than 43
+  because **session 83 is a 13-second, 4-fix false start that passes the usable
+  filter**. It contributes nothing and cannot produce a pass, but it is in the
+  set and in the denominator. Every
   2026-10-01 measurement replayed **42** (41 on 09-26, 39 on 09-24, 36 on 09-16,
   34 on 09-13), so **pin the session list before comparing against any number
   measured on an earlier date** — the set grows underneath you, and a before/
@@ -1907,6 +1919,89 @@ geometry instead of trusting the classification. 10-01 counted the wrong thing,
 time: a number produced by argument, with nothing checking the case where it
 should have said no.** The cure is the same every time too: go and measure the
 real thing.
+
+### What landed on 2026-10-04
+
+**A day of four closures and no features.** Every one of them came from
+measuring something this file already asserted, and every one of them found the
+assertion wrong.
+
+1. **`endpointSnapM`** (`cb1092f`) -- join segment ends that meet on the ground
+   without sharing an OSM node. 89 canonical pairs meet within 1 m sharing no
+   node; Palmer Point `#75376`/`#75377` are the same OSM way 4 m apart. **Built,
+   swept, left off**: it cuts impossible transitions 35% and moves the map 70 m
+   in 225 km. NOT a pipeline bug -- OSM genuinely holds two nodes there.
+2. **Direction closed** (`288dc96`). Three explanations tested, three dead.
+   Hairpins are 1 of 23, not "almost all". The tangent window trades wrong-dir
+   for gate at a net 38 m. `MAX_BEARING_DELTA_DEG` is strictly worse at every
+   width -- parameterised and left at 45.
+3. **The tunnel item was a misread label** (`28aed51`). `find-holes` printed
+   "covered segments", meaning ROOFED, and a later session read it as RIDDEN.
+   The real defect is 55 m on Gold Camp Road, not 2,344 m. Fixed the label, not
+   the map.
+4. **The matcher's full ledger, with a reproduced control every time**: 35
+   passes and 1795 m drawn nowhere, which is 0.32% of covered ground with no
+   line at all plus 0.48% drawn in one of two directions ridden.
+
+**THE LESSON, and it is the same one five days running.** On 10-01 the dry run
+counted the wrong thing. On 10-02 the ride-grading instrument passed a
+nine-minute blackout. On 10-03 a guard sized by reasoning would have
+reintroduced the error it was built to prevent. On 10-04 four separate numbers
+in this file were wrong when re-measured, and **one of them was wrong because of
+a single ambiguous word in a diagnostic's own output**.
+
+**Every one was a number produced by argument, with nothing checking the case
+where it should have said no.** And the cure was the same every time: go and
+measure the real thing before building anything on top of it.
+
+**A SECOND LESSON, about my own measurements.** Four of them produced clean,
+confident, WRONG answers before being caught:
+- a bigint arriving as text silently turned the street network into
+  disconnected fragments, and reported "Viterbi recovers nothing"
+- a classifier whose two buckets covered 16 of 23 cases printed as though they
+  covered all 23
+- an agreement test at +/-90 degrees stood in for a decision made at +/-45
+- a grid test took three attempts to become capable of failing at all, and in
+  between, a sloppy backup/restore left the bug being compared against itself
+
+**What caught them**: facts already written in this file, a cold review that
+went and measured geometry instead of trusting a classification, and mutation
+testing. **What did not catch them**: reading the code and thinking carefully.
+
+### What is next after the gate
+
+The matcher is finished after the gate sweep. What remains is small, and splits
+into three honest groups.
+
+**Real latent bugs, all concrete:**
+- **A 9 m barometric outlier survives spike rejection** (session 84,
+  19:35:04Z). `rejectElevationSpikes` charges deviation against the shorter
+  horizontal leg at a 100% grade limit, and at riding speed 9 m reads as an
+  ordinary hill. One fix in 1367. **The fix worth doing is not the filter, it is
+  persisting `readingCount` and `meanOffsetMs`** from `altitudeAtFix`, so the
+  next one is diagnosable after the ride instead of needing eyes on the status
+  line during it. Small migration, two doubles per sample.
+- **A buffered fix from an ended session is attributed to the next one.**
+  Session 83's last fix landed in session 84, 21 s before session 84 began.
+- **`SessionVerdict.id` is typed `number` and arrives as a string.** The same
+  bigint-as-text class that has now bitten three times, including in my own
+  measurement today. It is a latent footgun, not a live defect.
+
+**Test and doc debt:**
+- **The linker's own measuring tools have no tests**, flagged by the third cold
+  review and still true.
+- **`context/architecture.html` is over a month stale.**
+
+**Feature ideas, none of them measured, and today says measure first:**
+weight buckets by source and accuracy; two directions on one path; a named path
+beside a road still drawing its own line.
+
+**And one number nobody has measured**, which the cold review named as the single
+most valuable thing to add: **how many segments the rider rode produced ZERO
+runs**, and so never appear in any ledger on this page. `touched` is built from
+the matcher's own runs, so the ledgers cannot see that class at all. The
+structural argument says it is parallel-line loss rather than fork loss, but
+that is reasoning, and reasoning has lost five times this week.
 
 ### What landed on 2026-10-03
 
