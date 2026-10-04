@@ -3,6 +3,7 @@ import {
   matchSamplesToSegments,
   stitchFragmentedRuns,
   buildEndAdjacency,
+  ENDPOINT_SNAP_M,
   type EndNeighbours,
 } from "./segmentMatcher.js";
 import {
@@ -174,13 +175,21 @@ export async function processSession(
   const smoothed = smoothElevations(kept);
   // Rejoined before gating, not after: the gate judges whether a run covered
   // ground, and a traversal chopped into pieces cannot answer that honestly.
-  const runs = stitchFragmentedRuns(matchSamplesToSegments(smoothed, segmentRows));
+  // One value, handed to both the matcher below and the coverage clamp further
+  // down. They must agree about which segment ends count as the same junction:
+  // the matcher uses it to prefer a connected candidate, and the clamp uses it
+  // to decide whether a line may reach a boundary. Changing it for one and not
+  // the other would paint to joins the matcher never believed in.
+  const endpointSnapM = ENDPOINT_SNAP_M;
+  const runs = stitchFragmentedRuns(
+    matchSamplesToSegments(smoothed, segmentRows, { endpointSnapM }),
+  );
   const segmentsById = new Map(segmentRows.map((s) => [s.id, s]));
   // Which segment held each fix, and what touches each segment at each of its
   // ends. Together these answer "did the rider come through this join", which
   // is what stops a line being trimmed back from a boundary it was ridden
   // across -- see clampCoverageToPassage.
-  const endAdjacency = buildEndAdjacency(segmentRows);
+  const endAdjacency = buildEndAdjacency(segmentRows, endpointSnapM);
   const landedOn = new Map<number, number>();
   for (const run of runs) for (const sample of run.samples) landedOn.set(sample.id, run.segmentId);
   const NO_NEIGHBOURS: EndNeighbours = { start: new Set(), end: new Set() };

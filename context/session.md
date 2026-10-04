@@ -10,13 +10,15 @@ Last updated 2026-10-03.
 backgrounded to record a video, **1366 of 1367 fixes barometric, verdict
 `alive`**. See "The barometer: shipped, installed, verified".
 
-**Nothing is mid-flight.** The Viterbi question was measured on 2026-10-03 and
-reviewed cold: **no, and the reason is the graph.** 45 of the 47 transitions that
-looked impossible are segments which meet on the ground and share no OSM node, so
-a transition term would refuse the rider's real movement. Viterbi's measured
-upper bound is **28 m**. The next piece of work is repairing segment
-connectivity, then direction, then the gate. See "Does the matcher need
-Viterbi?".
+**Nothing is mid-flight.** The Viterbi question was measured on 2026-10-03,
+reviewed cold, and then its first lever was built and measured too. **No
+Viterbi**: 45 of the 47 transitions that looked impossible are segments which
+meet on the ground and share no OSM node, so a transition term would refuse the
+rider's real movement, and its upper bound is **28 m** of genuine fork anyway.
+**And repairing that graph, now built as `endpointSnapM`, turns out to fix the
+metric and not the map** -- a 35% cut in impossible transitions for 70 m of
+ground in 225 km. It is off by default. The only lever left with a plausible case
+is direction. See "Does the matcher need Viterbi?".
 
 As of 2026-10-03: `main` is the only branch, local and remote. Its last code
 change is `957c8fb`; everything after it is notes.
@@ -1717,10 +1719,11 @@ moved, and on that graph a transition term makes the map worse rather than bette
 
 **Order of work, cheapest and highest-value first:**
 
-1. **Repair segment connectivity in the osm pipeline.** 89 pairs within 1 m and
-   1,305 same-way pairs within 10 m sharing no node. Closes most of the 213
-   unconnected transitions outright, and is the prerequisite for any graph search
-   ever being viable.
+1. ~~**Repair segment connectivity.**~~ **BUILT AND MEASURED 2026-10-03, and it
+   is not worth shipping on its own.** It closes a third of the unconnected
+   transitions and moves the map by 70m in 225km. It is also NOT a pipeline bug:
+   OSM genuinely holds two nodes 4m apart at these junctions and the importer
+   reproduces it faithfully. See "Lever 1 was BUILT and MEASURED" below.
 2. **Direction by tangent-or-reverse, with direction taken from matched position
    order.** Attacks the largest bucket, 1073 m, which four previous attempts have
    failed to move.
@@ -1729,6 +1732,68 @@ moved, and on that graph a transition term makes the map worse rather than bette
 4. **Viterbi: only after 1**, and only if the residual still looks like
    unrevisable turns. Or sooner if the project ever wants routing, which is the
    other thing that pays for a graph search.
+
+#### Lever 1 was BUILT and MEASURED on 2026-10-03: it repairs the graph, not the map
+
+`endpointSnapM` in `segmentMatcher.ts`, off by default, swept through the real
+code path over the 42 pinned sessions. **The control reproduced 23/12 first.**
+
+| snap | unconnected | wrong-dir | gate | buckets | covered km | lines | phantom |
+|---|---|---|---|---|---|---|---|
+| **0 (shipped)** | 213/2093 (10.2%) | 23 (1073m) | 12 (722m) | 14676 | 224.74 | 2062 | 20 |
+| 2 | 204 (9.7%) | 23 (1073m) | 12 (722m) | 14674 | 224.75 | 2062 | 20 |
+| 5 | 187 (8.9%) | 23 (1073m) | 12 (722m) | 14678 | **224.81** | 2062 | 20 |
+| 10 | **138 (6.6%)** | **24 (1116m)** | 12 (722m) | 14692 | 224.88 | **2059** | 20 |
+
+**Unconnected transitions fall by 35% and the map does not move.** wrong-dir and
+gate are identical at 2m and 5m, drawn lines are identical, phantom lines are 20
+in every arm, and covered distance moves 70m in 225km. At 10m it goes backwards:
+wrong-dir 23 → 24, three lines lost, four swapped.
+
+**Why, and this is the part worth keeping.** This document already contained the
+answer, in "The matcher has no idea the network is connected": *the teleport is
+not the damage, what it costs is the ground underneath it.*
+`DISCONNECT_PENALTY_M` is 6m and a tiebreaker, so new edges change which
+candidates carry the penalty without often changing which one wins. The matcher
+was already landing on the right segments. The graph was mis-DESCRIBING the
+resulting sequence as impossible, which means the 10.2% was mostly measuring OSM
+node bookkeeping rather than matcher behaviour.
+
+**So the corrected order of work is shorter than the one above.** Lever 1 is
+built, is correct, and is not worth a rebuild on its own. Lever 2 (direction by
+tangent-or-reverse) is now the only lever with a plausible case, and it is aimed
+at the 1073m that four attempts have failed to move. Lever 3 (the gate sweep,
+~196m, with `MIN_PASS_M` pinned first) is unchanged.
+
+**Keep `endpointSnapM` at 0.** If something else ever forces a full rebuild,
+take 5m with it: largest radius where nothing regresses, and it makes the
+impossible-transition metric honest for whatever comes next. The risk it was
+expected to carry did not materialise -- the `realEnd` guard held and no paint
+was invented at any radius.
+
+**Three guards in it, each verified by mutation rather than by assumption:**
+- `realEnd` suppression, so a mid-run 150m cut cannot acquire a neighbour and
+  the coverage clamp cannot paint to a join the rider never crossed.
+- An ACCEPTANCE bound, `!(apart <= snap)`. A rejection bound admits a
+  non-finite distance, which would invent an edge from corrupt geometry. Two
+  `Infinity` corners share a grid cell and reach the comparison, so the case is
+  reachable and the test kills the mutant.
+- The grid cell is `snap / 70_000` degrees, not `/ 86_680`. A cell must be at
+  least the radius wide in BOTH axes or a pair can sit two cells apart and the
+  3x3 lookup misses it. Longitude is the tight axis: at `/86_680` the cell is
+  `snap * 1.284 * cos(latitude)` metres, which drops under the radius above
+  **38.8N** -- and this network spans 38.71-38.97N, so the northern two thirds
+  of the city sat just inside the failure.
+
+**The test for that last one took three attempts, and the reasons are the
+lesson.** First it swept north-south, the axis that cannot fail. Then it used a
+4.9m gap, which is INSIDE the bad cell and so can never miss -- the failing
+window is only (4.9868m, 5.0m], 13mm wide. Then it placed the gap by hand with
+`metres / (111194.93 * cos(lat))`, an approximation wrong by millimetres against
+the haversine distance the matcher actually measures, which pushed pairs past the
+radius where they were then CORRECTLY rejected: the test was measuring its own
+fixture error. It works now with `turf.destination`, a 4.99m gap and 1.3mm
+steps, and it was confirmed by flipping the divisor back and watching it go red.
 
 #### The lesson, and it is the fourth of this shape in four days
 

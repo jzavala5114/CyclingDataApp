@@ -16,6 +16,79 @@ const MAX_BEARING_DELTA_DEG = 45;
 // take over.
 const SWITCH_MARGIN_M = 8;
 
+// How close two real segment ends must be before the graph treats them as the
+// same junction, even though OSM gives them different node ids.
+//
+// OFF BY DEFAULT (0), and MEASURED AND NOT SHIPPED 2026-10-03. Do not switch
+// this on without re-reading the table below. It repairs the GRAPH and does
+// almost nothing to the MAP, which is not what it was expected to do.
+//
+// Swept over the 42 pinned sessions, through this exact code path:
+//
+//   snap  unconnected        wrong-dir     gate        buckets  covered km  lines  phantom
+//   0     213/2093 (10.2%)   23 (1073m)    12 (722m)   14676    224.74      2062   20
+//   2     204/2093 ( 9.7%)   23 (1073m)    12 (722m)   14674    224.75      2062   20
+//   5     187/2093 ( 8.9%)   23 (1073m)    12 (722m)   14678    224.81      2062   20
+//   10    138/2090 ( 6.6%)   24 (1116m)    12 (722m)   14692    224.88      2059   20
+//
+// Read the middle columns, not the first. Unconnected transitions fall by 35%
+// at 10m, and **the ground the map draws does not move**: wrong-dir and gate are
+// identical at 2m and 5m, lines are identical, phantom lines are identical at
+// every arm, and covered distance moves by 70m in 225km. At 10m it goes
+// BACKWARDS -- wrong-dir 23 -> 24, three drawn lines lost, four swapped.
+//
+// WHY, and this is the useful part. The project's own note already said it:
+// "the teleport is not the damage, what it costs is the ground underneath it."
+// DISCONNECT_PENALTY_M is 6m and a tiebreaker, so adding edges changes which
+// candidates carry it without often changing which one wins. The matcher was
+// already landing on the right segments; the graph was mis-DESCRIBING the
+// resulting sequence as impossible. So the 10.2% was largely measuring OSM node
+// bookkeeping rather than matcher behaviour.
+//
+// WHAT IT IS STILL WORTH. The impossible-transition metric means something now,
+// and this is the prerequisite for any graph search (see below). If something
+// else ever forces a full rebuild, 5m is the value to take: it is the largest
+// radius at which nothing regresses.
+//
+// The risk this was expected to carry did NOT materialise: phantom lines are 20
+// in every arm, so the `realEnd` guard below held and no paint was invented.
+//
+// WHY IT EXISTS. The graph defines connectivity as "shares an OSM node id", and
+// at trail junctions that is not what physical connectivity means. Measured
+// 2026-10-03: of 47 ride transitions that looked impossible -- over 4 graph hops
+// apart and under 10s apart in time -- 45 join segments whose endpoints are
+// within 30m of each other and share no node. Palmer Point Trail `#75376` ends
+// at node 1850877208 and `#75377` begins at node 3096809454, **4m away**, on the
+// same OSM way; `#75376`'s node is shared with an unnamed footway and `#75377`'s
+// with Youth Camp Trail. On the ground that is one place where three trails
+// meet. In OSM it is two junctions 4m apart, and the importer reproduces OSM
+// faithfully -- this is not a pipeline bug.
+//
+// Network-wide, canonical pairs whose real ends meet but share no node: 89
+// within 1m, 1,987 within 5m, 11,899 within 10m. Read the last as an upper
+// bound, because at 10m it starts to include bridges and trails that genuinely
+// pass near each other.
+//
+// WHY THIS AND NOT VITERBI. A Newson-Krumm transition cost is |distance between
+// fixes - route distance on the network|, so at a junction carrying no edge the
+// route distance is enormous and a global path would REFUSE the rider's real
+// movement. The greedy matcher survives it only because DISCONNECT_PENALTY_M is
+// a soft penalty and not a veto. Repairing the graph is the prerequisite, and
+// Viterbi's own measured upper bound was 28m of genuine fork.
+//
+// THE RISK, stated because it is not the matching half. `buildEndAdjacency`
+// feeds the coverage clamp as well as the matcher, deliberately, so that the two
+// cannot disagree about the network. An edge invented here therefore draws
+// paint: the clamp widens a line to a junction, which is the exact error the
+// `realEnd` comment below warns about. Proximity edges are added ONLY between
+// ends that `realEnd` calls real, so a mid-run 150m cut can never acquire one.
+//
+// Exported so `sessionProcessor` hands the SAME value to the matcher and to the
+// coverage clamp from one variable. Both call sites default to it anyway, but
+// naming it once at the point of use is what stops a future edit changing one
+// of the two and leaving them with different views of the network.
+export const ENDPOINT_SNAP_M = 0;
+
 // Fixes this loose can't tell one parallel way from another, so they'd only
 // add noise. This rejects genuinely bad fixes rather than merely mediocre
 // ones -- being too strict here would throw away most of an urban ride.
@@ -183,6 +256,16 @@ export interface MatchOptions {
    * own, with no cross-track geometry to tune.
    */
   positionFilter?: { minCrossM: number; crossToChord: number } | null;
+  /**
+   * Treat two real segment ends within this many metres as one junction, even
+   * where OSM gives them different node ids. 0 (the default) is the shipped
+   * behaviour: node identity alone.
+   *
+   * See ENDPOINT_SNAP_M for the measurement behind it. Note that this reaches
+   * the coverage clamp as well as the matcher, on purpose, so a sweep over it
+   * moves drawn extents and not only matches.
+   */
+  endpointSnapM?: number;
 }
 
 export function deriveHeadings(
@@ -377,7 +460,10 @@ export interface EndNeighbours {
 // Built per call from the segments the caller is matching against, which is a
 // box around one ride. Nothing is cached between rides: the graph is cheap
 // beside the per-fix geometry, and a stale one would be a silent wrong answer.
-export function buildEndAdjacency(segments: Segment[]): Map<number, EndNeighbours> {
+export function buildEndAdjacency(
+  segments: Segment[],
+  endpointSnapM: number = ENDPOINT_SNAP_M,
+): Map<number, EndNeighbours> {
   const ends = new Map<number, EndNeighbours>();
   for (const segment of segments) ends.set(segment.id, { start: new Set(), end: new Set() });
 
@@ -454,15 +540,90 @@ export function buildEndAdjacency(segments: Segment[]): Map<number, EndNeighbour
     }
   }
 
+  // Ends that meet on the ground without sharing a node id. See ENDPOINT_SNAP_M
+  // for why, and for why this is off until a sweep prices it.
+  //
+  // Only `realEnd` ends take part, so a mid-run cut cannot acquire a neighbour.
+  // Bucketed on a grid of at least `endpointSnapM` in both axes, because a
+  // downtown box holds thousands of segments and comparing every pair of ends
+  // is the one part of this function that would not be cheap.
+  if (endpointSnapM > 0) {
+    type Corner = { segment: Segment; which: "start" | "end"; lon: number; lat: number };
+    const corners: Corner[] = [];
+    for (const segment of segments) {
+      const line = segment.geom.coordinates;
+      if (line.length < 2) continue;
+      const real = realEnd.get(segment.id)!;
+      if (real.start) {
+        corners.push({ segment, which: "start", lon: line[0]![0]!, lat: line[0]![1]! });
+      }
+      if (real.end) {
+        const last = line[line.length - 1]!;
+        corners.push({ segment, which: "end", lon: last[0]!, lat: last[1]! });
+      }
+    }
+
+    // The cell must be at least `endpointSnapM` wide in BOTH axes, or a pair
+    // inside the radius can sit two cells apart and the 3x3 lookup below misses
+    // it. Longitude is the tighter axis: a cell of `d` degrees is
+    // `d * 111320 * cos(latitude)` metres wide.
+    //
+    // 70_000 rather than the 86_680 m/degree that longitude actually measures at
+    // 39N, which was the first version of this line and was WRONG BY 0.15% at
+    // the top of this network. At `snap / 86_680` the cell is
+    // `snap * 1.284 * cos(latitude)` metres wide, which falls below `snap` once
+    // cos(latitude) < 0.779 -- that is 38.8N, and the segment table spans
+    // 38.71-38.97N. So the northern third of the city sat just inside the
+    // failure. 70_000 holds up to 51N with a 59% margin, and the only cost is a
+    // slightly larger neighbourhood to scan.
+    const cellDeg = endpointSnapM / 70_000;
+    const grid = new Map<string, Corner[]>();
+    const cellKey = (lon: number, lat: number) =>
+      `${Math.floor(lon / cellDeg)}|${Math.floor(lat / cellDeg)}`;
+    for (const corner of corners) {
+      const key = cellKey(corner.lon, corner.lat);
+      const cell = grid.get(key);
+      if (cell) cell.push(corner);
+      else grid.set(key, [corner]);
+    }
+
+    for (const corner of corners) {
+      const cx = Math.floor(corner.lon / cellDeg);
+      const cy = Math.floor(corner.lat / cellDeg);
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (const other of grid.get(`${cx + dx}|${cy + dy}`) ?? []) {
+            // Both ends of one segment being close is a tiny loop, not a
+            // junction with anything, so a segment is never its own neighbour.
+            if (other.segment.id === corner.segment.id) continue;
+            const apart = turf.distance([corner.lon, corner.lat], [other.lon, other.lat], {
+              units: "meters",
+            });
+            // Written as an ACCEPTANCE bound, not `apart > endpointSnapM`. A
+            // non-finite coordinate makes that comparison false, which would
+            // skip the `continue` and invent an edge out of corrupt geometry --
+            // the same rejection-bound trap `barometerWindow.ts` documents.
+            if (!(apart <= endpointSnapM)) continue;
+            ends.get(corner.segment.id)![corner.which].add(other.segment.id);
+            ends.get(other.segment.id)![other.which].add(corner.segment.id);
+          }
+        }
+      }
+    }
+  }
+
   return ends;
 }
 
 // segment id -> the ids of the segments that physically touch it, either end.
 // The union of buildEndAdjacency, so the matcher and the coverage clamp cannot
 // disagree about what the network looks like.
-function buildAdjacency(segments: Segment[]): Map<number, Set<number>> {
+function buildAdjacency(
+  segments: Segment[],
+  endpointSnapM: number = ENDPOINT_SNAP_M,
+): Map<number, Set<number>> {
   const adjacency = new Map<number, Set<number>>();
-  for (const [id, { start, end }] of buildEndAdjacency(segments)) {
+  for (const [id, { start, end }] of buildEndAdjacency(segments, endpointSnapM)) {
     const union = new Set([...start, ...end]);
     if (union.size > 0) adjacency.set(id, union);
   }
@@ -500,6 +661,7 @@ export function matchSamplesToSegments(
     disconnectPenaltyM = DISCONNECT_PENALTY_M,
     headingSource = "derived",
     positionFilter = null,
+    endpointSnapM = ENDPOINT_SNAP_M,
   }: MatchOptions = {},
 ): MatchedRun[] {
   const headings =
@@ -518,7 +680,7 @@ export function matchSamplesToSegments(
   const geometries = new Map(
     candidateSegments.map((s) => [s.id, buildSegmentGeometry(s, tangentWindowM)]),
   );
-  const adjacency = buildAdjacency(candidateSegments);
+  const adjacency = buildAdjacency(candidateSegments, endpointSnapM);
   const runs: MatchedRun[] = [];
   let current: MatchedRun | null = null;
   // The last segment a fix was matched to, and when. Kept separately from
