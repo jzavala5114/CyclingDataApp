@@ -6,7 +6,41 @@ import type { Direction, MatchedRun, Segment, SessionSample } from "../types/ind
 // has to ask with the matcher's own numbers. A diagnostic carrying its own copy
 // of 25 and 30 reports on a corridor this file does not use.
 export const MAX_MATCH_DISTANCE_M = 25;
-const MAX_BEARING_DELTA_DEG = 45;
+// How far the rider's heading may sit from a segment's local tangent and still
+// count as travelling along it. Past this in BOTH senses the segment is not a
+// candidate at all.
+//
+// SWEPT AND REJECTED 2026-10-04. 45 is better than anything wider, and the
+// effect runs the opposite way to the argument for widening it. Do not raise
+// this without re-reading the table.
+//
+//   delta  wrong-dir     gate         REAL LOSS  covered km  phantom  fixed/broke
+//   45     23 (1073m)    12 ( 722m)   1795m      224.74      20       --
+//   55     27 (1382m)    14 ( 830m)   2212m      224.59      23       1/5
+//   65     28 (1416m)    13 ( 716m)   2132m      224.16      22       4/9
+//   75     29 (1494m)    20 (1090m)   2583m      223.66      22       5/11
+//
+// Lost ground rises monotonically, covered distance falls, and each arm breaks
+// about twice as many passes as it fixes. **This 45-degree window is doing real
+// work**: it rejects a rider crossing a street from matching it, and widening it
+// hands every fix more candidates to be wrong about.
+//
+// THE ARGUMENT IT KILLED, kept because the reasoning was wrong in an instructive
+// way. A diagnostic found that 14 of the 23 wrong-dir passes (720m) had a
+// derived heading AGREEING with the direction of travel along the line while the
+// matcher drew the opposite, and inferred that the tangent being compared
+// against must belong to a different edge than the one under the fix -- so
+// widening would let the correct edge through to win on distance.
+//
+// Two things were wrong with it. First, for a wrong-dir loss the matcher DID
+// match the segment, so the nearest aligned edge had already passed this test
+// with the reverse label; widening only admits MORE edges, and it can change the
+// outcome only where a NEARER edge was failing, which is rare. Second, the
+// diagnostic's "agrees" test used +/-90 degrees while this decision is made at
+// +/-45, so a fix 70 degrees off the travel direction counted as agreement while
+// actually failing the test in BOTH senses. The 720m never meant "the matcher
+// had the right information and chose wrong".
+export const MAX_BEARING_DELTA_DEG = 45;
 
 // A street and its separately-mapped sidewalk sit 5-10m apart -- well inside
 // GPS error -- so picking the nearest candidate independently for every
@@ -266,6 +300,11 @@ export interface MatchOptions {
    * moves drawn extents and not only matches.
    */
   endpointSnapM?: number;
+  /**
+   * How far the heading may sit from a segment local tangent and still match.
+   * 45 (the default) is the shipped behaviour. See MAX_BEARING_DELTA_DEG.
+   */
+  maxBearingDeltaDeg?: number;
 }
 
 export function deriveHeadings(
@@ -291,9 +330,13 @@ function bearingDelta(a: number, b: number): number {
   return diff > 180 ? 360 - diff : diff;
 }
 
-function directionForBearing(sampleBearing: number, segmentBearing: number): Direction | null {
-  if (bearingDelta(sampleBearing, segmentBearing) <= MAX_BEARING_DELTA_DEG) return "forward";
-  if (bearingDelta(sampleBearing, (segmentBearing + 180) % 360) <= MAX_BEARING_DELTA_DEG) return "backward";
+function directionForBearing(
+  sampleBearing: number,
+  segmentBearing: number,
+  maxDeltaDeg: number = MAX_BEARING_DELTA_DEG,
+): Direction | null {
+  if (bearingDelta(sampleBearing, segmentBearing) <= maxDeltaDeg) return "forward";
+  if (bearingDelta(sampleBearing, (segmentBearing + 180) % 360) <= maxDeltaDeg) return "backward";
   return null;
 }
 
@@ -407,6 +450,7 @@ function nearestAlignedEdge(
   headingDeg: number,
   geometry: SegmentGeometry,
   cosLat: number,
+  maxBearingDeltaDeg: number = MAX_BEARING_DELTA_DEG,
 ): { distanceM: number; direction: Direction } | null {
   let bestDistanceM = Infinity;
   let bestDirection: Direction | null = null;
@@ -415,7 +459,7 @@ function nearestAlignedEdge(
     const distanceM = pointToEdgeM(sample.lat, sample.lon, edge, cosLat);
     // Cheap tests first: an edge that cannot win needs no bearing check.
     if (distanceM > MAX_MATCH_DISTANCE_M || distanceM >= bestDistanceM) continue;
-    const direction = directionForBearing(headingDeg, edge.tangentDeg);
+    const direction = directionForBearing(headingDeg, edge.tangentDeg, maxBearingDeltaDeg);
     if (!direction) continue;
     bestDistanceM = distanceM;
     bestDirection = direction;
@@ -662,6 +706,7 @@ export function matchSamplesToSegments(
     headingSource = "derived",
     positionFilter = null,
     endpointSnapM = ENDPOINT_SNAP_M,
+    maxBearingDeltaDeg = MAX_BEARING_DELTA_DEG,
   }: MatchOptions = {},
 ): MatchedRun[] {
   const headings =
@@ -712,7 +757,7 @@ export function matchSamplesToSegments(
       ) {
         continue;
       }
-      const hit = nearestAlignedEdge(sample, headingDeg, geometry, cosLat);
+      const hit = nearestAlignedEdge(sample, headingDeg, geometry, cosLat, maxBearingDeltaDeg);
       if (!hit) continue;
       // With no usable anchor every candidate is treated as connected, so the
       // penalty cancels and ranking is by distance alone, as it was before.

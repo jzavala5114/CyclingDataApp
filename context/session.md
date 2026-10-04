@@ -17,8 +17,10 @@ meet on the ground and share no OSM node, so a transition term would refuse the
 rider's real movement, and its upper bound is **28 m** of genuine fork anyway.
 **And repairing that graph, now built as `endpointSnapM`, turns out to fix the
 metric and not the map** -- a 35% cut in impossible transitions for 70 m of
-ground in 225 km. It is off by default. The only lever left with a plausible case
-is direction. See "Does the matcher need Viterbi?".
+ground in 225 km, so it is off by default. **Direction, the biggest class at
+1073 m, is also closed on measurement (2026-10-04)**: three explanations tested,
+three dead, and `maxBearingDeltaDeg` added and left at 45. **What remains for the
+matcher is the gate sweep.** See "Does the matcher need Viterbi?".
 
 As of 2026-10-03: `main` is the only branch, local and remote. Its last code
 change is `957c8fb`; everything after it is notes.
@@ -1724,9 +1726,12 @@ moved, and on that graph a transition term makes the map worse rather than bette
    transitions and moves the map by 70m in 225km. It is also NOT a pipeline bug:
    OSM genuinely holds two nodes 4m apart at these junctions and the importer
    reproduces it faithfully. See "Lever 1 was BUILT and MEASURED" below.
-2. **Direction by tangent-or-reverse, with direction taken from matched position
-   order.** Attacks the largest bucket, 1073 m, which four previous attempts have
-   failed to move.
+2. ~~**Direction.**~~ **CLOSED ON MEASUREMENT 2026-10-04.** The matcher already
+   accepts the heading or its reverse (`segmentMatcher.ts:294`), so that half was
+   never the problem. Three explanations tested and all three dead: hairpins are
+   1 of 23, the tangent window trades wrong-dir for gate at a net 38 m, and the
+   bearing tolerance is strictly worse at every width. See "Lever 2, direction,
+   is CLOSED" below.
 3. **Sweep the traversal gate**, with `MIN_PASS_M` pinned at 25 first. ~196 m,
    minus ~150 m that overlaps lever 2's territory.
 4. **Viterbi: only after 1**, and only if the residual still looks like
@@ -1794,6 +1799,96 @@ the haversine distance the matcher actually measures, which pushed pairs past th
 radius where they were then CORRECTLY rejected: the test was measuring its own
 fixture error. It works now with `turf.destination`, a 4.99m gap and 1.3mm
 steps, and it was confirmed by flipping the divisor back and watching it go red.
+
+#### Lever 2, direction, is CLOSED on measurement — 2026-10-04
+
+**Three explanations tested, three dead.** wrong-dir is 23 passes and 1073 m,
+60% of all lost ground, and four previous attempts had failed to move it. It is
+now closed rather than open, and the class is also smaller than the number looks.
+
+**1. Hairpins defeating the tangent window: 1 of 23.** This document said
+wrong-dir was "almost all on switchback trails where `TANGENT_WINDOW_M`'s 10 m
+spans a hairpin and the tangent it averages points nowhere useful". Measured per
+pass: **only one pass (68 m) has a tangent that swings 90° or more across it.**
+The stated cause covers 6% of the class.
+
+**2. The tangent window, re-swept with the derived heading.** The 2026-09-30
+sweep that cleared it was measured with the DEVICE heading (its shipped row
+reads 39 wrong-dir, not 23), so the hypothesis "a narrower tangent reads a
+hairpin better" had been tested against a heading that was itself over 90° wrong
+on 1.42% of fixes. Re-run with derived:
+
+| tangent | wrong-dir | gate | real loss | covered km | lines | phantom |
+|---|---|---|---|---|---|---|
+| 0 (chord) | 40 (1554m) | 58 (4007m) | 5561 | 218.62 | 2141 | 35 |
+| 3 | 24 (1180m) | 12 (696m) | 1876 | 224.33 | 2057 | 22 |
+| 5 | 24 (1164m) | 11 (667m) | 1832 | 224.40 | 2057 | 22 |
+| 7 | 25 (1200m) | 11 (667m) | 1867 | 224.56 | 2059 | 22 |
+| **10 (shipped)** | 23 (1073m) | 12 (722m) | **1795** | 224.74 | 2062 | 20 |
+| 14 | **18 (777m)** | 16 (980m) | 1757 | 225.05 | 2067 | 24 |
+
+**Narrower is worse at every value.** 14 m cuts wrong-dir by 296 m but adds
+258 m to `gate`, so total lost ground moves 38 m and phantom lines go 20 → 24.
+Reclassification between two buckets, not recovery. **Not shipped.**
+
+**3. `MAX_BEARING_DELTA_DEG`, the last unswept matcher constant. Swept, and
+strictly worse at every width** -- see its doc comment for the table. Lost ground
+rises 1795 → 2583 m from 45° to 75°, covered distance falls, and each arm breaks
+about twice as many passes as it fixes. The 45° window is doing real work
+rejecting cross-traffic. **Parameterised as `maxBearingDeltaDeg` and left at 45**,
+the same disposition as `positionFilter` and `endpointSnapM`.
+
+#### And the class is smaller than 1073 m
+
+Per-pass, from the same diagnostic:
+
+| | passes | metres |
+|---|---|---|
+| heading within 90° of travel along the line, label still wrong | 14 | 720 |
+| heading disagrees with travel along the line (real geometry) | 2 | 71 |
+| **no interior fix, so nothing was judged either way** | **7** | **286** |
+
+**12 of the 23 passes rest on 4 or fewer fixes** (481 m), because `findPasses`
+needs only `MIN_PASS_M` = 25 m of projection sweep to call a pass, and several
+sit at 21-25 m median offset, at the edge of the 25 m corridor. So an unknown
+part of this 1073 m is the same detector generosity the cold review found inside
+the gate class, not matcher error.
+
+**TWO DEFECTS IN THAT DIAGNOSTIC, both mine, both worth keeping.**
+
+- **Its two buckets covered 16 of 23 and the summary did not say so.** The
+  classifier only examines INTERIOR fixes -- it needs a neighbour either side to
+  get a signed movement along the line -- so a 2-fix pass contributes nothing and
+  lands at agree 0 / disagree 0. Seven passes, 286 m, were silently credited as
+  classified. That is the `no-witness` mistake this project has already paid for
+  twice, in the linker's phantom count and in the barometer instrument's
+  `unmeasured` verdict. It now prints three buckets and asserts they cover the
+  input.
+- **It tested agreement at ±90° while the matcher decides at ±45°.** A fix 70°
+  off the travel direction counted as "the heading agrees" while actually failing
+  the matcher's test in BOTH senses, which rejects the segment outright. So the
+  720 m never meant "the matcher had the right information and chose wrong", and
+  the inference built on it (widen the tolerance) was falsified by the sweep.
+
+#### What is left for the matcher
+
+**The gate sweep**, ~196 m, with `MIN_PASS_M = MIN_SPAN_M` broken first
+(`segmentPasses.ts:22`, and `segmentPasses.test.ts:82-83` asserts both the
+equality and the literal 25) or the sweep moves its own witness.
+
+**"Riding a segment both ways can draw only one direction"** is probably this
+same defect seen from the other end, so it does not survive independently.
+
+**The one thing never measured:** how many segments the rider rode produced ZERO
+runs and so never appear in the ledger at all. `touched` is built from the
+matcher's own runs. The structural argument says the missing class is
+parallel-line loss rather than fork loss, but that is reasoning, not measurement.
+
+**The only untested idea for direction** is the structural one: collapse runs on
+segment alone, then take direction from the order of matched positions and split
+at a retrace, which is what `findPasses` already does. That is a core rewrite
+with no constant to sweep, and on the evidence above the prize it is chasing is
+well under 1073 m.
 
 #### The lesson, and it is the fourth of this shape in four days
 

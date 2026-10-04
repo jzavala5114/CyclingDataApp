@@ -166,3 +166,82 @@ test("THE DEFAULT is the derived heading, and this is what pins it", () => {
   assert.equal(byDefault, asDerived, "the default must be the derived heading");
   assert.notEqual(asDerived, asDevice, "or this fixture proves nothing about the default");
 });
+
+// -- maxBearingDeltaDeg -------------------------------------------------------
+//
+// The tolerance the bearing test applies, parameterised 2026-10-04 because it
+// had never been swept while the tangent window, disconnect penalty, heading
+// source and spike filter all had. Held with `headingSource: "device"` so the
+// heading is whatever the fixture says and only the threshold is under test --
+// a derived heading would have to leave the 25m corridor to point 60 degrees
+// off a straight segment, which would change two things at once.
+
+/** A 200m segment running due east from 38.82N, so its tangent is 90 degrees. */
+const eastwardSegment = () => {
+  const cosLat = Math.cos((38.82 * Math.PI) / 180);
+  return {
+    id: 1, osmWayId: "w1", kind: "road", streetName: "Tolerance Street",
+    startNodeId: "n1", endNodeId: "n2", pieceIndex: 0, bearingDeg: 90, lengthM: 200,
+    geom: {
+      type: "LineString" as const,
+      coordinates: [[-104.82, 38.82], [-104.82 + 200 / (M_PER_DEG * cosLat), 38.82]],
+    },
+  } as unknown as Parameters<typeof matchSamplesToSegments>[1][number];
+};
+
+/** Fixes sitting ON the eastward segment, each reporting `headingDeg`. */
+const onSegmentHeading = (headingDeg: number): SessionSample[] => {
+  const cosLat = Math.cos((38.82 * Math.PI) / 180);
+  return [0, 1, 2, 3, 4].map(
+    (i) => ({ ...at(38.82, -104.82 + (i * 25) / (M_PER_DEG * cosLat), i), headingDeg }) as SessionSample,
+  );
+};
+
+const matchedFixes = (headingDeg: number, maxBearingDeltaDeg?: number) =>
+  matchSamplesToSegments(onSegmentHeading(headingDeg), [eastwardSegment()], {
+    headingSource: "device",
+    ...(maxBearingDeltaDeg == null ? {} : { maxBearingDeltaDeg }),
+  }).reduce((n, r) => n + r.samples.length, 0);
+
+test("THE CASE FOR SWEEPING IT: a heading 60deg off the tangent is rejected at 45 and matched at 65", () => {
+  // 60 degrees off east is outside the 45-degree window in BOTH senses -- 60
+  // from the tangent and 120 from its reverse -- so the segment is not a
+  // candidate at all and the run never starts. That is the mechanism behind
+  // the 720m of wrong-dir where the heading agrees with travel along the line:
+  // when the right edge fails this test, a reversed edge elsewhere can win.
+  assert.equal(matchedFixes(150), 0, "rejected at the shipped 45");
+  assert.equal(matchedFixes(150, 65), 5, "matched once the window admits 60");
+});
+
+test("BOUNDARY: the tolerance bites, bracketed either side of a 60deg offset", () => {
+  // Bracketed with a 2-degree margin rather than asserted exactly AT 60, and
+  // the reason is worth keeping. This segment is two points on the same
+  // parallel, and the great-circle bearing between those is not exactly 90
+  // degrees -- it bulges poleward, so the tangent is 89.999-something. A
+  // nominal 60-degree offset therefore measures a shade OVER 60, and a
+  // tolerance of exactly 60 correctly rejects it. The first version of this
+  // test asserted the exact boundary and failed on that, measuring its own
+  // fixture rather than the threshold.
+  //
+  // Pinned against literals as well as against the constant, because a test
+  // that reads its threshold back out of the constant moves with it.
+  assert.equal(matchedFixes(150, 62), 5, "60 off, tolerance 62: admitted");
+  assert.equal(matchedFixes(150, 58), 0, "60 off, tolerance 58: rejected");
+  assert.equal(matchedFixes(135, 47), 5, "45 off, tolerance 47: admitted");
+  assert.equal(matchedFixes(135, 43), 0, "45 off, tolerance 43: rejected");
+});
+
+test("THE DEFAULT is 45, and widening does not silently flip a direction label", () => {
+  // The default must stay put: changing it rewrites every height on the map.
+  assert.equal(matchedFixes(150), matchedFixes(150, 45), "the default is 45");
+  // And a wider window must not turn a forward pass backward. A rider heading
+  // east on an eastward segment is forward at every tolerance.
+  for (const tol of [45, 55, 65, 75]) {
+    const runs = matchSamplesToSegments(onSegmentHeading(90), [eastwardSegment()], {
+      headingSource: "device",
+      maxBearingDeltaDeg: tol,
+    });
+    assert.equal(runs.length, 1, `one run at tolerance ${tol}`);
+    assert.equal(runs[0]!.direction, "forward", `still forward at tolerance ${tol}`);
+  }
+});
