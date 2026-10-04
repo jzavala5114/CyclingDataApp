@@ -21,21 +21,42 @@ ground in 225 km, so it is off by default. **Direction, the biggest class at
 1073 m, is also closed on measurement (2026-10-04)**: three explanations tested,
 three dead, and `maxBearingDeltaDeg` added and left at 45. **And the tunnel item
 turned out to be a misread label, not 2,344 m of missing map** -- the real defect
-is 55 m, see the struck entry in Open items. **The only matcher item left is the
-gate sweep.** See "Does the matcher need Viterbi?".
+is 55 m, see the struck entry in Open items.
 
-**FIVE FOR FIVE: every stale number in this file has been wrong when
-re-measured.** The impossible-transition residual, the hairpin explanation for
-wrong-dir, the tangent sweep's conclusion, Viterbi's prize and the tunnel
-census. Measure before building is not a style preference here, it is the only
-thing that has worked. See "What landed on 2026-10-04".
+**THEN THE GATE SWEEP WAS ATTEMPTED, AND IT TOOK THE LEDGER WITH IT
+(2026-10-04, second half).** The ledger that justified the sweep was itself
+wrong: `traceSession` assigned `gate` on the EXISTENCE of a run, so one stray
+fix beat the next-door share test below it. **9 of 12 `gate` losses, 605 m of
+784 m, were ground already drawn on the neighbouring segment.** Fixed in
+`9c13174` with the script's first 20 tests. The bucket is now **4 passes /
+179 m over 44 rides**.
 
-As of 2026-10-04: `main` is `28aed51`, the only branch, local and remote.
-Production serving `builtAt 2026-10-04T15:31:54.060Z`, verified by the timestamp
-moving rather than by status. The model is **6,069 buckets across 745 segments,
+**Two things that were "closed" are reopened, and one is NOT settled:**
+- **The gate is OPEN, not closed.** The sweep's cost side counted the witness's
+  silence as proof of a phantom, and `findPasses` cannot report anything under
+  25 m while every run being swept is under 25 m by construction. The
+  instrument is blind to its own subject. See "The gate sweep: ATTEMPTED".
+- **Direction is REOPENED.** "The tangent window trades wrong-dir for gate at a
+  net 38 m" was an artifact of the mislabelled `gate` column. Re-run under the
+  fixed classifier, **14 m is 286 m better, not 38 m.** See "Lever 2".
+- **The 45 s stitch window has lost its stated basis.** It rests on "nothing
+  between 45 s and 90 s"; there are now **17 gaps in that band.**
+
+**SIX FOR SIX, AND FOUR OF THE SIX WERE MINE, WRITTEN THE DAY BEFORE.** Every
+stale number in this file has been wrong when re-measured: the
+impossible-transition residual, the hairpin explanation for wrong-dir, the
+tangent sweep's conclusion, Viterbi's prize, the tunnel census, and now the
+gate's own prize. Measure before building is not a style preference here, it is
+the only thing that has worked. See "What landed on 2026-10-04".
+
+As of 2026-10-04: `main` is the only branch, local and remote; last code change
+`9c13174`. Production serving `builtAt 2026-10-04T15:45:52.836Z`, verified by the
+timestamp moving rather than by status. **Note for next time: that build came
+from a DOCS-ONLY merge**, so Railway rebuilds on any push to `main`, not only on
+`backend/**` as this file previously assumed. The model is **6,069 buckets across 745 segments,
 951 drawn lines**, re-queried on the live API after each merge rather than
 assumed, and **unchanged by everything on 2026-10-03 and 2026-10-04** -- every
-option added on those days defaults to the shipped value. **267 backend tests
+option added on those days defaults to the shipped value. **287 backend tests
 and 56 app tests**; `mobile/` has a gate lane. The first deploy attempt back on 2026-09-30
 failed; see note 29, which is worth reading before adding anything to
 `backend/` that imports outside it.
@@ -48,17 +69,18 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 29 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **the traversal gate sweep** — the last matcher item, ~196 m, and read the `MIN_PASS_M` trap first. After that see "What is next after the gate" |
+| pick up the next piece of work | **a witness that can see under 25 m**, because three open levers (gate, stitch window, tangent) all now turn on evidence `findPasses` cannot give. See "The gate sweep: ATTEMPTED" |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
 ## Where things stand
 
-**`main` is `28aed51`, the only branch — local and remote.** Nothing is parked,
-nothing is awaiting a decision, no uncommitted work. **267 backend tests, 56 app
-tests.**
+**`main` is the only branch — local and remote, last code change `9c13174`.**
+Nothing is parked, no uncommitted work. **287 backend tests, 56 app tests.**
+**Three constants are awaiting a decision and all three wait on the same
+missing instrument** — see "What is left for the matcher".
 
-Production serves `builtAt 2026-10-04T15:31:54.060Z`. The model is **745
+Production serves `builtAt 2026-10-04T15:45:52.836Z`. The model is **745
 segments / 951 lines** on the live API, re-queried after the last merge and
 unchanged, which is what every change on 2026-10-03 and 2026-10-04 predicts:
 all of them are options defaulting to the shipped value.
@@ -363,12 +385,25 @@ Keep these in mind before "simplifying" anything.
     146m descent of the BeaUTEiful Loop arrived as *five* runs of 1–15m, each
     too short to clear the gate, so the whole descent was lost.
     `stitchFragmentedRuns()` rejoins runs on the same segment+direction within
-    `STITCH_WINDOW_S = 45`. **The window is measured, not chosen**: fragments
+    `STITCH_WINDOW_S = 45`. **The window was measured, not chosen**: fragments
     cluster at 0–45 s (49 of 51) and separate crossings of the same block at
     90 s+, with nothing between — that gap is the whole basis for the number,
     so re-measure before changing it. Discards 169 → 94, fragments 75 → 2,
     while genuine clips held at 94 → 92, which is the proof that no phantom
     lines came back. No threshold moved.
+    **RE-MEASURED 2026-10-04 and the basis is GONE.** Over the same 42 rides the
+    counts have moved with the archive — runs 2724 → 2532, discards 443 → 324 —
+    which is expected and harmless. What is not harmless: **the empty band is no
+    longer empty.** Of 207 gaps between consecutive same-key runs, **17 sit
+    between 45 s and 90 s** (min 48 s, median 1359 s, max 11170 s). The "nothing
+    between" that justified 45 s does not hold on today's archive, so **no value
+    is defensible until the distribution is re-derived**, including 45.
+    And a wider window is not free of value either: **90 s adds +249 m of
+    covered ground and clears 18 discards**, which was measured by a cold review
+    after the first attempt here reported "0 m" from a test that could not
+    return anything else. **Whether those 249 m are honest paint is NOT
+    measured** — joining runs more than 45 s apart is exactly the full-length
+    phantom this note exists to prevent.
 27. **A wider bbox orphans existing segments.** `load` upserts on
     `(osm_way_id, start_node_id, end_node_id, piece_index)`, so it can only add
     or update. But a segment boundary is "a node shared by two or more kept
@@ -1664,27 +1699,77 @@ one OSM way (905853788, pieces 1 and 2 of three), exactly like
 `#49643`/`#49644` which the note DID reclassify. So "flip-flop between two
 ways, 140 m" was wrong on facts already in this document.
 
-#### The gate sweep: still worth doing, now THIRD, and it has a blocker
+#### The gate sweep: ATTEMPTED 2026-10-04, and the instrument cannot settle it
 
-The six near-misses are real and reconstructable from coverage x length:
-`#30947` 18.6 m and 20.1 m, `#19410` 22.3 m, `#14357` 18.1 m, `#75456`
-17.6 m, `#25830` 18.2 m — all against `MIN_SPAN_M = 25`
-(`elevationAggregator.ts:42-43`, gate is `spanM >= 25 || coverage >= 0.7`).
-196 m of pass recovered by one constant is genuinely cheaper than a rewrite, and
-the two constants really have never been swept while the tangent window got
-seven values, the disconnect penalty four, the spike filter three and the heading
-source two.
+**NOT a wash and NOT a win. A non-result, for a structural reason worth
+remembering.** Nothing was shipped and no constant moved.
 
-**THE BLOCKER, which the first draft missed.** `segmentPasses.ts:22` sets
-`MIN_PASS_M = MIN_SPAN_M`, and `segmentPasses.test.ts:82-83` asserts both the
-equality and the literal 25. **Lowering `MIN_SPAN_M` lowers the WITNESS too:**
-`findPasses` finds more passes, new losses appear, and the 23/12 control stops
-being comparable. The sweep must pin `MIN_PASS_M` at 25 while varying the gate,
-or it reports a moving numerator against a moving denominator. The existing test
-will fail the moment the two are threaded, which is a reminder and not a bug.
+**The blocker recorded here was not the real blocker.** It said the sweep needs
+`MIN_PASS_M` pinned at 25 first, because `segmentPasses.ts:22` sets
+`MIN_PASS_M = MIN_SPAN_M`. That is true and it is also avoidable: every rejected
+run already carries a span and a coverage, so "would this run qualify at
+threshold T" is arithmetic on numbers already computed, with the witness held at
+25 throughout. No constant has to move to run the sweep.
 
-**And the two levers double count ~150 m**: four of the six near-misses are also
-inside the 360 m "touching" bucket.
+**The real blocker is that the witness is blind to the swept population.**
+`findPasses` needs `MIN_PASS_M` = 25 m of projection sweep to report anything.
+Every run in the swept set is currently rejected, so `spanM < 25` and
+`coverage < 0.7` both hold by construction. **The detector that was supposed to
+vouch for each recovered line refuses to speak about any line in the set.**
+Counting that silence as "phantom, nobody rode it" is the `no-witness` defect
+this document already records one section below, in a worse form: there it cost
+half of one change's apparent benefit, here it decided the sign of the answer.
+
+The first table reported a best ratio of **2.75 phantom per real** at
+`span 22 / cover 0.7` and concluded the gate should stay. Two corrections, found
+independently and agreeing:
+
+| `span / cover` | as first published | mute bucket = segment AND sweep under 25 m | witness floor dropped to 1 m |
+|---|---|---|---|
+| 22 / 0.7 | 2.75 | **1.00** | **1.00** |
+| 20 / 0.7 | 2.57 | 1.00 | 0.86 |
+| 18 / 0.7 | 2.17 | 0.92 | 0.67 |
+| 15 / 0.7 | 2.00 | 0.79 | 0.55 |
+| 22 / 0.5 | **1.42**, its "best" | 0.42 | **0.33** |
+
+The middle column moves the cases the witness cannot judge into their own bucket
+(102 judgeable, 222 mute, of 324 rejected runs). The right column instead drops
+`findPasses`'s reporting floor to 1 m and changes nothing else: **29 of 40
+"phantoms" turn out to have a real pass over that exact ground, direction and
+time, 15-25 m long.** One, `#18849` backward, was called a phantom by a margin
+of **1.1 m**. `RETRACE_M` = 15 still floors that instrument, so rows at 15 m and
+above are sound and the 10 m row stays contaminated.
+
+**So the published conclusion was wrong, and the corrected table points the
+other way without settling anything.** At `span 18 / cover 0.7`, 38 runs would
+be admitted: 12 witness-backed, 11 denied, 15 unjudgeable. That is not a
+decision. Moving mute cases out of the phantom column is NOT a claim they are
+real -- it is this file's own `no-witness` rule applied to the cases the first
+version of the sweep missed.
+
+**Against loosening, still standing:** 0.7 was not plucked from the air. It went
+`0.35 -> 0.7` on measurement, against five phantom lines observed in real rides
+(note 14), and note 14's own re-measurement found span does NOT separate the
+populations in the 15-25 m band -- 21 fragments against 21 touches, a coin flip
+across 169 discards. That measurement and the loose-witness one disagree about
+the same band and neither has been reconciled. **The coverage clamp (note 15,
+2026-09-30) does change the stakes**: a phantom now paints only its covered
+extent instead of the segment's full length, so admitting one costs less than it
+did when 0.7 was chosen.
+
+**The gate bucket itself is tiny and is not a gate problem.** 4 passes / 179 m
+over 44 rides, and **not one of the four has a majority of its pass's fixes in
+the rejected run** -- 2/5, 2/18, 4/15, 4/10, max 40%. The run spans are 0 m, 6 m,
+18 m and 18 m, so no threshold recovers two of them at all. `#25830`
+Chamberlain is the closest near-miss in the archive: 18 m of a 26 m segment,
+**coverage 0.692 against a 0.7 gate**, missed by 0.008.
+
+**WHAT WOULD SETTLE IT:** a witness with a floor below the gate. Concretely,
+re-run the sweep with `findPasses` at `minPassM = 15` (`RETRACE_M`'s own floor,
+the lowest value that still finds anything) while `MIN_SPAN_M` stays at 25, so
+the witness is independent of the thing being swept. Until then the gate is
+**open on the evidence, not closed**, and a change to it needs a full
+`rebuild-model` -- which is why none was made on a measurement this unstable.
 
 #### Defects in the measurement itself, recorded so they are not repeated
 
@@ -1744,8 +1829,12 @@ moved, and on that graph a transition term makes the map worse rather than bette
    1 of 23, the tangent window trades wrong-dir for gate at a net 38 m, and the
    bearing tolerance is strictly worse at every width. See "Lever 2, direction,
    is CLOSED" below.
-3. **Sweep the traversal gate**, with `MIN_PASS_M` pinned at 25 first. ~196 m,
-   minus ~150 m that overlaps lever 2's territory.
+3. ~~**Sweep the traversal gate**, ~196 m.~~ **ATTEMPTED 2026-10-04 and it is a
+   NON-RESULT.** The ~196 m was wrong twice over: the gate can only hand back a
+   run's own extent, not the witness's, and 9 of the 12 cases behind the
+   figure were already drawn next door. The sweep itself cannot be read, because
+   its witness cannot see a line shorter than 25 m and every candidate is
+   shorter than 25 m. See "The gate sweep: ATTEMPTED".
 4. **Viterbi: only after 1**, and only if the residual still looks like
    unrevisable turns. Or sooner if the project ever wants routing, which is the
    other thing that pays for a graph search.
@@ -1779,8 +1868,9 @@ node bookkeeping rather than matcher behaviour.
 **So the corrected order of work is shorter than the one above.** Lever 1 is
 built, is correct, and is not worth a rebuild on its own. Lever 2 (direction by
 tangent-or-reverse) is now the only lever with a plausible case, and it is aimed
-at the 1073m that four attempts have failed to move. Lever 3 (the gate sweep,
-~196m, with `MIN_PASS_M` pinned first) is unchanged.
+at the 1073m that four attempts have failed to move. Lever 3 (the gate sweep) was run on
+2026-10-04 and came back unreadable, and lever 2 is REOPENED by the same fix.
+See "The gate sweep: ATTEMPTED" and the re-run table under "Lever 2".
 
 **Keep `endpointSnapM` at 0.** If something else ever forces a full rebuild,
 take 5m with it: largest radius where nothing regresses, and it makes the
@@ -1843,6 +1933,34 @@ on 1.42% of fixes. Re-run with derived:
 258 m to `gate`, so total lost ground moves 38 m and phantom lines go 20 → 24.
 Reclassification between two buckets, not recovery. **Not shipped.**
 
+**REOPENED THE SAME DAY. The 38 m was an artifact of the `gate` column, and the
+`gate` column was wrong.** 9 of 12 `gate` losses were ground already drawn on
+the neighbouring segment (`9c13174`). The wrong-dir column is untouched by that
+fix and reproduces to the metre, so the WIN at 14 m was real all along; only the
+offset that cancelled it was fake. Re-run `npm run eval:tangent` under the fixed
+classifier, 44 rides:
+
+| tangent | wrong-dir | gate | lost ground | discard | buckets | covered km | lines |
+|---|---|---|---|---|---|---|---|
+| 3 m | 25 (1226 m) | 4 (153 m) | 1379 m | 11.7% | 15282 | 234.13 | 953 |
+| 5 m | 25 (1210 m) | 4 (153 m) | 1363 m | 12.2% | 15294 | 234.21 | 953 |
+| 7 m | 26 (1246 m) | 4 (153 m) | 1399 m | 12.3% | 15310 | 234.39 | 955 |
+| **10 m shipped** | 24 (1119 m) | 4 (179 m) | **1298 m** | 12.6% | 15313 | 234.57 | 956 |
+| 14 m | 21 (894 m) | 3 (118 m) | **1012 m** | 14.0% | 15329 | 235.00 | 956 |
+| 20 m | 22 (911 m) | 2 (81 m) | **992 m** | 15.2% | 15323 | 235.36 | 962 |
+
+**14 m is 286 m better than shipped, not 38 m**, with MORE covered ground
+(234.57 → 235.00 km), MORE buckets, and the same line count (+4 / −4). 20 m is
+306 m better again. The only thing that gets worse is the discard rate
+(12.6% → 14.0%), and covered distance rises anyway, so nothing was lost to it.
+
+**STILL NOT SHIPPED, and the reason is not the number.** +4 / −4 lines means the
+map changes in eight places, which needs the `eval:heading-lines` treatment
+rather than a total; a move needs a full `rebuild-model`; and this is one
+measurement taken the same afternoon that four others in this file turned out
+wrong. **It is the strongest open lever in the matcher** and it should be the
+first thing re-measured once the sub-25 m witness exists.
+
 **3. `MAX_BEARING_DELTA_DEG`, the last unswept matcher constant. Swept, and
 strictly worse at every width** -- see its doc comment for the table. Lost ground
 rises 1795 → 2583 m from 45° to 75°, covered distance falls, and each arm breaks
@@ -1884,9 +2002,23 @@ the gate class, not matcher error.
 
 #### What is left for the matcher
 
-**The gate sweep**, ~196 m, with `MIN_PASS_M = MIN_SPAN_M` broken first
-(`segmentPasses.ts:22`, and `segmentPasses.test.ts:82-83` asserts both the
-equality and the literal 25) or the sweep moves its own witness.
+**One instrument, then three levers that all wait on it.** This was "the gate
+sweep, and then done" until the sweep was run.
+
+**Build first: a witness that can see under 25 m.** `findPasses` at
+`minPassM = 15`, `MIN_SPAN_M` left at 25, so the witness is independent of
+whatever is being swept. `findPasses` already takes the threshold as an option,
+so this is a measurement, not a change. Everything below is unjudgeable without
+it:
+1. **The traversal gate.** Open, see above. Needs a `rebuild-model` if moved.
+2. **`TANGENT_WINDOW_M`.** Reopened: 14 m is 286 m better than the shipped 10 m
+   once the `gate` column is correct. Needs a `rebuild-model` if moved.
+3. **`STITCH_WINDOW_S`.** Its stated basis is gone (17 gaps in the "empty"
+   45-90 s band) and 90 s buys +249 m of covered ground, unverified for phantom
+   risk. Needs a `rebuild-model` if moved.
+
+**All three are the same shape**: a constant whose cost side is a phantom line,
+measured by a detector that cannot see lines that short.
 
 **"Riding a segment both ways can draw only one direction"** is probably this
 same defect seen from the other end, so it does not survive independently.
@@ -1943,6 +2075,20 @@ assertion wrong.
    passes and 1795 m drawn nowhere, which is 0.32% of covered ground with no
    line at all plus 0.48% drawn in one of two directions ridden.
 
+5. **The gate sweep was attempted, and the ledger it rested on was wrong**
+   (`9c13174`). `traceSession` tried `gate` before the next-door share and
+   fired on the existence of a 1-fix run: **9 of 12 `gate` losses, 605 m of
+   784 m, were already drawn on the neighbouring segment.** The script got its
+   first 20 tests; restoring the original order fails 4 of them. Backend suite
+   267 → 287. The bucket is now 4 passes / 179 m, and **not one of the four has
+   a majority of its pass's fixes in the rejected run.**
+6. **Three "closed" things reopened by that one fix**: the gate (the witness
+   cannot see under 25 m, so the sweep's cost side was counting its silence as
+   proof), the tangent window (14 m is 286 m better, not a 38 m wash), and the
+   stitch window (its "nothing between 45 s and 90 s" basis now has 17 gaps in
+   it). **Nothing was shipped and no constant moved**, because all three are
+   measured by an instrument that cannot see the lines they turn on.
+
 **THE LESSON, and it is the same one five days running.** On 10-01 the dry run
 counted the wrong thing. On 10-02 the ride-grading instrument passed a
 nine-minute blackout. On 10-03 a guard sized by reasoning would have
@@ -1964,14 +2110,39 @@ confident, WRONG answers before being caught:
 - a grid test took three attempts to become capable of failing at all, and in
   between, a sloppy backup/restore left the bug being compared against itself
 
+- a sweep's cost side counted a witness's silence as a denial, when the witness
+  is structurally incapable of speaking about anything in the swept set, and the
+  guard written against that very mistake checked the SEGMENT's length instead
+  of the ground the rider covered
+- a test for "would a wider stitch window help" asked for cases with more than
+  one surviving fragment, after the same script had established there are none,
+  so it returned 0 whatever the data said
+- the flag added to separate "drawn on the next piece of the same street" from
+  "drawn on the neighbour" used `> 0` and fired on 202 passes, which is the same
+  one-fix threshold being fixed in the same commit, reintroduced one function
+  later by the person fixing it
+
 **What caught them**: facts already written in this file, a cold review that
-went and measured geometry instead of trusting a classification, and mutation
-testing. **What did not catch them**: reading the code and thinking carefully.
+went and measured geometry instead of trusting a classification, mutation
+testing, and twice a number that was simply too big to be the thing claimed.
+**What did not catch them**: reading the code and thinking carefully.
 
-### What is next after the gate
+**AND THE SHAPE OF THE ERROR IS ALWAYS THE SAME.** Six of the nine are one
+pattern: **a check that cannot fail, reported as a check that passed.** A
+tautological filter, a guard aimed one level off its target, a threshold of one,
+an agreement test standing in for a decision test. That is the same class four
+independent reviews rejected the drift anchor for. It is the house defect of this
+project, and a measurement is not finished until someone has asked what input
+would make it say no.
 
-The matcher is finished after the gate sweep. What remains is small, and splits
-into three honest groups.
+### What is next after the matcher
+
+**Written 2026-10-04 believing the gate sweep would finish the matcher. It did
+not** -- see "What is left for the matcher", which is now one instrument and
+three constants waiting on it. The list below is still the right list for
+AFTER that, and is unaffected by any of it.
+
+What remains is small, and splits into three honest groups.
 
 **Real latent bugs, all concrete:**
 - **A 9 m barometric outlier survives spike rejection** (session 84,
