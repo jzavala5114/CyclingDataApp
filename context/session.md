@@ -10,11 +10,13 @@ Last updated 2026-10-03.
 backgrounded to record a video, **1366 of 1367 fixes barometric, verdict
 `alive`**. See "The barometer: shipped, installed, verified".
 
-**Nothing is mid-flight.** The next thing on the table is a question rather than
-a task: does the matcher need Viterbi? The greedy ceiling is named in three
-places already — "Stage 1 shipped", `segmentMatcher.ts:102` and `:488`, and
-"The 36 lines, enumerated" — and the number it would be justified against is
-four weeks old.
+**Nothing is mid-flight.** The Viterbi question was measured on 2026-10-03 and
+reviewed cold: **no, and the reason is the graph.** 45 of the 47 transitions that
+looked impossible are segments which meet on the ground and share no OSM node, so
+a transition term would refuse the rider's real movement. Viterbi's measured
+upper bound is **28 m**. The next piece of work is repairing segment
+connectivity, then direction, then the gate. See "Does the matcher need
+Viterbi?".
 
 As of 2026-10-03: `main` is the only branch, local and remote. Its last code
 change is `957c8fb`; everything after it is notes.
@@ -34,7 +36,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 29 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | the barometer is closed; the open question is whether the matcher needs Viterbi — read **"Stage 1 shipped"** then **"The 36 lines, enumerated"** |
+| pick up the next piece of work | **"Does the matcher need Viterbi?"** — no; repair segment connectivity first (89 pairs meet within 1 m sharing no node) |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
@@ -1531,6 +1533,220 @@ term -- the DEM sampled along an OSM centreline that on singletrack is not where
 the rider actually was accounts for more. Closing the screen-off gap raises
 screen-off rides to screen-on quality; it does not make trail rides as good as
 street rides.
+
+### Does the matcher need Viterbi? Measured 2026-10-03 — NO, and the graph is why
+
+**The answer is no, but almost every reason in the first draft of this note was
+wrong, and a cold review caught it.** Read the corrections: the headline "0.22%
+of covered distance" should not be quoted, and the first lever is NOT the
+traversal gate.
+
+`tmp-viterbi-price.mjs`, read-only, pinned to the 42 sessions the 2026-10-01
+numbers were measured over. **The control reproduces exactly** before any other
+row is read: wrong-dir 23 passes (1073 m), gate 12 passes (722 m), 35 passes and
+1795 m. Identical to "The 36 lines, enumerated". That part held under review.
+
+#### THE REAL FINDING: the segment graph has no edge where the rider turned
+
+**47 transitions looked like teleports — over 4 hops apart in the network and
+under 10 s apart in time. They are not teleports. They are missing edges.**
+Measured in PostGIS, 45 of the 47 join segments whose endpoints are within 30 m
+of each other and which share **no OSM node**. Verified instances:
+
+| pair | gap | same OSM way | shares a node |
+|---|---|---|---|
+| `#75376`/`#75377` Palmer Point Trail | **4 m** | yes (1082541623) | **no** |
+| `#49851`/`#49850` Captain Jacks 667 | **2 m** | yes | **no** |
+| `#14160`/`#14161` Shooks Run Trail | 3 m | no | no |
+| `#19090`/`#6124` Shooks Run Trail | 2 m | no | no |
+| `#44533`/`#12277` Grand View Overlook | 37 m | no | no | <- the only genuine gap, both directions, session 56 |
+
+**Network-wide, canonical pairs that meet on the ground and share no node:
+89 within 1 m, 1,987 within 5 m, 11,899 within 10 m — and 1,305 of the
+within-10 m pairs are the SAME OSM way split into pieces.** Read 11,899 as an
+upper bound: at 10 m it includes bridges, overpasses and trails that genuinely
+pass near each other. The 89 at 1 m and the 1,305 same-way pairs are the
+defensible core, and pieces of one way failing to share a node is unambiguous.
+
+**This is the strongest argument against building Viterbi, and the first draft of
+this note missed it entirely.** A Newson-Krumm transition cost is
+`|great-circle distance between fixes − route distance on the network|`. Where
+two paths meet physically but carry no edge, the route distance is enormous or
+infinite, so **a Viterbi would refuse the rider's real movement** and route them
+onto whatever happens to be connected. The greedy matcher survives this only
+because `DISCONNECT_PENALTY_M` is a soft 6 m penalty and explicitly not a veto
+(`segmentMatcher.ts:84-106` says so, deliberately). **Building a graph search on
+this graph makes the map worse.** Repair the graph first; it is also the cheapest
+thing in this whole investigation.
+
+#### The corrected ledger
+
+**The old "0.80% of covered ground" double-counted.** A wrong-dir loss means a
+qualifying run EXISTS on that segment in the other direction, so that ground is
+painted and sits in the 224.74 km denominator. Numerator and denominator
+overlapped on exactly it.
+
+| | passes | metres | share of 224.74 km |
+|---|---|---|---|
+| ground with **no line at all** (gate) | 12 | 722 | **0.32%** |
+| ground with a line in only **one of two** directions ridden (wrong-dir) | 23 | 1073 | 0.48% |
+
+Both figures count only passes on segments the matcher produced at least one run
+for, and both exclude 344 `next-door` passes whose fixes landed in a qualifying
+run on a neighbour.
+
+#### wrong-dir is INSIDE Viterbi's budget, not outside it
+
+The first draft said a Newson-Krumm Viterbi could not fix the 23 wrong-dir
+passes "because that formulation has no direction term". The premise is true and
+**the inference does not follow.** An HMM emits a sequence of matched positions
+ALONG each link, so direction falls out of whether those positions advance or
+retreat. It needs no separate term.
+
+**This project already owns the proof.** `findPasses`
+(`segmentPasses.ts:87-164`) decides direction from the projection sweep alone,
+with no headings at all, and it is the witness that catches the matcher being
+backwards all 23 times. The signal an HMM path would produce is already known to
+be sufficient here.
+
+**And direction has a cheaper fix than Viterbi.** The matcher asks per fix, from
+one reported heading against one tangent (`segmentMatcher.ts:246-251`), so a
+single fix 180° off flips a whole run. Four interventions have failed to move
+that bucket: the tangent window swept over seven values (flat at 36-41), the
+spike filter (redundant), derived heading (39 → 23, then stalled). **Accept a
+candidate when the tangent aligns with the heading OR ITS REVERSE, then assign
+direction from the order of matched positions within the run.** That is scoped to
+`nearestAlignedEdge` plus run assembly, and it attacks the largest bucket.
+
+#### The gate class is 28 m of greedy error, not 500 m
+
+Every claimant pair was pulled from PostGIS. "A touching segment took the fixes"
+turns out to be evidence of the OPPOSITE in most cases:
+
+| what it really is | passes | metres | why Viterbi cannot help |
+|---|---|---|---|
+| **a genuine fork** | **1** | **28** | `#14357` Ladders, session 54: `#19473` and `#22414` both start at node 6474011046, a real 3-way split. The only true case. |
+| continuation of one way, end to start | 5 | 235 | A Viterbi visits both pieces in sequence exactly as greedy does. The only free variable is the split point, set by the emission term = perpendicular distance = the same quantity greedy's nearest-point rule uses. **Worse: `SWITCH_MARGIN_M = 8` (`segmentMatcher.ts:17`, applied at `:585`) already hands the losing piece ~8 m MORE than pure emission would.** Dropping hysteresis for a global path gives these FEWER fixes. |
+| parallel-corridor over-reporting | 3 | 237 | `findPasses` reports a pass on every line whose projection sweeps, which `traceOutAndBack.ts:49-55` warns about. |
+| already excluded as coherent | 3 | 220 | unchanged |
+
+**So the upper bound on Viterbi is 1 pass and 28 m (0.012%)**, or 263 m (0.12%)
+if every end-to-start continuation is charitably kept as a split point a global
+path might move — which the hysteresis argument above says it would not.
+
+**The flagship case in the first draft was a false positive.** It called
+`#13308` Gold Camp Road losing fixes to Ladders "the exact confusion
+`segmentMatcher.ts:102` names as the greedy ceiling". Two errors. That comment
+describes *Ladders* losing fixes to *Upper Chutes* at a **10 m penalty that was
+never shipped**, not Gold Camp Road at the shipped 6 m. And measured:
+**`#13308` is 140 m long, its closest approach to `#19475` is 10 m, and 123 of
+its 140 m lies within 25 m of it.** A braided corridor, discarded by the same
+rule the note had already used on three other cases — applied inconsistently.
+
+**The same inconsistency hit the classification twice.** `#19474`/`#19475` are
+one OSM way (905853788, pieces 1 and 2 of three), exactly like
+`#49643`/`#49644` which the note DID reclassify. So "flip-flop between two
+ways, 140 m" was wrong on facts already in this document.
+
+#### The gate sweep: still worth doing, now THIRD, and it has a blocker
+
+The six near-misses are real and reconstructable from coverage x length:
+`#30947` 18.6 m and 20.1 m, `#19410` 22.3 m, `#14357` 18.1 m, `#75456`
+17.6 m, `#25830` 18.2 m — all against `MIN_SPAN_M = 25`
+(`elevationAggregator.ts:42-43`, gate is `spanM >= 25 || coverage >= 0.7`).
+196 m of pass recovered by one constant is genuinely cheaper than a rewrite, and
+the two constants really have never been swept while the tangent window got
+seven values, the disconnect penalty four, the spike filter three and the heading
+source two.
+
+**THE BLOCKER, which the first draft missed.** `segmentPasses.ts:22` sets
+`MIN_PASS_M = MIN_SPAN_M`, and `segmentPasses.test.ts:82-83` asserts both the
+equality and the literal 25. **Lowering `MIN_SPAN_M` lowers the WITNESS too:**
+`findPasses` finds more passes, new losses appear, and the 23/12 control stops
+being comparable. The sweep must pin `MIN_PASS_M` at 25 while varying the gate,
+or it reports a moving numerator against a moving denominator. The existing test
+will fail the moment the two are threaded, which is a reminder and not a bug.
+
+**And the two levers double count ~150 m**: four of the six near-misses are also
+inside the 360 m "touching" bucket.
+
+#### Defects in the measurement itself, recorded so they are not repeated
+
+- **The bridging test was near-vacuous.** It required a bridging pass to be
+  CONTAINED in `[prev.endedMs − 1000, cur.startedMs + 1000]`, a 3-12 s window,
+  while a pass needs 25 m of sweep and starts ~25 m before the rider arrives. It
+  fired once in 213. The line "212 genuinely unreachable" was an artefact of an
+  unsatisfiable filter. The right test is temporal OVERLAP, not containment.
+- **The hop graph is a superset of the matcher's.** `adjacencyOf` omits the
+  `realEnd` suppression at `segmentMatcher.ts:404`/`:438`, so middle cap-slices
+  get spurious edges. More edges means fewer unconnected pairs, so **the 10.1% is
+  understated** against the matcher's own view. Checked against every capped
+  family behind the 12 gate cases: it moves no classification, because each lost
+  segment is the LAST piece of its family.
+- **`on_touching > 0` is a one-fix threshold.** `#14361` was called a 55 m
+  greedy wrong turn on 2 claimed fixes of 5, with 3 drawn nowhere and a 0 m span.
+  In 5 of 12 cases `nowhere` is the largest bucket and the verdict ignores it. A
+  share threshold matching `NEXT_DOOR_SHARE` would be consistent with the project.
+- **`inPass` is built from raw samples while `drawnFix` is keyed on
+  post-spike-rejection samples**, so `nowhere` conflates "matched nowhere" with
+  "never offered to the matcher".
+- **Run order is not a clean sequence.** Session 42 reports a `gap_s` of −4:
+  two qualifying runs overlapping in time are one stretch described twice, not a
+  transition. Both the 2114 and the 213 carry an unknown number of these.
+- **The published hop table used `<= 10` while the text said "under 10 s".**
+  Strict `< 10` gives 91 and 13 for the 2-hop and 3-hop rows rather than 95 and
+  15. The `>4` row is 47 either way, so the headline is robust to the boundary.
+- **The denominator is inherited, not re-measured.** 224.74 km comes from the
+  `eval:heading` derived row of 2026-09-30. It is the right KIND of denominator
+  (directed drawn metres against directed pass metres, same arm, same 42 rides),
+  but `traceSession` already returns `coveredM` and the script ignores it. One
+  accumulator would have made it self-contained.
+- **Unmeasured, and the one number worth adding:** how many segments the rider
+  rode produced ZERO runs and are absent from the ledger entirely. `touched` is
+  built from the matcher's own runs. The structural argument says the missing
+  class is parallel-line loss rather than fork loss — at a real fork the branches
+  diverge past 25 m and a short run starts on the right segment, which is the
+  `gate` signature already counted, and the matcher's own example confirms it
+  ("becomes 29 m", not "vanishes"). That is reasoning, not measurement.
+
+#### The call, corrected
+
+**Do not build Viterbi.** Its measured upper bound is 28 m of genuine fork, the
+graph it would depend on has no edge at 45 of the 47 places the rider demonstrably
+moved, and on that graph a transition term makes the map worse rather than better.
+
+**Order of work, cheapest and highest-value first:**
+
+1. **Repair segment connectivity in the osm pipeline.** 89 pairs within 1 m and
+   1,305 same-way pairs within 10 m sharing no node. Closes most of the 213
+   unconnected transitions outright, and is the prerequisite for any graph search
+   ever being viable.
+2. **Direction by tangent-or-reverse, with direction taken from matched position
+   order.** Attacks the largest bucket, 1073 m, which four previous attempts have
+   failed to move.
+3. **Sweep the traversal gate**, with `MIN_PASS_M` pinned at 25 first. ~196 m,
+   minus ~150 m that overlaps lever 2's territory.
+4. **Viterbi: only after 1**, and only if the residual still looks like
+   unrevisable turns. Or sooner if the project ever wants routing, which is the
+   other thing that pays for a graph search.
+
+#### The lesson, and it is the fourth of this shape in four days
+
+**This measurement produced a clean, confident, wrong answer twice.** First the
+bigint-as-text bug turned the street network into disconnected fragments and
+reported "Viterbi recovers nothing" with no error anywhere. Then, with that
+fixed, it reported "Viterbi recovers 500 m" by counting continuations of one
+street and parallel corridors as wrong turns — and by applying its own
+braided-corridor rule to three cases while exempting the flagship.
+
+**Both were caught by checking the output against facts already in this
+document**, and the second only by a cold review that went and measured the
+geometry instead of trusting the classification. 10-01 counted the wrong thing,
+10-02 graded a nine-minute blackout as a pass, 10-03 sized a guard by reasoning,
+10-03 again classified by proxy instead of by geometry. **Same failure every
+time: a number produced by argument, with nothing checking the case where it
+should have said no.** The cure is the same every time too: go and measure the
+real thing.
 
 ### What landed on 2026-10-03
 
