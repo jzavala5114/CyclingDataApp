@@ -52,10 +52,25 @@ gate's own prize. Measure before building is not a style preference here, it is
 the only thing that has worked. See "What landed on 2026-10-04".
 
 As of 2026-10-04: `main` is the only branch, local and remote; last code change
-`9c13174`. Production serving `builtAt 2026-10-04T15:45:52.836Z`, verified by the
-timestamp moving rather than by status. **Note for next time: that build came
-from a DOCS-ONLY merge**, so Railway rebuilds on any push to `main`, not only on
-`backend/**` as this file previously assumed. The model is **6,069 buckets across 745 segments,
+`9c13174`. Production serving `builtAt 2026-10-04T17:39:42.382Z`, verified by the
+timestamp moving rather than by status.
+
+**A WRONG CLAIM, PUBLISHED AND FALSIFIED WITHIN THE HOUR, kept because the
+mistake is the useful part.** An earlier version of this line said "that build
+came from a DOCS-ONLY merge, so Railway rebuilds on any push to `main`, not only
+on `backend/**`". That was an inference from ONE observation: the served
+`builtAt` had moved from the `15:31:54.010Z` recorded here to `15:45:52.836Z`
+with only a docs merge in between. **Tested directly on the next docs-only merge
+(`0e1446c`, `context/session.md` only): no rebuild, `builtAt` unchanged for
+300 s.** So **Railway watches `backend/**` as originally documented**, and the
+original assumption was right.
+**What remains genuinely unexplained is the 15:31:54 → 15:45:52 move**, which no
+merge of mine accounts for. The likeliest reading is that the previous session
+recorded `15:31:54.010Z` while a second build of the same backend change
+(`28aed51`, which did touch `backend/`) was still rolling, so the figure written
+down was one build early. Not confirmed. **If a deploy timestamp ever looks
+unexplained, suspect the recorded baseline before concluding anything about the
+deploy trigger** -- which is exactly the inference this entry got wrong. The model is **6,069 buckets across 745 segments,
 951 drawn lines**, re-queried on the live API after each merge rather than
 assumed, and **unchanged by everything on 2026-10-03 and 2026-10-04** -- every
 option added on those days defaults to the shipped value. **287 backend tests
@@ -83,7 +98,7 @@ Nothing is parked, no uncommitted work. **287 backend tests, 56 app tests.**
 instrument** — see "What is left for the matcher". A third, `STITCH_WINDOW_S`,
 was swept the same day and kept.
 
-Production serves `builtAt 2026-10-04T15:45:52.836Z`. The model is **745
+Production serves `builtAt 2026-10-04T17:39:42.382Z`. The model is **745
 segments / 951 lines** on the live API, re-queried after the last merge and
 unchanged, which is what every change on 2026-10-03 and 2026-10-04 predicts:
 all of them are options defaulting to the shipped value.
