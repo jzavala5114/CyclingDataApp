@@ -174,10 +174,7 @@ async function main(): Promise<void> {
 
   let done = 0;
   for (const session of usable) {
-    // Number(), because sessions.id is a bigserial and node-postgres hands
-    // bigint back as text whatever SessionVerdict claims. See the note on
-    // SessionVerdict.id.
-    const sessionId = Number(session.id);
+    const sessionId = session.id;
     const { rows: samples } = await client.query<SessionSample>(
       `select id, recorded_at as "recordedAt", lat, lon, elevation_m as "elevationM",
               heading_deg as "headingDeg", speed_mps as "speedMps", accuracy_m as "accuracyM"

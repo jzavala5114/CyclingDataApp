@@ -89,7 +89,7 @@ async function main(): Promise<void> {
   const totals = new Map(windows.map((w) => [w, blank(w)]));
   let done = 0;
   for (const session of usable) {
-    const sessionId = Number(session.id);
+    const sessionId = session.id;
     // Read once, replay once per arm: the query is the slow part and the arms
     // differ only in a matcher option.
     const { samples, segments } = await loadRideContext(client, sessionId);

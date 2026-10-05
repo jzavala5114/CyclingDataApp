@@ -562,7 +562,7 @@ async function main(): Promise<void> {
   let done = 0;
 
   for (const session of usable) {
-    const sessionId = Number(session.id);
+    const sessionId = session.id;
     const { samples, segments } = await loadRideContext(client, sessionId);
     if (!samples.length) continue;
     const t = traceSession(sessionId, samples, segments, { keepOneWay });

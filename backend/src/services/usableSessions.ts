@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from "pg";
+import { bigintId, numericOrNull } from "../db/pgNumbers.js";
 import { MAX_PLAUSIBLE_GRADE_PCT } from "./elevationSmoothing.js";
 
 // Which rides the model is allowed to learn from, decided from the data rather
@@ -49,17 +50,62 @@ export const MIN_PLAUSIBLE_ELEVATION_M = 1000;
 export const MAX_IMPLAUSIBLE_STEP_SHARE = 0.15;
 
 export interface SessionVerdict {
+  /**
+   * A real number, converted at the boundary by `loadSessionVerdicts`.
+   *
+   * `sessions.id` is a `bigserial`, and node-postgres returns bigint as TEXT, so
+   * until 2026-10-04 this field was typed `number` and held "84". Thirteen
+   * scripts consume it. Nine wrapped it in a defensive `Number()`, two of them
+   * with comments saying the type lied -- and one of those nine, evalLinkerFold,
+   * only after it bit on 2026-09-28: it matched a `Set<number>` against the
+   * string, never matched, kept a counter at 0 and printed a harmless-looking
+   * "n/a" as its headline metric. The other four used it raw: rebuildModel and
+   * verifyRebuild handed the string to `processSession(sessionId: number)`,
+   * which worked only because pg serialises 84 and "84" as the same parameter,
+   * and evalModelQuality and evalSmoothingLag stored it in observation records
+   * keyed by session, consistently enough that nothing broke. Converted once
+   * here instead, so no caller has to remember. See db/pgNumbers.ts.
+   */
   id: number;
   samples: number;
   min_elev: number | null;
+  /**
+   * Converted at the boundary too, for the same reason and with a sharper edge.
+   * `avg()` over numeric literals is `numeric`, which pg also returns as text, so
+   * a ride with no bad steps arrived as "0.00000000000000000000" -- a TRUTHY
+   * string, which any `if (bad_share)` would read as a bad ride.
+   */
   bad_share: number | null;
   labelled: number;
   scale_ok: boolean;
   plausible_ok: boolean;
 }
 
+/**
+ * The row exactly as node-postgres returns it, before anything is converted.
+ *
+ * Typed honestly so the conversion below is visible as a conversion. Typing
+ * the query result as `SessionVerdict` directly is how the lie got in: the
+ * generic on `db.query<T>` is an assertion, not a check, and pg never sees it.
+ *
+ * **Only the two columns that arrived as text are converted.** The other
+ * numbers are right only because of the SQL: `samples` and `labelled` are
+ * `count(...)::int`, and `min_elev` is `min()` over a `double precision`
+ * column. Drop either `::int` and that count becomes int8, arrives as text,
+ * and nothing here notices -- a cold review did exactly that and every test
+ * still passed, because the fixtures encode the column types rather than read
+ * them. Left unconverted deliberately: `samples` is only ever printed and
+ * `labelled` is never read in JS, so a regression there changes no output.
+ * The column types were checked against the live server on 2026-10-04
+ * (int8, int4, float8, numeric, int4, bool, bool).
+ */
+interface VerdictRow extends Omit<SessionVerdict, "id" | "bad_share"> {
+  id: unknown;
+  bad_share: unknown;
+}
+
 export async function loadSessionVerdicts(db: Pool | PoolClient): Promise<SessionVerdict[]> {
-  const { rows } = await db.query<SessionVerdict>(
+  const { rows } = await db.query<VerdictRow>(
     `with steps as (
        select session_id,
               abs(elevation_m - lag(elevation_m) over w)
@@ -98,7 +144,11 @@ export async function loadSessionVerdicts(db: Pool | PoolClient): Promise<Sessio
       order by s.id`,
     [MIN_PLAUSIBLE_ELEVATION_M, MAX_PLAUSIBLE_GRADE_PCT, MAX_IMPLAUSIBLE_STEP_SHARE],
   );
-  return rows;
+  return rows.map((row) => ({
+    ...row,
+    id: bigintId(row.id, "sessions.id"),
+    bad_share: numericOrNull(row.bad_share, "bad_share"),
+  }));
 }
 
 export const isUsable = (s: SessionVerdict) => s.scale_ok && s.plausible_ok;

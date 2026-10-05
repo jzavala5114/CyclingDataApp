@@ -73,7 +73,7 @@ unexplained, suspect the recorded baseline before concluding anything about the
 deploy trigger** -- which is exactly the inference this entry got wrong. The model is **6,069 buckets across 745 segments,
 951 drawn lines**, re-queried on the live API after each merge rather than
 assumed, and **unchanged by everything on 2026-10-03 and 2026-10-04** -- every
-option added on those days defaults to the shipped value. **287 backend tests
+option added on those days defaults to the shipped value. **328 backend tests
 and 56 app tests**; `mobile/` has a gate lane. The first deploy attempt back on 2026-09-30
 failed; see note 29, which is worth reading before adding anything to
 `backend/` that imports outside it.
@@ -83,7 +83,7 @@ Where to start depends on what you came for:
 | you want to | read |
 |---|---|
 | know what the app is and how a ride becomes a coloured line | "What it is", "Layout", "Data flow" |
-| change anything in the backend | "Bugs already paid for" — 29 failure modes, each one paid for once already |
+| change anything in the backend | "Bugs already paid for" — 30 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
 | pick up the next piece of work | **a witness that can see under 25 m**, because the two open levers (the traversal gate and `TANGENT_WINDOW_M`) both turn on evidence `findPasses` cannot give. See "The gate sweep: ATTEMPTED" |
@@ -93,7 +93,11 @@ Where to start depends on what you came for:
 ## Where things stand
 
 **`main` is the only branch — local and remote, last code change `9c13174`.**
-Nothing is parked, no uncommitted work. **287 backend tests, 56 app tests.**
+Nothing is parked, no uncommitted work. **328 backend tests, 56 app tests.**
+**A new ride, session 85 (2026-10-04 19:03 UTC, 2,689 fixes), has not been
+graded** with `npm run verify-barometer`. It also moves every unpinned ledger
+in this file: `trace-passes` now reads 45 usable rides and 446 lost passes,
+against 44 and 412 recorded above.
 **Two constants are awaiting a decision and both wait on the same missing
 instrument** — see "What is left for the matcher". A third, `STITCH_WINDOW_S`,
 was swept the same day and kept.
@@ -476,6 +480,28 @@ Keep these in mind before "simplifying" anything.
     import in the production build that resolves outside `backend/src`. To
     rehearse for real, copy `backend/` somewhere with no siblings and build
     there; that is what caught it and what confirmed the fix.
+30. **Database numbers arrived as text whatever the type said.** node-postgres
+    returns `bigint` and `numeric` as STRINGS by design: a JS number cannot
+    hold every int8, and numeric is arbitrary precision. Every id in
+    `schema.sql` is `bigserial`/`bigint`, and the generic on `db.query<T>`
+    is an assertion the driver never sees, so `SessionVerdict.id` was typed
+    `number` and held "84" for the life of the project. Nine scripts wrapped it
+    in `Number()`; `evalLinkerFold` only did so after it matched a
+    `Set<number>` against the text, never matched, and printed "n/a" for its
+    headline metric. Measured at runtime, the same interface's `bad_share`
+    (`avg()` over numeric literals) arrived as "0.00000000000000000000" in 28
+    of 48 live sessions -- a TRUTHY string, so `if (bad_share)` would have read
+    a perfect ride as a bad one. **Now:** `db/pgNumbers.ts` converts at the
+    boundary. `bigintId` is exact, throws past 2^53, refuses "" (which
+    `Number` reads as 0) and `undefined` (which a misspelled alias produces).
+    `numericOrNull` keeps SQL NULL as null and refuses NaN, Infinity, and a
+    numeric too large for a double. `loadSessionVerdicts` types its raw row
+    honestly and maps through them, and the nine `Number()` wrappers are gone.
+    The tests build their fixtures with pg's OWN type parsers, so they test the
+    driver rather than a belief about it; restoring the bug fails 9 of them and
+    13 of 13 mutants die. **Nine more fields in the shared types lie the same
+    way and are NOT fixed** -- see the open item, and read its warning about
+    join partners before touching any of them.
 
 ## Trails the importer was silently throwing away
 
@@ -2201,9 +2227,10 @@ What remains is small, and splits into three honest groups.
   line during it. Small migration, two doubles per sample.
 - **A buffered fix from an ended session is attributed to the next one.**
   Session 83's last fix landed in session 84, 21 s before session 84 began.
-- **`SessionVerdict.id` is typed `number` and arrives as a string.** The same
-  bigint-as-text class that has now bitten three times, including in my own
-  measurement today. It is a latent footgun, not a live defect.
+- ~~**`SessionVerdict.id` is typed `number` and arrives as a string.**~~
+  **FIXED 2026-10-04** (paid-for #30), with `bad_share` alongside it. The
+  wider class -- nine more fields, joined to each other -- is an open decision,
+  see Open items.
 
 **Test and doc debt:**
 - **The linker's own measuring tools have no tests**, flagged by the third cold
@@ -2641,15 +2668,54 @@ trails, and every tangent window from 0 to 20 m.
   and "everything else (defects to explain)", so `is_tunnel` is already doing
   the job it was imported for. Nothing on the request path needs it.
   **LEFT, only if someone wants it:** 55 m of Gold Camp Road.
-- **`SessionVerdict.id` is typed `number` and arrives as a string.**
-  `usableSessions.ts:52` declares `id: number`, but `sessions.id` is `bigserial`
-  and node-postgres returns bigint as text. Found 2026-09-28 when
-  `evalLinkerFold.ts` compared a session id against a `Set` of numbers, matched
-  nothing, and printed `n/a` for its headline metric instead of a wrong number.
-  Coerced with `Number()` at that call site only; **the type is still wrong and
-  anything else comparing a session id has the same bug.** The fix is the type
-  plus a pg parser or an explicit cast in the query, and it wants a test that a
-  verdict's id equals the session it came from.
+- ~~**`SessionVerdict.id` is typed `number` and arrives as a string.**~~
+  **FIXED 2026-10-04**, as paid-for #30, along with a second field the same
+  interface was lying about (`bad_share`), found by measuring every field at
+  runtime rather than reading the interface. **Not by either route this entry
+  proposed**: a global pg parser would change every query's runtime types and
+  the `/segments` wire format at once (see the next item for why that is a
+  contract change), and a SQL `::int` cast cannot be tested without a
+  database. Converting at the TypeScript boundary can be, against pg's own
+  parser output.
+- **Nine more database numbers are typed `number` and arrive as text.**
+  Measured at runtime 2026-10-04, and the first count of six was wrong -- a cold
+  review found the join partners. In `types/index.ts`: `Segment.id`,
+  `osmWayId`, `startNodeId`, `endNodeId`; `SessionSample.id`, `sessionId`;
+  `MatchedRun.segmentId`; `ElevationBucket.segmentId`;
+  `SegmentCoverage.segmentId`. On the phone, `mobile/src/services/api.ts:45`
+  types the session id `number` and receives "84". `/segments` sends segment
+  `id` as numeric text.
+  **Nothing gives a wrong answer from them today.** There is no ordering
+  comparison on any id in the backend (text ids sort as words, "10" < "9"),
+  every comparison is between ids that all came from pg, and the phone uses
+  segment ids only as Map keys. The phone's session id is used in URLs AND
+  persisted to device storage (`useTrackingSession.ts:399`, `adoptSession` ->
+  `setActiveSession`, and copied into the unsaved-ride record), but it is never
+  compared by value anywhere in `mobile/src`, only null-checked. (A cold review
+  reported "only used in URLs"; the persistence was found checking that claim.)
+  **What makes them dangerous is the tests**: every matcher test builds
+  segments with NUMERIC ids, so production runs on a type the tests never
+  exercise.
+  **READ THIS BEFORE FIXING ANY OF THEM: they are joined, so they move
+  together or not at all.** `routes/segments.ts` builds `bucketsBySegment`
+  keyed by `ElevationBucket.segmentId` and `coverageBySegment` keyed by
+  `SegmentCoverage.segmentId`, then looks both up with `Segment.id`. All three
+  are text today, so it works. **Convert `Segment.id` alone and every lookup
+  misses: every street ships with an empty profile, the map draws no gradient
+  anywhere, and nothing throws.** The same holds for `MatchedRun.segmentId`
+  against `Segment.id` throughout the matcher.
+  **And it is a contract change with the phone, in two places.**
+  `MapScreen.tsx:113-114` merges segments across fetches by `id`, so across a
+  deploy a segment fetched as "123" and again as 123 would be drawn twice. And a
+  session id persisted as "84" before the change survives it as text: harmless
+  while nothing compares it by value, and a trap for the first thing that does.
+  **Options:** (a) convert all nine in their load paths and the route, and ship
+  backend and app together; (b) a guarded global int8 parser in `db/pool.ts` --
+  one line, covers every query including ones nobody remembers, same wire
+  change; (c) type them honestly as `string` and convert nowhere, which keeps
+  the wire format and makes the compiler find every mixed comparison, but
+  leaves the numeric-id tests exercising the wrong type until they are
+  rewritten. **Julian's call.**
 - **Riding a segment both ways can draw only one direction.** Measured
   2026-09-02 by projecting fixes along the segment over time (no bearings): of 8
   genuine out-and-back visits, 3 segments lost a direction reproducibly across

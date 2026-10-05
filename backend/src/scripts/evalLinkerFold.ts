@@ -196,11 +196,11 @@ for (const session of usable) {
       });
     }
 
-    // Number(), because `sessions.id` is bigserial and node-postgres hands
-    // bigint back as a string however SessionVerdict types it. Without the
-    // coercion this set never matches, `transitions` stays 0, and the headline
-    // metric prints a harmless-looking "n/a" instead of a rate.
-    if (!IMPOSSIBLE_SESSIONS.has(Number(session.id))) continue;
+    // This membership test is where the text-typed id bit: the Set never
+    // matched, `transitions` stayed 0 and the headline printed "n/a". Safe now
+    // that loadSessionVerdicts converts the id at the boundary; see
+    // SessionVerdict.id.
+    if (!IMPOSSIBLE_SESSIONS.has(session.id)) continue;
     qualified.sort((a, b) => a.startedMs - b.startedMs);
     for (let i = 1; i < qualified.length; i++) {
       t.transitions++;
