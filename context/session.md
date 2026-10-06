@@ -3,109 +3,190 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-10-04.
+Last updated 2026-10-05.
 
-**The barometer work is finished and verified on a real ride.** Session 84 on
-2026-10-03: 61.9 minutes, screen deliberately locked twice and the app
-backgrounded to record a video, **1366 of 1367 fixes barometric, verdict
-`alive`**. See "The barometer: shipped, installed, verified".
+**Read the four blocks below before anything else.** They are the authoritative
+queue and state. Everything after them is evidence and history: where a section
+further down disagrees with these blocks, these blocks win and that section is
+stale.
 
-**Nothing is mid-flight.** The Viterbi question was measured on 2026-10-03,
-reviewed cold, and then its first lever was built and measured too. **No
-Viterbi**: 45 of the 47 transitions that looked impossible are segments which
-meet on the ground and share no OSM node, so a transition term would refuse the
-rider's real movement, and its upper bound is **28 m** of genuine fork anyway.
-**And repairing that graph, now built as `endpointSnapM`, turns out to fix the
-metric and not the map** -- a 35% cut in impossible transitions for 70 m of
-ground in 225 km, so it is off by default. **Direction, the biggest class at
-1073 m, is also closed on measurement (2026-10-04)**: three explanations tested,
-three dead, and `maxBearingDeltaDeg` added and left at 45. **And the tunnel item
-turned out to be a misread label, not 2,344 m of missing map** -- the real defect
-is 55 m, see the struck entry in Open items.
+## NEXT, IN ORDER
 
-**THEN THE GATE SWEEP WAS ATTEMPTED, AND IT TOOK THE LEDGER WITH IT
-(2026-10-04, second half).** The ledger that justified the sweep was itself
-wrong: `traceSession` assigned `gate` on the EXISTENCE of a run, so one stray
-fix beat the next-door share test below it. **9 of 12 `gate` losses, 605 m of
-784 m, were ground already drawn on the neighbouring segment.** Fixed in
-`9c13174` with the script's first 20 tests. The bucket is now **4 passes /
-179 m over 44 rides**.
+### 1. Make every bigint id a number at the driver: one global int8 parser
 
-**Two things that were "closed" are reopened, and one is NOT settled:**
-- **The gate is OPEN, not closed.** The sweep's cost side counted the witness's
-  silence as proof of a phantom, and `findPasses` cannot report anything under
-  25 m while every run being swept is under 25 m by construction. The
-  instrument is blind to its own subject. See "The gate sweep: ATTEMPTED".
-- **Direction is REOPENED.** "The tangent window trades wrong-dir for gate at a
-  net 38 m" was an artifact of the mislabelled `gate` column. Re-run under the
-  fixed classifier, **14 m is 286 m better, not 38 m.** See "Lever 2".
-- **The 45 s stitch window was swept and KEPT.** Its stated basis was
-  overstated (the empty band is 45-60 s, not 45-90 s), and widening it extends
-  existing lines onto ground no witness backs: 90 s adds 249 m of which 214 m is
-  uncorroborated, and the line count never moves.
+**Recommended on 2026-10-04 as the fastest and the safest of three options,
+all three measured.** Julian asked which would take the least time and this is
+the answer; he has not yet given an explicit go-ahead, so get one before
+starting. The order of this list is likewise a recommendation he can change. node-postgres returns `bigint` as text, and nine
+fields in `types/index.ts` are typed `number` while holding text:
+`Segment.id`, `osmWayId`, `startNodeId`, `endNodeId`; `SessionSample.id`,
+`sessionId`; `MatchedRun.segmentId`; `ElevationBucket.segmentId`;
+`SegmentCoverage.segmentId`. **They are joined to each other**, so converting
+one without its partners ships every street with an empty profile and throws
+nothing (see the Open items entry). A single parser converts all of them at
+once, so they cannot get out of step. That is why (b) beats doing it by hand.
 
-**SIX FOR SIX, AND FOUR OF THE SIX WERE MINE, WRITTEN THE DAY BEFORE.** Every
-stale number in this file has been wrong when re-measured: the
-impossible-transition residual, the hairpin explanation for wrong-dir, the
-tangent sweep's conclusion, Viterbi's prize, the tunnel census, and now the
-gate's own prize. Measure before building is not a style preference here, it is
-the only thing that has worked. See "What landed on 2026-10-04".
+**Build:**
+- `backend/src/db/pgTypes.ts` calling
+  `pg.types.setTypeParser(20, (text) => bigintId(text, "int8 column"))`,
+  imported on the first line of `db/pool.ts`. **Its own module, not a side
+  effect inside pool.ts**, because no test imports pool.ts: a registration that
+  lives only there leaves every test on pg's default while production runs
+  numbers. Its test imports the module and asserts the parser turns "84" into
+  84 and throws on "9007199254740993".
+- `numeric` (OID 1700) is not int8 and stays text: keep `numericOrNull` for
+  `bad_share`. Int8 ARRAYS have their own parser (OID 1016); none come back to
+  JS today, only `$1::bigint[]` inputs, so leave it and say so in the module.
 
-As of 2026-10-04: `main` is the only branch, local and remote; last code change
-`9c13174`. Production serving `builtAt 2026-10-04T17:39:42.382Z`, verified by the
-timestamp moving rather than by status.
+**Fix, found 2026-10-04 by searching for code that relies on ids being text:**
+- **The one crash:** `findHoles.ts:91` calls `line.segmentId.padStart(6)`
+  without `String()`, so `npm run find-holes` would throw a TypeError. Retype
+  `BucketRow.segment_id` and `LineHoles.segmentId` to `number` and update
+  `findHoles.test.ts`.
+- **Five row types declaring a bigint column as `string`**, which become lies
+  the other way: `findHoles.ts:29`, `evalLinkerFold.ts:261` (`id`),
+  `pruneEmptySessions.ts:18` (`id`), `demElevation.ts:68` and `:104`
+  (`segment_id`; its `Number(row.segment_id)` calls become no-ops, remove them).
+- **The premise tests** in `pgNumbers.test.ts` and `usableSessions.test.ts` build
+  fixtures with pg's DEFAULT int8 parser. Decide on purpose whether they test the
+  converter against raw driver text or the configured driver. Do not let import
+  order decide it.
 
-**A WRONG CLAIM, PUBLISHED AND FALSIFIED WITHIN THE HOUR, kept because the
-mistake is the useful part.** An earlier version of this line said "that build
-came from a DOCS-ONLY merge, so Railway rebuilds on any push to `main`, not only
-on `backend/**`". That was an inference from ONE observation: the served
-`builtAt` had moved from the `15:31:54.010Z` recorded here to `15:45:52.836Z`
-with only a docs merge in between. **Tested directly on the next docs-only merge
-(`0e1446c`, `context/session.md` only): no rebuild, `builtAt` unchanged for
-300 s.** So **Railway watches `backend/**` as originally documented**, and the
-original assumption was right.
-**What remains genuinely unexplained is the 15:31:54 → 15:45:52 move**, which no
-merge of mine accounts for. The likeliest reading is that the previous session
-recorded `15:31:54.010Z` while a second build of the same backend change
-(`28aed51`, which did touch `backend/`) was still rolling, so the figure written
-down was one build early. Not confirmed. **If a deploy timestamp ever looks
-unexplained, suspect the recorded baseline before concluding anything about the
-deploy trigger** -- which is exactly the inference this entry got wrong. The model is **6,069 buckets across 745 segments,
-951 drawn lines**, re-queried on the live API after each merge rather than
-assumed, and **unchanged by everything on 2026-10-03 and 2026-10-04** -- every
-option added on those days defaults to the shipped value. **328 backend tests
-and 56 app tests**; `mobile/` has a gate lane. The first deploy attempt back on 2026-09-30
-failed; see note 29, which is worth reading before adding anything to
-`backend/` that imports outside it.
+**Already checked, do not re-check:**
+- The ride-end path (`sessionProcessor` -> `demElevation`) keys DEM rows with a
+  template literal, `${segmentId}|...`, which gives "123" for both 123 and
+  "123". Safe.
+- No `::text` cast on any id; no ordering comparison (`<`, `>`, `localeCompare`)
+  on any id; every other `padStart` on an id is already wrapped in `String()`.
+- **No phone change is needed.** `mobile/src/services/api.ts:45` already types
+  the id `number`, so this makes it true. One side effect: `MapScreen.tsx:113-114`
+  merges segments by `id`, so if the app is open across the deploy one batch of
+  lines draws twice until it is reopened. Cosmetic. The persisted session id
+  (`useTrackingSession.ts:399`) is never compared by value.
+- The alternatives, measured on a scratch copy so nobody measures them again:
+  (a) convert 16 query sites by hand, same end state as (b); (c) retype the nine
+  as `string`: 243 type errors in 16 files, 164 in tests (153 in
+  `coverageExtent.test.ts`).
+
+**Verify with checks that CAN fail:**
+- **Live `/segments`, before and after the deploy.** Baseline taken 2026-10-05
+  over `minLon=-105.1&minLat=38.6&maxLon=-104.5&maxLat=39.1`: **745 segments,
+  all 745 with at least one directional line, 951 directional lines, 0 lines
+  with fewer than 2 points, 0 lines with zero `colorStops`, 5,181 `colorStops`
+  in total, `id` sent as a string.** After: the same counts, `id` sent as a
+  number. Any drop is the join failure.
+- **A `trace-passes` replay PINNED to a fixed ride list.** Unlike the
+  session-id fix, where the replay was blind because that id is only a label,
+  segment ids are Map keys throughout the matcher, so any mixed comparison moves
+  the counts. Pin it: session 85 arrived mid-task on 2026-10-04 and moved every
+  unpinned number.
+- Then `builtAt` moving.
+
+### 2. Grade session 85
+
+`npm run verify-barometer` from `backend/`. Ride of 2026-10-04 19:03 UTC, 2,689
+fixes, never graded. Read-only. See "HOW TO REBUILD THE APK, AND HOW A RIDE IS
+GRADED".
+
+### 3. A fix from an ended ride is filed under the next one
+
+Session 83's last fix landed in session 84, timestamped 21 s before 84 began.
+**Not located yet.** Likeliest place: the phone's background location buffer
+(`mobile/src/services/backgroundLocationTask.ts`) being flushed after the active
+session changed. Find the mechanism before sizing it.
+
+### 4. The 9 m barometric outlier
+
+Session 84, 19:35:04Z, one fix in 1367. The fix is NOT the spike filter: persist
+`readingCount` and `meanOffsetMs` from `altitudeAtFix` so the next one can be
+diagnosed after the ride. A migration, an app change and an APK rebuild.
+**The migration touches production: confirm with Julian before running it.**
+
+### 5. The matcher's two open levers, which both wait on one instrument
+
+Build the instrument first: `findPasses` with `minPassM: 15` and `MIN_SPAN_M`
+left at 25, so the witness can see under 25 m and stays independent of what is
+swept. A measurement, not a change. Then:
+- **`TANGENT_WINDOW_M`**, the strongest open lever: 14 m is 286 m better than
+  the shipped 10 m. Its +4 / -4 lines need the `eval:heading-lines` treatment,
+  and moving it needs a `rebuild-model`.
+- **The traversal gate**: the corrected sweep leans toward loosening and cannot
+  settle it.
+See "What is left for the matcher".
+
+### 6. Smaller, in no order
+
+- **The zero-run census**: how many ridden segments produce no run at all, and so
+  appear in no ledger here. The most valuable unmeasured number.
+- **The same-way class**: 196 next-door passes / 11.3 km drawn mostly on another
+  piece of the same OSM way, almost all on switchback trails. Two explanations
+  tried and both wrong. Flagged in `trace-passes` output, not claimed as a defect.
+- **`eval:heading` and `eval:spikes`** still report `gate` columns from the
+  classifier before `9c13174`. Their conclusions rest on wrong-dir and discard
+  rate, which that fix does not touch, so they stand; the gate columns do not.
+- **Debt:** the linker's measuring tools have no tests, and
+  `context/architecture.html` is over a month stale.
+
+## SETTLED: do not re-examine
+
+| question | answer | evidence |
+|---|---|---|
+| Viterbi matching | **No.** 28 m of genuine fork, and the graph has no edge at 45 of the 47 places the rider turned | "Does the matcher need Viterbi?" |
+| joining segment ends that meet but share no node (`endpointSnapM`) | **Built, left at 0.** Cuts impossible transitions 35% and moves the map 70 m in 225 km | "Lever 1 was BUILT and MEASURED" |
+| `MAX_BEARING_DELTA_DEG` | **Swept, left at 45.** Strictly worse at every width | its doc comment in `segmentMatcher.ts` |
+| hairpins causing wrong-dir | **No.** 1 of 23 passes | "Lever 2" |
+| tunnels missing from the map | **A misread label.** The real defect is 55 m of Gold Camp Road | struck entry in "Open items" |
+| `STITCH_WINDOW_S` | **Swept, keep 45.** 90 s adds 249 m, 214 m of it unwitnessed, and no new line | note 26 |
+| "the gate losses were unstitched fragments" | **No.** Each is one pre-stitch run (close to a base rate). The traversals fragment across SEGMENTS, which the stitcher cannot join | "The gate sweep: ATTEMPTED" |
+| the pass ledger's cause order | **Fixed** in `9c13174`. `gate` is 4 passes / 179 m over 44 rides | paid-for #31 |
+| `SessionVerdict.id` and `bad_share` arriving as text | **Fixed** in `af653f8`, converted at the boundary | paid-for #30 |
+| whether a docs-only push deploys | **No.** Railway watches `backend/**`; tested 2026-10-04 | commit `4b028c8` |
+| the barometer | **Finished.** Session 84 graded `alive`, 1366 of 1367 fixes barometric | "The barometer: shipped, installed, verified" |
+
+## OPEN: genuinely undecided, do not treat as closed
+
+- **The traversal gate.** The instrument cannot judge it. Item 5.
+- **`TANGENT_WINDOW_M`.** Closed on 2026-10-04 and reopened the same day. Item 5.
+- **The same-way class.** Unexplained. Item 6.
+
+## STATE, 2026-10-05
+
+`main` is the only branch, local and remote; last code change `af653f8`.
+Production serves `builtAt 2026-10-05T00:07:16.856Z`, verified by the timestamp
+moving. Live model **745 segments / 951 lines** (counts above). **328 backend
+tests, 56 app tests**; `mobile/` has a gate lane. **45 usable rides**; session 85
+is the newest and ungraded. A deploy failed once on 2026-09-30, see note 29,
+before adding anything to `backend/` that imports outside it.
+
+**How every measurement here is run, each rule learned by breaking it:**
+- **Pin the control to a fixed ride list.** New rides arrive mid-task.
+- **Before trusting a check, run the input that should make it say no.**
+- **A witness with a floor cannot speak below it.** `findPasses` needs 25 m, so
+  its silence about anything shorter is not evidence.
+- **Verify a deploy by `builtAt` moving, never by status**, and if a timestamp
+  looks unexplained, suspect the recorded baseline before the deploy trigger.
+- **A Windows junction in a scratch copy points INTO the repo.** Delete the link
+  itself (`[System.IO.Directory]::Delete(path, $false)`); never recurse into it.
+
+**The house defect**, shared by six of the nine errors made on 2026-10-04: **a
+check that cannot fail, reported as a check that passed.**
 
 Where to start depends on what you came for:
 
 | you want to | read |
 |---|---|
 | know what the app is and how a ride becomes a coloured line | "What it is", "Layout", "Data flow" |
-| change anything in the backend | "Bugs already paid for" — 30 failure modes, each one paid for once already |
+| change anything in the backend | "Bugs already paid for" — 31 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **a witness that can see under 25 m**, because the two open levers (the traversal gate and `TANGENT_WINDOW_M`) both turn on evidence `findPasses` cannot give. See "The gate sweep: ATTEMPTED" |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. Item 1 is fully specified, including what not to re-check |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
 ## Where things stand
 
-**`main` is the only branch — local and remote, last code change `9c13174`.**
-Nothing is parked, no uncommitted work. **328 backend tests, 56 app tests.**
-**A new ride, session 85 (2026-10-04 19:03 UTC, 2,689 fixes), has not been
-graded** with `npm run verify-barometer`. It also moves every unpinned ledger
-in this file: `trace-passes` now reads 45 usable rides and 446 lost passes,
-against 44 and 412 recorded above.
-**Two constants are awaiting a decision and both wait on the same missing
-instrument** — see "What is left for the matcher". A third, `STITCH_WINDOW_S`,
-was swept the same day and kept.
-
-Production serves `builtAt 2026-10-04T17:39:42.382Z`. The model is **745
-segments / 951 lines** on the live API, re-queried after the last merge and
-unchanged, which is what every change on 2026-10-03 and 2026-10-04 predicts:
-all of them are options defaulting to the shipped value.
+**Current state is in "STATE, 2026-10-05" at the top.** This section keeps the
+older history of what was cleared and when.
 
 Cleared on 2026-10-01: the measurement tooling merged, the derived heading and
 the speed limit shipped with a rebuild each, and two branches were dropped after
@@ -502,6 +583,19 @@ Keep these in mind before "simplifying" anything.
     13 of 13 mutants die. **Nine more fields in the shared types lie the same
     way and are NOT fixed** -- see the open item, and read its warning about
     join partners before touching any of them.
+31. **A one-fix threshold decided a verdict, twice in one day.** The pass
+    ledger in `traceOutAndBack.ts` tried `gate` before its next-door share
+    test and fired on the mere EXISTENCE of a run, so one stray fix forming a
+    1-fix run filed a ride drawn on the neighbouring segment as a traversal-gate
+    rejection: **9 of 12 `gate` losses, 605 m of 784 m**, and that bucket was
+    the evidence for a proposal to lower the gate. Fixed in `9c13174`:
+    `classifyLoss` tries claims strongest first and tests every one against
+    where the fixes actually went. **Then the same commit reintroduced it**: a
+    new "drawn on another piece of the same OSM way" flag used `> 0` and fired
+    on 202 passes, caught only because the number was too large to be what it
+    claimed. **Now:** both use a share (`NEXT_DOOR_SHARE`), and restoring
+    either `> 0` fails tests. **Rule: a verdict that a single observation can
+    flip needs a share or a count behind it, never mere existence.**
 
 ## Trails the importer was silently throwing away
 
@@ -1891,12 +1985,15 @@ moved, and on that graph a transition term makes the map worse rather than bette
    transitions and moves the map by 70m in 225km. It is also NOT a pipeline bug:
    OSM genuinely holds two nodes 4m apart at these junctions and the importer
    reproduces it faithfully. See "Lever 1 was BUILT and MEASURED" below.
-2. ~~**Direction.**~~ **CLOSED ON MEASUREMENT 2026-10-04.** The matcher already
-   accepts the heading or its reverse (`segmentMatcher.ts:294`), so that half was
-   never the problem. Three explanations tested and all three dead: hairpins are
-   1 of 23, the tangent window trades wrong-dir for gate at a net 38 m, and the
-   bearing tolerance is strictly worse at every width. See "Lever 2, direction,
-   is CLOSED" below.
+2. **Direction.** Closed on 2026-10-04, then **REOPENED the same day.** The
+   matcher already accepts the heading or its reverse (`segmentMatcher.ts:294`),
+   so that half was never the problem. Hairpins are 1 of 23 and the bearing
+   tolerance is strictly worse at every width, both still dead. **The third
+   explanation was wrong**: "the tangent window trades wrong-dir for gate at a
+   net 38 m" came from a mislabelled `gate` column; with the classifier fixed,
+   14 m is **286 m better** than the shipped 10 m. See "Lever 2, direction:
+   closed on 2026-10-04, then REOPENED the same day" below, and item 5 of
+   "NEXT, IN ORDER".
 3. ~~**Sweep the traversal gate**, ~196 m.~~ **ATTEMPTED 2026-10-04 and it is a
    NON-RESULT.** The ~196 m was wrong twice over: the gate can only hand back a
    run's own extent, not the witness's, and 9 of the 12 cases behind the
@@ -1970,7 +2067,7 @@ radius where they were then CORRECTLY rejected: the test was measuring its own
 fixture error. It works now with `turf.destination`, a 4.99m gap and 1.3mm
 steps, and it was confirmed by flipping the divisor back and watching it go red.
 
-#### Lever 2, direction, is CLOSED on measurement — 2026-10-04
+#### Lever 2, direction: closed on 2026-10-04, then REOPENED the same day
 
 **Three explanations tested, three dead.** wrong-dir is 23 passes and 1073 m,
 60% of all lost ground, and four previous attempts had failed to move it. It is
@@ -2070,8 +2167,10 @@ the gate class, not matcher error.
 
 #### What is left for the matcher
 
-**One instrument, then three levers that all wait on it.** This was "the gate
-sweep, and then done" until the sweep was run.
+**One instrument, then two open levers that wait on it**, and a third that was
+swept and closed the same day. This was "the gate sweep, and then done" until
+the sweep was run. **It is item 5 of "NEXT, IN ORDER"**: the bug fixes come
+first.
 
 **Build first: a witness that can see under 25 m.** `findPasses` at
 `minPassM = 15`, `MIN_SPAN_M` left at 25, so the witness is independent of
@@ -2137,7 +2236,9 @@ assertion wrong.
 2. **Direction closed** (`288dc96`). Three explanations tested, three dead.
    Hairpins are 1 of 23, not "almost all". The tangent window trades wrong-dir
    for gate at a net 38 m. `MAX_BEARING_DELTA_DEG` is strictly worse at every
-   width -- parameterised and left at 45.
+   width -- parameterised and left at 45. **[Corrected later the same day: the
+   38 m was an artifact of a mislabelled `gate` column, and direction is
+   REOPENED -- 14 m is 286 m better. See item 6 below.]**
 3. **The tunnel item was a misread label** (`28aed51`). `find-holes` printed
    "covered segments", meaning ROOFED, and a later session read it as RIDDEN.
    The real defect is 55 m on Gold Camp Road, not 2,344 m. Fixed the label, not
@@ -2210,10 +2311,8 @@ would make it say no.
 
 ### What is next after the matcher
 
-**Written 2026-10-04 believing the gate sweep would finish the matcher. It did
-not** -- see "What is left for the matcher", which is now one instrument and
-two constants waiting on it. The list below is still the right list for
-AFTER that, and is unaffected by any of it.
+**Superseded as a queue by "NEXT, IN ORDER" at the top of this file**, which
+sets the order. This section keeps the detail behind each item.
 
 What remains is small, and splits into three honest groups.
 
