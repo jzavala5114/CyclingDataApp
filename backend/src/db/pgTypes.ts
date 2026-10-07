@@ -34,8 +34,9 @@ import { bigintId } from "./pgNumbers.js";
 // there.
 //
 // Its own module so a test can configure the driver exactly as production does
-// by importing it, without building a Pool. `db/pool.ts` imports it on its first
-// line, so no query in the server or any script can run before it has.
+// by importing it, without building a Pool. `db/pool.ts`, which builds the only
+// Pool, imports it, so no query in the server or any script can run before it
+// has; db/pool.test.ts fails if that import goes.
 
 type TypeId = Parameters<typeof pg.types.getTypeParser>[0];
 

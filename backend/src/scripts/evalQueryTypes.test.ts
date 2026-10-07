@@ -4,15 +4,26 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import ts from "typescript";
-import type { ColumnType, Declared, Kind } from "./evalQueryTypes.js";
+import type { ColumnType, Declared, Description, Kind, QuerySite, RowType } from "./evalQueryTypes.js";
 
 // pg's own int8 parser, captured BEFORE the census module loads: it imports
 // db/pool.ts, which replaces this parser for the whole process. The census has
 // to be shown failing on the driver as it was, not only passing on the driver as
 // it is, so both are held here, and the order is this file's decision.
 const pgDefaultInt8 = pg.types.getTypeParser(pg.types.builtins.INT8, "text") as (text: string) => unknown;
-const { DescribeStatement, configuredParser, deliveredShape, describeAll, findQuerySites, judge, kindOfValue, showDeclared } =
-  await import("./evalQueryTypes.js");
+const {
+  DescribeStatement,
+  configuredParser,
+  declaredColumn,
+  deliveredShape,
+  describeAll,
+  findQuerySites,
+  judge,
+  judgeCensus,
+  kindOfValue,
+  showDeclared,
+  withReadOnlyTransaction,
+} = await import("./evalQueryTypes.js");
 
 const backendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 
@@ -84,12 +95,29 @@ test("json is parsed into any shape, so there is nothing to judge", () => {
   assert.equal(judge({ kind: "unknown" }, declared(["object"]), false), "ok");
 });
 
+test("json is `unknown` whatever one sample makes of it, not only when the sample fails to parse", () => {
+  // json's real category is U, whose sample does not parse, so a cold review's
+  // mutant removing the json rule changed nothing there. A sample that DOES
+  // parse is the case the rule is for: one document's shape is not the type's.
+  assert.deepEqual(deliveredShape({ typname: "json", category: "N", elementCategory: null }, JSON.parse), {
+    kind: "unknown",
+  });
+});
+
+test("a parser that rejects the sample leaves the shape unknown, never assumed to be text", () => {
+  const refuses = (): never => {
+    throw new Error("not a value of this type");
+  };
+  assert.deepEqual(deliveredShape(INT4, refuses), { kind: "unknown" });
+});
+
 test("a type with no parser, PostGIS geometry for one, arrives as text", () => {
   assert.deepEqual(deliveredShape(GEOMETRY, undefined), { kind: "string" });
 });
 
-test("booleans arrive as booleans", () => {
+test("booleans arrive as booleans, and a declared boolean admits them", () => {
   assert.deepEqual(deliveredShape(BOOL, configuredParser(16)), { kind: "boolean" });
+  assert.equal(judge({ kind: "boolean" }, declared(["boolean"]), false), "ok");
 });
 
 test("rows typed `any` are untyped, never ok: the census says it could not check them", () => {
@@ -117,20 +145,28 @@ test("showDeclared prints arrays the way the code spells them", () => {
 // -- finding the queries ---------------------------------------------------------
 
 // A real program over virtual files placed inside src/, so `pg` resolves to the
-// real @types/pg exactly as it does for the project.
-const FIXTURE = `import type { Pool, PoolClient } from "pg";
+// real @types/pg exactly as it does for the project. The line numbers asserted
+// below are lines of FIXTURE. Its second half is a cold review's catalogue of
+// ways to reach a query that the first version of the census missed in silence.
+const FIXTURE = `import type { Pool, PoolClient, QueryResultRow } from "pg";
 declare const pool: Pool;
 declare const client: PoolClient;
 declare function runtimeTail(): string;
+declare const sqlVar: string;
+declare const flag: boolean;
+declare const cursor: { submit(connection: unknown): void };
 const LIMIT = 25;
 const SQL = "select 2 as b";
 type Plain = { query: (text: string) => Promise<{ rows: unknown[] }> };
 declare const plain: Plain;
+async function run(text: string) {
+  return (await pool.query(text)).rows;
+}
 export async function cases() {
-  await pool.query<{ id: number; name: string | null }>("select id, name from t");
-  await pool.query("select id from t");
+  await pool.query<{ id: number; name: string | null; ok: boolean }>("select id, name, ok from t");
+  const untyped = await pool.query("select id from t");
   await pool.query(\`select id from t limit \${LIMIT}\`);
-  await pool.query(\`select id from t \${runtimeTail()}\`);
+  const tail = await pool.query(\`select id from t limit \${LIMIT} \${runtimeTail()}\`);
   await pool.query(SQL);
   const { rows } = (await client.query("select 1 as a")) as { rows: { a: string; at: Date; ids: number[] }[] };
   const fake: { query: (text: string) => Promise<{ rows: unknown[] }> } = { query: async () => ({ rows: [] }) };
@@ -139,8 +175,24 @@ export async function cases() {
   notADatabase.query(5);
   const cast = (await plain.query("select 4 as d")) as { rows: { d: string }[] };
   await plain.query(\`select \${LIMIT} as e\`);
-  return [rows, cast];
+  const plainRuntime = await plain.query(\`select e from t \${runtimeTail()}\`);
+  const plainVariable = await plain.query(sqlVar);
+  await pool["query"]("select 5 as f");
+  const bound = pool.query.bind(pool);
+  await bound("select 6 as g");
+  await pool.query({ text: "select 7 as h", values: [] });
+  await pool.query(flag ? "select 8 as i" : "select 9 as j");
+  const indexed = await pool.query<Record<string, number>>("select 10 as k");
+  pool.query(cursor);
+  await pool.query(sqlVar);
+  return [untyped, tail, rows, cast, plainRuntime, plainVariable, indexed, run];
 }
+export async function generic<T extends QueryResultRow>() {
+  return (await pool.query<T>("select 11 as m")).rows;
+}
+declare const methodClient: { query(text: string): Promise<{ rows: unknown[] }> };
+export const viaMethod = methodClient.query("select 12 as n");
+export const viaElement = plain["query"]("select 13 as o");
 `;
 const FIXTURE_TEST = `import type { Pool } from "pg";
 declare const pool: Pool;
@@ -170,63 +222,117 @@ function programOf(files: Record<string, string>): ts.Program {
   return ts.createProgram([...virtual.keys()], options, host);
 }
 
-const sites = findQuerySites(
-  programOf({ "__census_fixture__.ts": FIXTURE, "__census_fixture__.test.ts": FIXTURE_TEST }),
-  backendDir,
-);
-const props = (site: (typeof sites)[number]) =>
-  Object.fromEntries(
-    [...(site.declared instanceof Map ? site.declared : new Map<string, Declared>())].map(([k, v]) => [k, showDeclared(v)]),
-  );
+const program = programOf({ "__census_fixture__.ts": FIXTURE, "__census_fixture__.test.ts": FIXTURE_TEST });
+const sites = findQuerySites(program, backendDir);
+const at = (line: number): QuerySite => {
+  const site = sites.find((s) => s.line === line);
+  assert.ok(site, `no site found on fixture line ${line}`);
+  return site;
+};
+const props = (site: QuerySite) =>
+  site.declared.kind === "typed"
+    ? Object.fromEntries([...site.declared.props].map(([k, v]) => [k, showDeclared(v)]))
+    : site.declared.kind;
 
-test("finds every database call and nothing else, test files skipped", () => {
+test("the fixture is valid TypeScript, so every site below is one the compiler accepts", () => {
   assert.deepEqual(
-    sites.map((s) => [s.file, s.line, s.via]),
-    [
-      ["src/__census_fixture__.ts", 10, "pg"],
-      ["src/__census_fixture__.ts", 11, "pg"],
-      ["src/__census_fixture__.ts", 12, "pg"],
-      ["src/__census_fixture__.ts", 13, "pg"],
-      ["src/__census_fixture__.ts", 14, "pg"],
-      ["src/__census_fixture__.ts", 15, "pg"],
-      ["src/__census_fixture__.ts", 17, "structural"],
-      ["src/__census_fixture__.ts", 20, "structural"],
-      ["src/__census_fixture__.ts", 21, "structural"],
-    ],
+    ts.getPreEmitDiagnostics(program).map((d) => ts.flattenDiagnosticMessageText(d.messageText, " ")),
+    [],
   );
 });
 
+test("finds every database call however it is reached, and nothing else; test files skipped", () => {
+  assert.deepEqual(
+    sites.map((s) => [s.line, s.via]),
+    [
+      [13, "pg"], // inside a wrapper
+      [16, "pg"], [17, "pg"], [18, "pg"], [19, "pg"], [20, "pg"], [21, "pg"],
+      [23, "structural"], [26, "structural"], [27, "structural"], [28, "structural"], [29, "structural"],
+      [30, "pg"], // pool["query"]
+      [32, "pg"], // a copy made with bind
+      [33, "pg"], // a config object
+      [34, "pg"], // a choice between constants
+      [35, "pg"], // an index signature
+      [37, "pg"], // runtime text, result discarded
+      [41, "pg"], // a type parameter for a row
+      [44, "structural"], // a method named query, declared outside pg
+      [45, "structural"], // plain["query"]
+    ],
+  );
+  assert.ok(sites.every((s) => s.file === "src/__census_fixture__.ts"), "the .test.ts fixture was described");
+});
+
+test("NOT a database call: a `.query(5)` on something else, and a Submittable", () => {
+  // Line 25 takes a number; line 36 hands pg a cursor-like object, which pg
+  // submits itself rather than parsing as SQL. Neither may be described.
+  assert.equal(sites.some((s) => s.line === 25 || s.line === 36), false);
+});
+
+test("THE CALLS THE FIRST VERSION MISSED IN SILENCE are found: element access and a bound copy", () => {
+  // Decided by the declaration the call resolves to, not by how it is spelled.
+  assert.deepEqual(at(30).statements, ["select 5 as f"]);
+  assert.deepEqual(at(32).statements, ["select 6 as g"]);
+});
+
 test("the statement is read as it is sent: literal, constant substitution, constant identifier", () => {
-  assert.equal(sites[0]!.sql, "select id, name from t");
-  assert.equal(sites[2]!.sql, "select id from t limit 25");
-  assert.equal(sites[4]!.sql, "select 2 as b");
+  assert.deepEqual(at(16).statements, ["select id, name, ok from t"]);
+  assert.deepEqual(at(18).statements, ["select id from t limit 25"]);
+  assert.deepEqual(at(20).statements, ["select 2 as b"]);
 });
 
 test("a template built only from constants reads as one statement, through a plain client too", () => {
   // TypeScript folds it into a single string literal type in every context, not
   // only for pg's generic overload: this client takes a plain `string`.
-  assert.equal(sites[8]!.sql, "select 25 as e");
+  assert.deepEqual(at(27).statements, ["select 25 as e"]);
 });
 
-test("a statement built at runtime is reported as such, never guessed at", () => {
-  assert.equal(sites[3]!.sql, null);
-  assert.equal(sites[3]!.unresolved, "${runtimeTail()}");
+test("a config object's statement is read from its `text`", () => {
+  assert.deepEqual(at(33).statements, ["select 7 as h"]);
+});
+
+test("a choice between constants describes EVERY branch, because each is sent sometime", () => {
+  assert.deepEqual([...at(34).statements].sort(), ["select 8 as i", "select 9 as j"]);
+});
+
+test("a statement built at runtime is reported as such, naming the part that is", () => {
+  // The constant before it is not the culprit, and is not named.
+  assert.deepEqual(at(19).statements, []);
+  assert.equal(at(19).unresolved, "${runtimeTail()}");
+  assert.equal(at(29).unresolved, "sqlVar");
+});
+
+test("A PLAIN CLIENT'S RUNTIME STATEMENT is still a database call, not dropped from the census", () => {
+  // A cold review's mutant that recognised a plain client only by literal text
+  // survived: no fixture had a runtime-built statement through one.
+  assert.equal(at(28).via, "structural");
+  assert.equal(at(28).unresolved, "${runtimeTail()}");
+});
+
+test("a WRAPPER's statement is a parameter, and the report says so outright", () => {
+  assert.equal(at(13).unresolved, "text, a parameter of run(): what its callers pass is not checked");
+});
+
+test("a result is READ when it is assigned, returned or chained, and not when the call stands alone", () => {
+  assert.equal(at(13).resultUsed, true); // returned, through .rows
+  assert.equal(at(17).resultUsed, true); // assigned
+  assert.equal(at(16).resultUsed, false);
+  assert.equal(at(37).resultUsed, false);
 });
 
 test("the declared row type comes from the generic", () => {
-  assert.deepEqual(props(sites[0]!), { id: "number", name: "string | null" });
+  assert.deepEqual(props(at(16)), { id: "number", name: "string | null", ok: "boolean" });
 });
 
 test("rows with no generic are `any`, recorded as untyped rather than as an empty row", () => {
-  assert.equal(sites[1]!.declared, "any");
+  assert.equal(at(17).declared.kind, "any");
 });
 
 test("rows typed `unknown` are recorded as honest: nothing can be read without narrowing", () => {
-  assert.equal(sites[6]!.declared, "unknown");
+  assert.equal(at(23).declared.kind, "unknown");
 });
 
 test("the declared row type comes from a cast on the awaited result too", () => {
-  assert.deepEqual(props(sites[5]!), { a: "string", at: "Date", ids: "number[]" });
+  assert.deepEqual(props(at(21)), { a: "string", at: "Date", ids: "number[]" });
 });
 
 test("THROUGH A PLAIN CLIENT, the cast is the ONLY declaration, and it is read", () => {
@@ -234,14 +340,85 @@ test("THROUGH A PLAIN CLIENT, the cast is the ONLY declaration, and it is read",
   // and cast the result. For pg's own `query` TypeScript infers the row type
   // from the cast anyway, so a pg-only fixture could not tell this code was
   // missing (a mutation run proved it); here nothing else declares the row.
-  assert.deepEqual(props(sites[7]!), { d: "string" });
+  assert.deepEqual(props(at(26)), { d: "string" });
 });
 
-test("THE BLIND SPOT THE FIRST VERSION HAD: a client typed as { query } is still a database call", () => {
-  // verifyRebuild hands its query to a structurally typed client so a test can
-  // pass a fake. Matching on pg's declaration alone never saw it at all.
-  assert.equal(sites[6]!.via, "structural");
-  assert.equal(sites[6]!.sql, "select 3 as c");
+test("AN INDEX SIGNATURE declares every column: `Record<string, number>` is judged, not waved through", () => {
+  // The first version read named properties only, so every column of this row
+  // came out "undeclared" and nothing was ever judged.
+  const row = at(35).declared;
+  assert.equal(showDeclared(declaredColumn(row, "k").declared!), "number");
+  assert.equal(judge({ kind: "string" }, declaredColumn(row, "k").declared, false), "lie");
+});
+
+test("A TYPE PARAMETER is judged by its constraint: pg's QueryResultRow says any column, so untyped", () => {
+  const row = at(41).declared;
+  assert.equal(row.kind, "typed");
+  assert.equal(judge({ kind: "string" }, declaredColumn(row, "m").declared, false), "untyped");
+});
+
+// -- the verdict over a whole census ----------------------------------------------
+
+const site = (over: Partial<QuerySite> = {}): QuerySite => ({
+  file: "src/x.ts",
+  line: 1,
+  via: "pg",
+  statements: ["select id from t"],
+  resultUsed: true,
+  declared: { kind: "typed", props: new Map([["id", declared(["number"])]]), index: null },
+  ...over,
+});
+const types = new Map<number, ColumnType>([[20, INT8], [25, { typname: "text", category: "S", elementCategory: null }]]);
+const idColumn: Description = { columns: [{ name: "id", oid: 20 }] };
+const census = (s: QuerySite, descriptions: Description[], driver = configuredParser) =>
+  judgeCensus([s], new Map([[s, descriptions]]), types, driver);
+
+test("CENSUS: a lie fails it, and the same row passes on the configured driver", () => {
+  const s = site();
+  assert.equal(census(s, [idColumn], (oid) => (oid === 20 ? pgDefaultInt8 : configuredParser(oid))).pass, false);
+  assert.equal(census(s, [idColumn]).pass, true);
+});
+
+test("CENSUS: a statement the database would not describe fails it", () => {
+  // A cold review's mutant that dropped this from the exit code survived: the
+  // rule lived in main, where no test could reach it.
+  const result = census(site(), [{ error: 'column "id" does not exist' }]);
+  assert.equal(result.pass, false);
+  assert.deepEqual(result.undescribed.map((u) => u.error), ['column "id" does not exist']);
+});
+
+test("CENSUS: a runtime statement whose result is READ fails it; one whose result is discarded does not", () => {
+  const read = site({ statements: [], unresolved: "text, a parameter of run()", resultUsed: true });
+  const discarded = site({ statements: [], unresolved: "${tuples.join(\", \")}", resultUsed: false });
+  const result = judgeCensus([read, discarded], new Map(), types);
+  assert.deepEqual(result.unchecked, [read]);
+  assert.deepEqual(result.unread, [discarded]);
+  assert.equal(result.pass, false);
+  assert.equal(judgeCensus([discarded], new Map(), types).pass, true);
+});
+
+test("CENSUS: `any` rows are untyped column by column, and do not fail it", () => {
+  const result = census(site({ declared: { kind: "any" } }), [idColumn]);
+  assert.deepEqual(result.findings.map((f) => f.verdict), ["untyped"]);
+  assert.equal(result.pass, true);
+});
+
+test("CENSUS: rows typed `unknown` pass every column honestly", () => {
+  const result = census(site({ declared: { kind: "unknown" } }), [idColumn]);
+  assert.deepEqual(result.findings.map((f) => f.verdict), ["ok"]);
+});
+
+test("CENSUS: every branch of a choice is judged, and a declared column never returned is listed", () => {
+  const row: RowType = { kind: "typed", props: new Map([["id", declared(["string"])], ["gone", declared(["number"])]]), index: null };
+  const s = site({ statements: ["select id from a", "select id from b"], declared: row });
+  const result = census(s, [idColumn, idColumn]);
+  assert.deepEqual(result.findings.map((f) => [f.statement, f.verdict]), [[0, "lie"], [1, "lie"]]);
+  assert.deepEqual(result.neverReturned.map((n) => n.name), ["gone"]);
+});
+
+test("CENSUS: a site whose statements were not all described fails it, rather than being skipped", () => {
+  const s = site({ statements: ["select id from a", "select id from b"] });
+  assert.equal(census(s, [idColumn]).pass, false);
 });
 
 // -- describing without executing ----------------------------------------------
@@ -267,6 +444,19 @@ test("THE SAFETY PROPERTY: a statement is parsed and described, never bound or e
   );
   assert.deepEqual(sent[0]!.args[0], { name: "", text: "insert into sessions default values returning id", types: [] });
   assert.deepEqual(sent[1]!.args[0], { type: "S", name: "" });
+});
+
+test("THE SECOND GUARD: the work runs inside BEGIN READ ONLY and is always rolled back", async () => {
+  // A cold review's mutant that opened a plain BEGIN survived: the guard lived
+  // in main, where no test could reach it.
+  const commands: string[] = [];
+  const client = { query: async (text: string) => void commands.push(text) };
+  assert.equal(await withReadOnlyTransaction(client, async () => (commands.push("work"), 7)), 7);
+  assert.deepEqual(commands, ["begin read only", "work", "rollback"]);
+
+  commands.length = 0;
+  await assert.rejects(withReadOnlyTransaction(client, async () => Promise.reject(new Error("boom"))), /boom/);
+  assert.deepEqual(commands, ["begin read only", "rollback"]);
 });
 
 test("the columns come from the row description, and resolve when the server is ready", { timeout: 2000 }, async () => {

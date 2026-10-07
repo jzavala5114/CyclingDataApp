@@ -2,8 +2,8 @@ import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { asyncRoute } from "./asyncRoute.js";
-import { buildDirectionalGradientLines } from "../services/gradientBuilder.js";
-import type { Direction, ElevationBucket, Segment, SegmentCoverage } from "../types/index.js";
+import { segmentsWithLines } from "../services/segmentsResponse.js";
+import type { ElevationBucket, Segment, SegmentCoverage } from "../types/index.js";
 
 export const segmentsRouter = Router();
 
@@ -54,31 +54,6 @@ segmentsRouter.get("/", asyncRoute(async (req, res) => {
     [segmentRows.map((s) => s.id)],
   );
 
-  const bucketsBySegment = new Map<number, Record<Direction, ElevationBucket[]>>();
-  for (const bucket of bucketRows) {
-    const forSegment = bucketsBySegment.get(bucket.segmentId) ?? { forward: [], backward: [] };
-    forSegment[bucket.direction].push(bucket);
-    bucketsBySegment.set(bucket.segmentId, forSegment);
-  }
-
-  const coverageBySegment = new Map<number, Partial<Record<Direction, SegmentCoverage>>>();
-  for (const coverage of coverageRows) {
-    const forSegment = coverageBySegment.get(coverage.segmentId) ?? {};
-    forSegment[coverage.direction] = coverage;
-    coverageBySegment.set(coverage.segmentId, forSegment);
-  }
-
-  const segments = segmentRows.map((segment) => ({
-    id: segment.id,
-    streetName: segment.streetName,
-    geom: segment.geom,
-    lengthM: segment.lengthM,
-    directionalLines: buildDirectionalGradientLines(
-      segment,
-      bucketsBySegment.get(segment.id) ?? { forward: [], backward: [] },
-      coverageBySegment.get(segment.id) ?? {},
-    ),
-  }));
-
-  res.json({ segments });
+  // Joined in services/segmentsResponse.ts, which says why that join is fragile.
+  res.json({ segments: segmentsWithLines(segmentRows, bucketRows, coverageRows) });
 }));
