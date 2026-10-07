@@ -48,11 +48,25 @@ npm test                # gate tests: deterministic, no database, well under 2s
 npm run eval:quality    # where the elevation model stands, against the live archive
 npm run eval:smoothing  # eval: the zero-phase elevation smoother
 npm run eval:linker     # eval: what folding a sidewalk does to the drawn map
+npm run eval:query-types  # eval: what every query returns, against the type the code declares
 ```
 
 `npm test` runs Node's built-in test runner through tsx. It needs nothing but
-the source, so it is safe on any checkout. All three evals read the live
+the source, so it is safe on any checkout. All four evals read the live
 database and write nothing.
+
+`npm run eval:query-types` asks the database for the column types of every
+query under `src/` and checks each against the row type the code declares,
+under the driver as `src/db/pgTypes.ts` configures it. The generic on
+`db.query<T>` is an assertion node-postgres never sees, so this is the only
+check that can tell a column declared `number` is arriving as text: the
+compiler checks code against the declared type, and the tests feed it fixtures
+built from that same declaration. It sends each statement as Parse + Describe
+only, so nothing executes, not even an `INSERT ... RETURNING`, and the session
+is read-only besides. Exits 1 on any lie, and on any statement it could not
+describe. **It fails today, on purpose:** eleven `timestamptz` columns are
+declared `string` and arrive as `Date` (see `context/session.md`, NEXT item 1).
+Run it after any change to a query or a row type.
 
 `npm run eval:linker` scores a **pipeline** decision by its effect on the
 backend. `osm-pipeline/scripts/link_canonical.mjs` decides which segments are

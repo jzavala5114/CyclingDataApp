@@ -1,3 +1,5 @@
+// First, so no query can run before every bigint is parsed as a number. See pgTypes.ts.
+import "./pgTypes.js";
 import { Pool } from "pg";
 
 // pg defaults `connectionTimeoutMillis` to 0, meaning a checkout waits for a

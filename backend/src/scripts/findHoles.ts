@@ -26,7 +26,7 @@ import { interiorHoles, type Hole } from "../services/interiorHoles.js";
 
 /** One row of the bucket query. Snake case, straight from the database. */
 export interface BucketRow {
-  segment_id: string;
+  segment_id: number;
   direction: string;
   distance_m: number;
   street_name: string | null;
@@ -37,7 +37,7 @@ export interface BucketRow {
 }
 
 export interface LineHoles {
-  segmentId: string;
+  segmentId: number;
   direction: string;
   streetName: string | null;
   kind: string;
@@ -83,12 +83,13 @@ const tally = (lines: readonly LineHoles[]) => ({
   metres: lines.reduce((n, l) => n + l.holes.reduce((m, h) => m + h.gapM, 0), 0),
 });
 
-function describe(line: LineHoles): string {
+/** One line of the report. Exported so the test can run it on a row as the driver delivers it. */
+export function describeLine(line: LineHoles): string {
   const where = line.holes
     .map((h) => `${h.fromM}->${h.toM}m (${h.gapM}m, ${h.missingBuckets} missing)`)
     .join(", ");
   return (
-    `  seg ${line.segmentId.padStart(6)} ${line.direction.padEnd(8)} ` +
+    `  seg ${String(line.segmentId).padStart(6)} ${line.direction.padEnd(8)} ` +
     `${(line.streetName ?? "(unnamed)").padEnd(30)} ${line.kind.padEnd(9)} ` +
     `len ${line.lengthM.toFixed(0).padStart(4)}m  ${where}` +
     (line.folded ? "   [folded, not drawn]" : "")
@@ -151,11 +152,11 @@ async function main(): Promise<void> {
 
   if (explained.length > 0) {
     console.log(`\nholes under a structure (all ${explained.length}):`);
-    for (const line of explained) console.log(describe(line));
+    for (const line of explained) console.log(describeLine(line));
   }
 
   console.log(`\nunexplained holes, widest first${Number.isFinite(top) ? ` (top ${top})` : ""}:`);
-  for (const line of unexplained.slice(0, top)) console.log(describe(line));
+  for (const line of unexplained.slice(0, top)) console.log(describeLine(line));
   if (unexplained.length > top) {
     console.log(`  ... ${unexplained.length - top} more. Re-run with --all.`);
   }

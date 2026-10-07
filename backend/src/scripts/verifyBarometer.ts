@@ -410,14 +410,11 @@ async function main(): Promise<void> {
     [only, reference],
   );
 
-  // session_id arrives as a string from a bigint column, which compares wrong
-  // against a number and has bitten this repo before.
   const bySession = new Map<number, SampleRow[]>();
   for (const row of rows) {
-    const id = Number(row.sessionId);
-    const list = bySession.get(id) ?? [];
-    list.push({ ...row, sessionId: id });
-    bySession.set(id, list);
+    const list = bySession.get(row.sessionId) ?? [];
+    list.push(row);
+    bySession.set(row.sessionId, list);
   }
 
   const reports = [...bySession.entries()]

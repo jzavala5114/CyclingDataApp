@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import pg, { type Pool } from "pg";
+// The driver exactly as production configures it, imported by name. These tests
+// are about what loadSessionVerdicts is handed in production, where db/pool.ts
+// has loaded this before any query runs. Without the import this file would run
+// pg's default int8 parser, and which parser it ran would be decided by import
+// order rather than by anyone.
+import "../db/pgTypes.js";
 import {
   loadSessionVerdicts,
   isUsable,
@@ -53,8 +59,25 @@ const fakeDb = (rows: unknown[]) => {
   return { db: db as unknown as Pool, calls };
 };
 
-test("THE BUG: the session id comes back a number, not the text the driver returns", async () => {
+test("the driver in this file is the production one: int8 a number, numeric still text", () => {
+  // The second half is why bad_share still needs converting here at all.
+  assert.equal(parse(INT8, "84"), 84);
+  assert.equal(parse(NUMERIC, "0.0164"), "0.0164");
+});
+
+test("the session id comes back a number", async () => {
   const { db } = fakeDb([driverRow({ id: "84" })]);
+  const [verdict] = await loadSessionVerdicts(db);
+  assert.equal(verdict!.id, 84);
+  assert.equal(typeof verdict!.id, "number");
+});
+
+test("THE ORIGINAL BUG, still covered: a text id, as pg's default parser returns it, comes back a number", async () => {
+  // Every process that queries loads db/pgTypes.ts through db/pool.ts, but this
+  // function takes whatever `db` it is handed, so it converts at its own
+  // boundary too and holds either way. "84" is the text pg's default returns
+  // for an int8; db/pgTypes.test.ts observes that default before replacing it.
+  const { db } = fakeDb([{ ...driverRow(), id: "84" }]);
   const [verdict] = await loadSessionVerdicts(db);
   assert.equal(verdict!.id, 84);
   assert.equal(typeof verdict!.id, "number");

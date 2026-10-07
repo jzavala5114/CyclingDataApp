@@ -322,7 +322,7 @@ async function main(): Promise<void> {
             : "between-runs";
 
       diagnoses.push({
-        segmentId: Number(line.segment.id),
+        segmentId: line.segment.id,
         streetName: line.segment.streetName,
         kind: line.segment.kind,
         direction: line.direction,

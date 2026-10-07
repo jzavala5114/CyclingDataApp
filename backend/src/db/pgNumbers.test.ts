@@ -7,6 +7,14 @@ import { bigintId, numericOrNull } from "./pgNumbers.js";
 // for that column type, not typed in by hand. The bug this guards against is a
 // mismatch between what the driver returns and what the code believes it
 // returns, so a hand-written fixture would only test the belief.
+//
+// **This file runs pg's DEFAULT parsers, on purpose.** db/pgTypes.ts replaces
+// the int8 parser for the whole process, and inside that replacement bigintId
+// is handed exactly the raw text pg's default would have returned. That text is
+// the input these converters exist for, so it is what they are tested against.
+// Nothing here imports pgTypes.ts or db/pool.ts. If anything ever does, the
+// premise test below fails and says so, rather than every int8 fixture quietly
+// arriving already converted and the tests passing without testing anything.
 const INT8 = 20;
 const INT4 = 23;
 const NUMERIC = 1700;
@@ -24,7 +32,11 @@ const prepareValue = (pg as unknown as { utils: { prepareValue: (v: unknown) => 
 test("THE PREMISE: pg returns bigint and numeric as strings, int and float as numbers", () => {
   // If a pg upgrade ever changes this, these fail first, and the comment at the
   // top of pgNumbers.ts needs revisiting before anything else does.
-  assert.equal(fromPg(INT8, "84"), "84");
+  assert.equal(
+    fromPg(INT8, "84"),
+    "84",
+    "this file must run pg's default int8 parser: did something here import db/pgTypes.ts or db/pool.ts?",
+  );
   assert.equal(fromPg(NUMERIC, "0.0164"), "0.0164");
   assert.equal(fromPg(INT4, "84"), 84);
   assert.equal(fromPg(FLOAT8, "0.0164"), 0.0164);

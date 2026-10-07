@@ -25,6 +25,7 @@
     "eval:heading": "tsx src/scripts/evalHeadingSource.ts",
     "eval:heading-lines": "tsx src/scripts/enumerateHeadingLines.ts",
     "eval:spikes": "tsx src/scripts/evalPositionFilter.ts",
+    "eval:query-types": "tsx src/scripts/evalQueryTypes.ts",
     "migrate": "tsx src/scripts/migrate.ts"
   },
   "dependencies": {

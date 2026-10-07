@@ -1,11 +1,16 @@
 // Numbers that node-postgres hands back as text, converted at the boundary.
 //
-// pg returns `bigint` (int8) and `numeric` columns as STRINGS, deliberately:
-// a JS number cannot hold every int8 exactly, and numeric is arbitrary
-// precision, so the driver refuses to guess. Every id in schema.sql is a
-// `bigserial` or `bigint`, so every id this backend reads arrives as "84", not
-// 84, whatever the TypeScript interface on the query says. `int` and `double
+// pg returns `bigint` (int8) and `numeric` columns as STRINGS by default,
+// deliberately: a JS number cannot hold every int8 exactly, and numeric is
+// arbitrary precision, so the driver refuses to guess. Every id in schema.sql is
+// a `bigserial` or `bigint`, so every id this backend read arrived as "84", not
+// 84, whatever the TypeScript interface on the query said. `int` and `double
 // precision` come back as real numbers; these two types do not.
+//
+// **Where each one runs now.** `bigintId` is the driver's int8 parser for the
+// whole process since 2026-10-05 (db/pgTypes.ts), so ids arrive as numbers and
+// it is no longer something a query has to remember to call. `numericOrNull` is
+// still called where a numeric is read, because numeric is left as text.
 //
 // **It has failed silently twice on record, and neither failure threw.** A
 // `Set<number>` never matched a session id, so a counter stayed at 0 and a

@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { holesByLine, type BucketRow } from "./findHoles.js";
+import pg from "pg";
+// The driver exactly as production configures it: bigint parsed to a number.
+// Imported by name rather than left to arrive through findHoles.ts -> pool.ts,
+// because the crash test below means nothing on pg's default parser.
+import "../db/pgTypes.js";
+import { describeLine, holesByLine, type BucketRow } from "./findHoles.js";
 
 // The gap rule itself is tested in services/interiorHoles.test.ts. This covers
 // the grouping, which is the part that can silently merge two lines into one or
@@ -8,7 +13,7 @@ import { holesByLine, type BucketRow } from "./findHoles.js";
 // touching a single hole.
 
 const row = (over: Partial<BucketRow> = {}): BucketRow => ({
-  segment_id: "100",
+  segment_id: 100,
   direction: "forward",
   distance_m: 0,
   street_name: "Hancock Expressway",
@@ -20,7 +25,7 @@ const row = (over: Partial<BucketRow> = {}): BucketRow => ({
 });
 
 const line = (
-  segmentId: string,
+  segmentId: number,
   direction: string,
   distances: number[],
   over: Partial<BucketRow> = {},
@@ -28,13 +33,13 @@ const line = (
   distances.map((distance_m) => row({ segment_id: segmentId, direction, distance_m, ...over }));
 
 test("a line with no gap is left out entirely", () => {
-  assert.deepEqual(holesByLine(line("100", "forward", [0, 15, 30])), []);
+  assert.deepEqual(holesByLine(line(100, "forward", [0, 15, 30])), []);
 });
 
 test("a line with a gap is reported once, with its holes", () => {
-  const result = holesByLine(line("100", "forward", [0, 15, 45, 60]));
+  const result = holesByLine(line(100, "forward", [0, 15, 45, 60]));
   assert.equal(result.length, 1);
-  assert.equal(result[0]!.segmentId, "100");
+  assert.equal(result[0]!.segmentId, 100);
   assert.equal(result[0]!.direction, "forward");
   assert.deepEqual(result[0]!.holes, [{ fromM: 15, toM: 45, gapM: 30, missingBuckets: 1 }]);
 });
@@ -44,7 +49,7 @@ test("the two directions of one segment are separate lines", () => {
   // geometry but are drawn as two lines and ridden independently. Keying on
   // the segment alone would pool their distances, and interleaved buckets
   // would then hide every hole on both.
-  const rows = [...line("100", "forward", [0, 45]), ...line("100", "backward", [0, 45])];
+  const rows = [...line(100, "forward", [0, 45]), ...line(100, "backward", [0, 45])];
   const result = holesByLine(rows);
   assert.equal(result.length, 2);
   assert.deepEqual(new Set(result.map((r) => r.direction)), new Set(["forward", "backward"]));
@@ -54,30 +59,27 @@ test("the two directions of one segment are separate lines", () => {
 test("interleaved directions do not fill each other's holes", () => {
   // The same rows keyed on segment alone would read 0,15,30,45 -- continuous,
   // no holes at all -- while each direction is really missing a bucket.
-  const rows = [...line("100", "forward", [0, 30]), ...line("100", "backward", [15, 45])];
+  const rows = [...line(100, "forward", [0, 30]), ...line(100, "backward", [15, 45])];
   const result = holesByLine(rows);
   assert.equal(result.length, 2);
   assert.equal(result.reduce((n, r) => n + r.holes.length, 0), 2);
 });
 
 test("two segments are never merged, even in the same street", () => {
-  const rows = [...line("100", "forward", [0, 45]), ...line("101", "forward", [0, 45])];
+  const rows = [...line(100, "forward", [0, 45]), ...line(101, "forward", [0, 45])];
   assert.equal(holesByLine(rows).length, 2);
-  // And a string id is compared as a string: `segments.id` is a bigserial and
-  // node-postgres hands it back as text, which is the bug that made
-  // evalLinkerFold print n/a for its headline number.
   assert.deepEqual(
-    holesByLine(rows).map((r) => r.segmentId).sort(),
-    ["100", "101"],
+    holesByLine(rows).map((r) => r.segmentId).sort((a, b) => a - b),
+    [100, 101],
   );
 });
 
 test("rows arrive in any order and the line still groups", () => {
   const rows = [
-    row({ segment_id: "100", direction: "forward", distance_m: 45 }),
-    row({ segment_id: "101", direction: "backward", distance_m: 0 }),
-    row({ segment_id: "100", direction: "forward", distance_m: 0 }),
-    row({ segment_id: "101", direction: "backward", distance_m: 45 }),
+    row({ segment_id: 100, direction: "forward", distance_m: 45 }),
+    row({ segment_id: 101, direction: "backward", distance_m: 0 }),
+    row({ segment_id: 100, direction: "forward", distance_m: 0 }),
+    row({ segment_id: 101, direction: "backward", distance_m: 45 }),
   ];
   const result = holesByLine(rows);
   assert.equal(result.length, 2);
@@ -86,7 +88,7 @@ test("rows arrive in any order and the line still groups", () => {
 
 test("the line carries the segment's own metadata", () => {
   const result = holesByLine(
-    line("100", "forward", [0, 45], {
+    line(100, "forward", [0, 45], {
       street_name: "Gold Camp Road",
       kind: "road",
       length_m: 55,
@@ -106,8 +108,8 @@ test("is_tunnel travels with the line, because the whole split depends on it", (
   // reported before the flag existed -- looking like the flag had found
   // nothing rather than like the tool had lost it.
   const rows = [
-    ...line("100", "forward", [0, 45], { is_tunnel: true }),
-    ...line("101", "forward", [0, 45], { is_tunnel: false }),
+    ...line(100, "forward", [0, 45], { is_tunnel: true }),
+    ...line(101, "forward", [0, 45], { is_tunnel: false }),
   ];
   const result = holesByLine(rows);
   assert.equal(result.filter((r) => r.isTunnel).length, 1);
@@ -115,35 +117,46 @@ test("is_tunnel travels with the line, because the whole split depends on it", (
 });
 
 test("an unnamed segment keeps its null name rather than being dropped", () => {
-  const result = holesByLine(line("100", "forward", [0, 45], { street_name: null }));
+  const result = holesByLine(line(100, "forward", [0, 45], { street_name: null }));
   assert.equal(result.length, 1);
   assert.equal(result[0]!.streetName, null);
 });
 
 test("the widest hole sorts first", () => {
   const rows = [
-    ...line("100", "forward", [0, 30]), // 30m
-    ...line("101", "forward", [0, 90]), // 90m
-    ...line("102", "forward", [0, 45]), // 45m
+    ...line(100, "forward", [0, 30]), // 30m
+    ...line(101, "forward", [0, 90]), // 90m
+    ...line(102, "forward", [0, 45]), // 45m
   ];
   assert.deepEqual(
     holesByLine(rows).map((r) => r.segmentId),
-    ["101", "102", "100"],
+    [101, 102, 100],
   );
 });
 
 test("a line with several holes sorts on its widest, not its first", () => {
   const rows = [
-    ...line("100", "forward", [0, 30, 45, 135]), // holes of 30m and 90m
-    ...line("101", "forward", [0, 60]), // one hole of 60m
+    ...line(100, "forward", [0, 30, 45, 135]), // holes of 30m and 90m
+    ...line(101, "forward", [0, 60]), // one hole of 60m
   ];
   assert.deepEqual(
     holesByLine(rows).map((r) => r.segmentId),
-    ["100", "101"],
+    [100, 101],
   );
   assert.equal(holesByLine(rows)[0]!.holes.length, 2);
 });
 
 test("no buckets at all produces no lines", () => {
   assert.deepEqual(holesByLine([]), []);
+});
+
+test("THE CRASH THIS FIXES: a line whose id came from the driver prints", () => {
+  // `segment_id` is a bigint. Once db/pgTypes.ts made the driver deliver it as a
+  // number, the report's `line.segmentId.padStart(6)` was a TypeError, and
+  // `npm run find-holes` would have died on its first hole. The fixture comes
+  // from the driver's own int8 parser, not typed in, so it is what main() gets.
+  const segmentId = pg.types.getTypeParser(pg.types.builtins.INT8)("49704") as number;
+  assert.equal(typeof segmentId, "number", "the driver in this test is configured as in production");
+  const [hole] = holesByLine(line(segmentId, "forward", [0, 45], { street_name: "Gold Camp Road" }));
+  assert.match(describeLine(hole!), /^ {2}seg {2}49704 forward {2}Gold Camp Road/);
 });

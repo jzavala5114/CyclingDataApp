@@ -65,7 +65,7 @@ export async function ensureDemElevations(
 
   const unique = [...wanted.values()];
   const { rows: cached } = await client.query<{
-    segment_id: string;
+    segment_id: number;
     direction: Direction;
     distance_m: number;
     elevation_m: number;
@@ -86,7 +86,7 @@ export async function ensureDemElevations(
   for (const row of cached) {
     known.set(
       demKey({
-        segmentId: Number(row.segment_id),
+        segmentId: row.segment_id,
         direction: row.direction,
         distanceM: row.distance_m,
       }),
@@ -101,7 +101,7 @@ export async function ensureDemElevations(
   // bucket has to be flipped back to a distance from the segment's start
   // before it can be turned into a coordinate.
   const { rows: points } = await client.query<{
-    segment_id: string;
+    segment_id: number;
     direction: Direction;
     distance_m: number;
     lat: number;
@@ -125,7 +125,7 @@ export async function ensureDemElevations(
   );
 
   const pending: PendingPoint[] = points.map((row) => ({
-    segmentId: Number(row.segment_id),
+    segmentId: row.segment_id,
     direction: row.direction,
     distanceM: row.distance_m,
     lat: row.lat,

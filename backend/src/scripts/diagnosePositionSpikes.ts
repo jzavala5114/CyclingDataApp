@@ -74,7 +74,7 @@ function nearest(
     if (d > MAX_MATCH_DISTANCE_M) continue;
     if (!best || d < best.distanceM) {
       best = {
-        id: Number(segment.id),
+        id: segment.id,
         name: segment.streetName ?? "(unnamed)",
         distanceM: d,
         wayId: segment.osmWayId == null ? null : String(segment.osmWayId),

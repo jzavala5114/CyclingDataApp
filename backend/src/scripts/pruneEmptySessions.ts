@@ -15,7 +15,7 @@ import { pool } from "../db/pool.js";
 //   npm run build && node dist/scripts/pruneEmptySessions.js --apply
 
 interface EmptySession {
-  id: string;
+  id: number;
   started_at: string;
   ended_at: string | null;
 }

@@ -371,7 +371,7 @@ async function main(): Promise<void> {
     disagreed += w.disagreed;
 
     for (const s of segments) {
-      const id = Number(s.id);
+      const id = s.id;
       const touched = ["forward", "backward"].some(
         (d) => device.drawn.has(`${id}|${d}`) || derived.drawn.has(`${id}|${d}`),
       );

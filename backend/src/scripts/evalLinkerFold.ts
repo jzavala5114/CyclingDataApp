@@ -49,11 +49,11 @@ import { buildLinkPlan, decide, MIN_FRONTAGE } from "../../../osm-pipeline/scrip
 //
 // READS ONLY. Writes nothing, applies no plan, fetches no terrain.
 //
-// Local tool, not part of the deployed server. `tsc` emits it into
-// dist/scripts/ like the other scripts, but Railway only ships `backend/`, so
-// the osm-pipeline import above would not resolve in the container. Nothing
-// there loads it -- index.ts does not import it and ES modules resolve per
-// module -- so the deploy is unaffected. Run it from a checkout.
+// Local tool, not part of the deployed server, and EXCLUDED from the production
+// build. Railway builds `backend/` alone, so the osm-pipeline import above does
+// not exist there, and `tsc` resolves imports at build time: compiling this
+// file in the container killed a deploy on TS2307 (paid-for #29). tsconfig.json
+// leaves it out; tsconfig.check.json still typechecks it. Run it from a checkout.
 
 const BBOX_PAD_DEG = 0.005;
 const DISCONNECT_PENALTY_M = 6; // what the matcher ships with; see session.md
@@ -140,7 +140,7 @@ for (const session of usable) {
   const lons = samples.map((s) => s.lon);
   // Every segment in the bbox, canonical or not, plus the column. The arms
   // differ only in which of these they are allowed to see.
-  const { rows: all } = await client.query<Segment & { parent: string | null }>(
+  const { rows: all } = await client.query<Segment & { parent: number | null }>(
     `select id, osm_way_id as "osmWayId", kind, street_name as "streetName",
             start_node_id as "startNodeId", end_node_id as "endNodeId",
             piece_index as "pieceIndex", canonical_segment_id as parent,
@@ -161,8 +161,8 @@ for (const session of usable) {
     const segments = all.filter((s) =>
       hide === null
         ? s.parent === null
-        : planIds.has(Number(s.id))
-          ? !hide.has(Number(s.id))
+        : planIds.has(s.id)
+          ? !hide.has(s.id)
           : s.parent === null,
     );
     const byId = new Map(segments.map((s) => [s.id, s]));
@@ -188,7 +188,7 @@ for (const session of usable) {
       const covered = Math.max(0, a.profile.coveredToM - a.profile.coveredFromM);
       t.coveredM += covered;
       if (segment.kind === "road") t.roadM += covered; else t.trailM += covered;
-      t.drawn.add(Number(segment.id));
+      t.drawn.add(segment.id);
       qualified.push({
         segment,
         startedMs: Date.parse(run.samples[0].recordedAt as unknown as string),
@@ -198,7 +198,7 @@ for (const session of usable) {
 
     // This membership test is where the text-typed id bit: the Set never
     // matched, `transitions` stayed 0 and the headline printed "n/a". Safe now
-    // that loadSessionVerdicts converts the id at the boundary; see
+    // that the driver delivers every bigint as a number (db/pgTypes.ts); see
     // SessionVerdict.id.
     if (!IMPOSSIBLE_SESSIONS.has(session.id)) continue;
     qualified.sort((a, b) => a.startedMs - b.startedMs);
@@ -234,12 +234,12 @@ console.table(
 // has ridden cannot move any number above, and most folds are on such ground.
 for (const t of THRESHOLDS) {
   const folds = decide(plan, t).filter((d) => d.change === "fold").map((d) => d.id);
-  const { rows: [seen] } = await client.query<{ n: string }>(
+  const { rows: [seen] } = await client.query<{ n: number }>(
     `select count(distinct segment_id)::int as n
        from segment_elevation_buckets where segment_id = any($1)`,
     [folds],
   );
-  const n = Number(seen.n);
+  const n = seen.n;
   console.log(
     `\nCOVERAGE at ${t}: ${folds.length} folds, of which ${n} currently draw a line. ` +
       `The replay is blind to the other ${folds.length - n} ` +
@@ -258,7 +258,7 @@ for (const arm of ARMS.slice(1)) {
   for (const [label, ids] of [["lost", lost], ["gained", gained]] as const) {
     if (!ids.length) continue;
     const { rows } = await client.query<{
-      id: string; street_name: string | null; kind: string; is_sidewalk: boolean; len: string;
+      id: number; street_name: string | null; kind: string; is_sidewalk: boolean; len: string;
     }>(
       `select id, street_name, kind, is_sidewalk, round(length_m::numeric, 0) as len
          from segments where id = any($1) order by length_m desc`,

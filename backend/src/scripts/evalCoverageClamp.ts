@@ -143,7 +143,7 @@ async function main(): Promise<void> {
 
   // -- control ----------------------------------------------------------------
   const buckets = all.reduce((n, l) => n + l.buckets.size, 0);
-  const drawnSegments = new Set(all.map((l) => Number(l.segment.id))).size;
+  const drawnSegments = new Set(all.map((l) => l.segment.id)).size;
   const { rows: [stored] } = await client.query<{ buckets: number; segments: number; lines: number }>(
     `select count(*)::int as buckets,
             count(distinct segment_id)::int as segments,

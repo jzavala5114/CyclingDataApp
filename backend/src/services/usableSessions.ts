@@ -51,11 +51,13 @@ export const MAX_IMPLAUSIBLE_STEP_SHARE = 0.15;
 
 export interface SessionVerdict {
   /**
-   * A real number, converted at the boundary by `loadSessionVerdicts`.
+   * A real number. The driver delivers it as one since 2026-10-05, because
+   * db/pgTypes.ts makes every bigint a number, and `loadSessionVerdicts` still
+   * checks it at its own boundary, because it takes whatever `db` it is handed.
    *
-   * `sessions.id` is a `bigserial`, and node-postgres returns bigint as TEXT, so
-   * until 2026-10-04 this field was typed `number` and held "84". Thirteen
-   * scripts consume it. Nine wrapped it in a defensive `Number()`, two of them
+   * `sessions.id` is a `bigserial`, and node-postgres returns bigint as TEXT by
+   * default, so until 2026-10-04 this field was typed `number` and held "84".
+   * Thirteen scripts consume it. Nine wrapped it in a defensive `Number()`, two of them
    * with comments saying the type lied -- and one of those nine, evalLinkerFold,
    * only after it bit on 2026-09-28: it matched a `Set<number>` against the
    * string, never matched, kept a counter at 0 and printed a harmless-looking
@@ -63,8 +65,9 @@ export interface SessionVerdict {
    * verifyRebuild handed the string to `processSession(sessionId: number)`,
    * which worked only because pg serialises 84 and "84" as the same parameter,
    * and evalModelQuality and evalSmoothingLag stored it in observation records
-   * keyed by session, consistently enough that nothing broke. Converted once
-   * here instead, so no caller has to remember. See db/pgNumbers.ts.
+   * keyed by session, consistently enough that nothing broke. Converted here on
+   * 2026-10-04 so no caller had to remember, then at the driver for every
+   * bigint the next day. See db/pgNumbers.ts and db/pgTypes.ts.
    */
   id: number;
   samples: number;
@@ -88,16 +91,17 @@ export interface SessionVerdict {
  * the query result as `SessionVerdict` directly is how the lie got in: the
  * generic on `db.query<T>` is an assertion, not a check, and pg never sees it.
  *
- * **Only the two columns that arrived as text are converted.** The other
- * numbers are right only because of the SQL: `samples` and `labelled` are
- * `count(...)::int`, and `min_elev` is `min()` over a `double precision`
- * column. Drop either `::int` and that count becomes int8, arrives as text,
- * and nothing here notices -- a cold review did exactly that and every test
- * still passed, because the fixtures encode the column types rather than read
- * them. Left unconverted deliberately: `samples` is only ever printed and
- * `labelled` is never read in JS, so a regression there changes no output.
+ * **Only the two columns that once arrived as text are converted.** `id` is
+ * int8, which db/pgTypes.ts now turns into a number before it gets here, so its
+ * conversion is a check that holds even for a `db` from a process that never
+ * loaded that module. `bad_share` is numeric, which still arrives as text and is
+ * converted for real. The other numbers come out of the SQL as int4 and float8:
+ * `samples` and `labelled` are `count(...)::int`, and `min_elev` is `min()` over
+ * a `double precision` column. Dropping a `::int` no longer turns a count into
+ * text, since an uncast count is int8 and int8 is now a number too.
  * The column types were checked against the live server on 2026-10-04
- * (int8, int4, float8, numeric, int4, bool, bool).
+ * (int8, int4, float8, numeric, int4, bool, bool), and `npm run
+ * eval:query-types` re-checks every query's declared types against it.
  */
 interface VerdictRow extends Omit<SessionVerdict, "id" | "bad_share"> {
   id: unknown;

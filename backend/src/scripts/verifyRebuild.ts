@@ -49,7 +49,7 @@ async function readModel(
             elevation_m as "elevationM", sample_count as "sampleCount"
        from segment_elevation_buckets`,
   )) as { rows: Bucket[] };
-  return new Map(rows.map((b) => [keyOf(b), { ...b, segmentId: Number(b.segmentId) }]));
+  return new Map(rows.map((b) => [keyOf(b), b]));
 }
 
 function quantiles(values: number[], ps: number[]): number[] {

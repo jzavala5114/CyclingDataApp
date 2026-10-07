@@ -14,6 +14,25 @@ stale.
 
 ### 1. Make every bigint id a number at the driver: one global int8 parser
 
+**IN PROGRESS since 2026-10-05 on branch `global-int8-parser`, NOT merged or
+deployed.** Committed there as a checkpoint: `db/pgTypes.ts` + `pool.ts` import,
+the fallout fixes, and a new eval `npm run eval:query-types` (describes every
+query on the live DB without executing it and checks the declared row types).
+371 backend tests pass. Verified so far: 10 of 14 read-only scripts
+byte-identical from frozen copies of main and the branch (`eval:spikes`,
+`eval:linker`, `eval:quality`, `eval:smoothing` still to run); the branch's
+server, run locally, returns `/segments` identical to production apart from
+numeric ids (hash `0a2be04de99909af`), and a control with a broken join returns
+0 lines. **Still to do:** the critic round-1 findings (a gate test for the
+`/segments` join, which no test covers; the census silently skips bound
+`query` methods, structural clients given a variable, config objects or a
+conditional, wrapper call sites and index-signature rows; 13 of its 14 mutants
+survived), a fresh critic round, then merge, deploy, the live check, and the
+notes. Evidence: `/tmp/int8-parser/critique/`. **Found on the way, not fixed:
+timestamps arrive as `Date` and `Date.parse()` drops their milliseconds**
+(34,361 of 34,402 fixes carry a sub-second part; matcher, spike filter and ride
+processor all affected). It becomes item 1 when this one closes.
+
 **Recommended on 2026-10-04 as the fastest and the safest of three options,
 all three measured.** Julian asked which would take the least time and this is
 the answer; he has not yet given an explicit go-ahead, so get one before
