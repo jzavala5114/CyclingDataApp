@@ -14,43 +14,125 @@ stale.
 
 ### 1. Make every bigint id a number at the driver: one global int8 parser
 
-**IN PROGRESS on branch `global-int8-parser` (2026-10-05/06), BUILT AND VERIFIED,
-NOT YET MERGED OR DEPLOYED.** Commits: `1206bed` (the parser, the fallout, the
-new eval `npm run eval:query-types`) and `0bf631d` (critic round 1: a gate test
-on the `/segments` join, now in `services/segmentsResponse.ts`; the census's
-silent blind spots closed). **394 backend tests.** Verified, each with a control:
-all 14 read-only scripts run from frozen copies of main and the branch on
-fingerprinted data, 13 byte-identical and `prune-sessions` differing only in
-printing `'5'` as `5` (`eval:smoothing` exits 1 on BOTH sides, its own verdict:
-see the item below); the branch's server run locally returns `/segments` with
-the same whole-response hash as production, `0a2be04de99909af`, ids now numbers,
-while a broken-join control returns 0 lines; the live census finds 81 sites,
-0 numeric lies, 11 timestamp lies; the production build works with no sibling
-directories; 54 mutants all as expected (`node backend/tmp-mutate-int8.mjs`,
-gitignored).
+**IN PROGRESS on branch `global-int8-parser` (2026-10-05/06): BUILT, NOT MERGED
+OR DEPLOYED. The cold critic's round 2 FAILED it on 2026-10-06, and its findings
+are the next work.** Commits: `1206bed` (the parser, the fallout, the new eval
+`npm run eval:query-types`), `0bf631d` (critic round 1's fixes: a gate test on
+the `/segments` join, now `services/segmentsResponse.ts`; census blind spots
+closed), then progress saves. **394 backend tests.**
 
-**In flight when saved:** a cold critic round 2, writing to
-`C:\Users\Julian\AppData\Local\Temp\int8-parser\critique\round2\critic\critic-round-2.md`.
-**To finish, in order:** (1) read that report; fix what it finds and re-run the
-harness; another cold round if it failed. (2) Merge `global-int8-parser` into
-`main` (fast-forward) and push: that deploys. (3) In the session scratchpad
-(`C:\Users\Julian\AppData\Local\Temp\claude\c--Users-Julian-Documents-GitHub-CyclingDataApp\e24d4bb5-018e-46b7-89ee-9dee82f392bf\scratchpad\`):
-`bash watch-deploy.sh` until `builtAt` moves, then `node segments-probe.mjs`,
-which must print hash `0a2be04de99909af` with `idTypes ["number"]`. (4) `node
-notes-int8.mjs <main commit> <builtAt> <test count> "<critic verdict line>"`
-rewrites this file's top for the closed state (dry-run it first with
-`NOTES=<copy>`); commit on a branch, merge, push. (5) Delete the frozen copies
-in `scratchpad\cmp\`: each `backend\node_modules` there is a JUNCTION into the
-repo, so remove the link itself first, never recurse through it. **Found on the
-way, not fixed: timestamps arrive as `Date` and `Date.parse()` drops their
-milliseconds** (34,361 of 34,402 fixes carry a sub-second part; the matcher,
-the spike filter and the ride processor are all affected). It becomes item 1
-when this one closes; the notes script writes it up.
+**What the critic is, and why it ran.** CLAUDE.md requires that a change be
+attacked before it ships by a separate sub-agent that did not build it: a
+"cold critic" that gets only the code, the evidence and a rubric frozen before
+the work began, never the builder's reasoning, and whose job is to REJECT. It
+may not touch the repository or the database; it mutates its own scratch copy.
+The rubric's nine lines: one mechanism makes every int8 a number in every
+process; nothing relies on ids being text; past 2^53 a query fails loudly
+without a crash; numeric is untouched; every guard test fails when its
+behaviour breaks; every test file states which driver it runs; the census
+executes nothing, never skips a query in silence and fails when it cannot
+check; comments are true; the phone's contract holds. **Round 1** (2026-10-05)
+was cut off by the account's rate limit before its verdict, but its evidence
+drove `0bf631d`. **Round 2** (2026-10-06) reviewed `1206bed` + `0bf631d`; full
+report and probes in `C:\Users\Julian\AppData\Local\Temp\int8-parser\critique\round2\critic\`
+(a temp folder: the substance is here).
+
+**Round 2: FAIL.** The driver change itself held: one parser, loaded by the only
+Pool, which both routes and all 18 scripts use; past 2^53 the query is rejected
+and the process lives; numeric untouched; confirmed in a compiled production
+build under plain node. It failed on the census and on guard tests:
+- **Major 1. The census passes queries it cannot check whose result is READ.**
+  An `untyped` verdict never fails it (`judgeCensus`, `evalQueryTypes.ts:572`),
+  and `declaredRow` (`:232-245`) reads only a generic or a cast directly on the
+  awaited call, so a cast on `.rows`, a cast on the promise, rows handed to a
+  typed function, a typed `.then` callback and a callback-style query all come
+  out `any`. The findHoles crash, rewritten with untyped rows, passes. Three
+  real untyped-and-read sites: `routes/sessions.ts:17` (POST /sessions),
+  `pruneEmptySessions.ts:58`, `rebuildModel.ts:86`. **Fix:** untyped-and-read
+  fails the census (a callback counts as reading), and those three get generics.
+- **Major 2. Production's driver could round past 2^53 with every test green.**
+  `pool.test.ts` checks only "84" -> 84, so a `pool.ts` that swapped pgTypes.ts
+  for a lenient `Number` parser (mutant C1b), or kept it and then registered the
+  common `parseInt` override (C2), passes everything. **Fix:** assert in
+  `pool.test.ts` that the configured parser throws on "9007199254740993".
+- **Major 3. Nothing tests that the census's `main()` uses its safety helpers.**
+  Replacing describe with execute AND dropping READ ONLY (C18b + C19, two edits
+  together) passes every test, and in the real statement order the census would
+  then run, in autocommit, `delete from session_segment_matches`, `segment_coverage`
+  and `segment_elevation_buckets` (from `rebuildModel.ts:54-56` and
+  `verifyRebuild.ts:99-101`): **the production elevation model.** Latent, two
+  edits away, but the census points at production. Also untested in `main()`:
+  the exit code (C17) and descriptions lining up with their sites (C20).
+  **Fix:** extract `runCensus(client, sites)` and test it with the fake client
+  the `describeAll` test already uses.
+- **Minor.** (4) Census scope is never asserted on the real program: reading
+  `tsconfig.json` instead (which drops `evalLinkerFold.ts`), or skipping
+  `routes/` or `scripts/`, survives (C13-C15). (5) Silent skips and misreports:
+  a `pg.Query` passed to `client.query` vanishes without a line; a
+  callback-style runtime statement reads as "result not read";
+  `osm-pipeline/scripts/lib/linkPlan.mjs:162` runs on the backend's client and
+  never appears (another service's untyped JS: cover it or record it as out of
+  scope); an unquoted camelCase alias, which pg lowercases so the field is
+  always undefined, passes. (6) "Only one Pool" is a comment, not a check: a
+  script building its own Pool survives (C4), and the census would not notice.
+  (7) The routes' wire contracts are untested: the route stringifying ids
+  before the join (C11, a blank map) and POST /sessions returning the id as
+  text (C12) both survive. The phone is fine either way.
+- **Nits.** `MapScreen.tsx:113-114` draws stale lines until restart if the app
+  is open across the deploy (known, cosmetic). `pgTypes.ts:31-34` says
+  bad_share is "the one numeric this backend reads", false: `evalLinkerFold.ts:263`
+  reads `len` (typed string, only printed). `pool.ts:2-3`: a parser is looked up
+  once per result, not per row. `evalQueryTypes.ts:13`: "nine fields", not
+  "nine interfaces". `backend/README.md:66` omits the `unchecked` exit.
+  `segmentsResponse.test.ts:59` asserts the blank-street FAILURE, so it would
+  block hardening the join to tolerate mixed id types: delete it.
+- **And it was right about my evidence.** "54 mutants, all as expected" (in
+  `0bf631d`'s message and this note's last version) was never re-run after N6
+  was retired; the file on disk is the 55-mutant run in which N6 survived.
+  `census-on-main-driver.txt` came from the round-1 census, not the current one.
+  (The prune-sessions diff it found missing is now saved.)
+
+**Verified, and not to redo unless a fix touches it:** all 14 read-only scripts
+run from frozen copies of main and the branch on fingerprinted data, 13
+byte-identical and `prune-sessions` differing only in printing `'5'` as `5`
+(`eval:smoothing` exits 1 on BOTH sides, its own verdict, see item 6); the
+branch's server run locally returns `/segments` with production's whole-response
+hash, `0a2be04de99909af`, ids now numbers, while a broken-join control returns 0
+lines; the live census finds 81 sites, 0 numeric lies, 11 timestamp lies; the
+production build compiles with no sibling directories.
+
+**How much is left, in order (working time, roughly 4 to 5 hours):**
+1. **Round-2 fixes, about 3 hours.** Majors 1-3 about 1.5 h; minors 4-7 about
+   1.5 h, most of it 7, which needs a route-level test with `pool.query` faked;
+   nits 15 min. Then re-run the harness (`node backend/tmp-mutate-int8.mjs`,
+   gitignored) with the critic's surviving mutants added and SAVE the output,
+   re-run the census against main's driver with the current census, and repeat
+   the `/segments` rehearsal if a route changed.
+2. **Cold critic round 3**, about 40 min in the background. Loop until it
+   passes; a round that cannot pass names what is missing.
+3. **Ship, about 15 min.** Merge `global-int8-parser` into `main`
+   (fast-forward) and push, which deploys. In the session scratchpad
+   (`C:\Users\Julian\AppData\Local\Temp\claude\c--Users-Julian-Documents-GitHub-CyclingDataApp\e24d4bb5-018e-46b7-89ee-9dee82f392bf\scratchpad\`):
+   `bash watch-deploy.sh` until `builtAt` moves, then `node segments-probe.mjs`,
+   which must print hash `0a2be04de99909af` with `idTypes ["number"]`.
+4. **Notes, about 20 min.** `notes-int8.mjs` in the scratchpad rewrites this
+   file's top for the closed state, but it predates round 2: add rounds 2-3
+   first, dry-run with `NOTES=<copy>`, then `node notes-int8.mjs <main commit>
+   <builtAt> <tests> "<critic verdict>"`; commit on a branch, merge, push.
+5. **Clean up.** Delete the frozen copies in `scratchpad\cmp\`. Each
+   `backend\node_modules` in them is a JUNCTION into the repo: remove the link
+   itself first, never recurse through it. (Round 1's critic left one under
+   `int8-parser\critique\critic\repro\`; removed 2026-10-06.)
+
+**Found on the way, not fixed: timestamps arrive as `Date` and `Date.parse()`
+drops their milliseconds** (34,361 of 34,402 fixes carry a sub-second part;
+the matcher, the spike filter and the ride processor are all affected). It
+becomes item 1 when this one closes; the notes script writes it up.
 
 **Recommended on 2026-10-04 as the fastest and the safest of three options,
 all three measured.** Julian asked which would take the least time and this is
-the answer; he has not yet given an explicit go-ahead, so get one before
-starting. The order of this list is likewise a recommendation he can change. node-postgres returns `bigint` as text, and nine
+the answer, and he gave the go-ahead on 2026-10-05. The order of this list is a
+recommendation he can change. node-postgres returns `bigint` as text, and nine
 fields in `types/index.ts` are typed `number` while holding text:
 `Segment.id`, `osmWayId`, `startNodeId`, `endNodeId`; `SessionSample.id`,
 `sessionId`; `MatchedRun.segmentId`; `ElevationBucket.segmentId`;
