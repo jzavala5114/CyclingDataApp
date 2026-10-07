@@ -14,24 +14,38 @@ stale.
 
 ### 1. Make every bigint id a number at the driver: one global int8 parser
 
-**IN PROGRESS since 2026-10-05 on branch `global-int8-parser`, NOT merged or
-deployed.** Committed there as a checkpoint: `db/pgTypes.ts` + `pool.ts` import,
-the fallout fixes, and a new eval `npm run eval:query-types` (describes every
-query on the live DB without executing it and checks the declared row types).
-371 backend tests pass. Verified so far: 10 of 14 read-only scripts
-byte-identical from frozen copies of main and the branch (`eval:spikes`,
-`eval:linker`, `eval:quality`, `eval:smoothing` still to run); the branch's
-server, run locally, returns `/segments` identical to production apart from
-numeric ids (hash `0a2be04de99909af`), and a control with a broken join returns
-0 lines. **Still to do:** the critic round-1 findings (a gate test for the
-`/segments` join, which no test covers; the census silently skips bound
-`query` methods, structural clients given a variable, config objects or a
-conditional, wrapper call sites and index-signature rows; 13 of its 14 mutants
-survived), a fresh critic round, then merge, deploy, the live check, and the
-notes. Evidence: `/tmp/int8-parser/critique/`. **Found on the way, not fixed:
-timestamps arrive as `Date` and `Date.parse()` drops their milliseconds**
-(34,361 of 34,402 fixes carry a sub-second part; matcher, spike filter and ride
-processor all affected). It becomes item 1 when this one closes.
+**IN PROGRESS on branch `global-int8-parser` (2026-10-05/06), BUILT AND VERIFIED,
+NOT YET MERGED OR DEPLOYED.** Commits: `1206bed` (the parser, the fallout, the
+new eval `npm run eval:query-types`) and `0bf631d` (critic round 1: a gate test
+on the `/segments` join, now in `services/segmentsResponse.ts`; the census's
+silent blind spots closed). **394 backend tests.** Verified, each with a control:
+all 14 read-only scripts run from frozen copies of main and the branch on
+fingerprinted data, 13 byte-identical and `prune-sessions` differing only in
+printing `'5'` as `5` (`eval:smoothing` exits 1 on BOTH sides, its own verdict:
+see the item below); the branch's server run locally returns `/segments` with
+the same whole-response hash as production, `0a2be04de99909af`, ids now numbers,
+while a broken-join control returns 0 lines; the live census finds 81 sites,
+0 numeric lies, 11 timestamp lies; the production build works with no sibling
+directories; 54 mutants all as expected (`node backend/tmp-mutate-int8.mjs`,
+gitignored).
+
+**In flight when saved:** a cold critic round 2, writing to
+`C:\Users\Julian\AppData\Local\Temp\int8-parser\critique\round2\critic\critic-round-2.md`.
+**To finish, in order:** (1) read that report; fix what it finds and re-run the
+harness; another cold round if it failed. (2) Merge `global-int8-parser` into
+`main` (fast-forward) and push: that deploys. (3) In the session scratchpad
+(`C:\Users\Julian\AppData\Local\Temp\claude\c--Users-Julian-Documents-GitHub-CyclingDataApp\e24d4bb5-018e-46b7-89ee-9dee82f392bf\scratchpad\`):
+`bash watch-deploy.sh` until `builtAt` moves, then `node segments-probe.mjs`,
+which must print hash `0a2be04de99909af` with `idTypes ["number"]`. (4) `node
+notes-int8.mjs <main commit> <builtAt> <test count> "<critic verdict line>"`
+rewrites this file's top for the closed state (dry-run it first with
+`NOTES=<copy>`); commit on a branch, merge, push. (5) Delete the frozen copies
+in `scratchpad\cmp\`: each `backend\node_modules` there is a JUNCTION into the
+repo, so remove the link itself first, never recurse through it. **Found on the
+way, not fixed: timestamps arrive as `Date` and `Date.parse()` drops their
+milliseconds** (34,361 of 34,402 fixes carry a sub-second part; the matcher,
+the spike filter and the ride processor are all affected). It becomes item 1
+when this one closes; the notes script writes it up.
 
 **Recommended on 2026-10-04 as the fastest and the safest of three options,
 all three measured.** Julian asked which would take the least time and this is
