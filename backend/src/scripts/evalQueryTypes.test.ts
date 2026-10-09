@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import ts from "typescript";
-import type { Column, ColumnType, Declared, Description, Kind, QuerySite, RowType } from "./evalQueryTypes.js";
+import type { Column, ColumnType, Declared, Description, Kind, QuerySite, RowType, Scope } from "./evalQueryTypes.js";
 
 // pg's own int8 parser, captured BEFORE the census module loads: it imports
 // db/pool.ts, which replaces this parser for the whole process. The census has
@@ -21,10 +21,8 @@ const {
   judge,
   judgeCensus,
   kindOfValue,
-  loadProgram,
   runCensus,
   showDeclared,
-  unreadModules,
   withReadOnlyTransaction,
 } = await import("./evalQueryTypes.js");
 
@@ -211,6 +209,15 @@ export async function hidden() {
 }
 class DescribeStatement { submit(): void {} }
 export const impostor = () => client.query(new DescribeStatement());
+export async function plainPromise() {
+  return await (plain.query("select 20 as u") as Promise<{ rows: { u: string }[] }>);
+}
+export function anyCallback(handler: any) {
+  pool.query("select 21 as v", handler);
+}
+export function anySubmittable(cursor: any) {
+  client.query(cursor);
+}
 `;
 const FIXTURE_TEST = `import type { Pool } from "pg";
 declare const pool: Pool;
@@ -280,6 +287,8 @@ test("finds every database call however it is reached, and nothing else; test fi
       [53, "pg"], [54, "pg"], [55, "pg"], // callbacks: typed, untyped, with a runtime statement
       [56, "pg"], // a pg.Query
       [60, "pg"], // a Submittable that only shares the census's class name
+      [62, "structural"], // a cast on a plain client's promise
+      [65, "pg"], [68, "pg"], // an argument typed `any`: a callback, a Submittable
     ],
   );
   assert.ok(sites.every((s) => s.file === "src/__census_fixture__.ts"), "the .test.ts fixture was described");
@@ -468,6 +477,29 @@ test("a statement returning no columns has nothing untyped to read, whatever rea
 
 test("a cast on the PROMISE declares the row type, read through to what it resolves to", () => {
   assert.deepEqual(props(at(51)), { p: "number" });
+});
+
+test("...THROUGH A PLAIN CLIENT, where the cast on the promise is the only declaration", () => {
+  // A cold review's round 3: for pg's own generic `query`, TypeScript infers
+  // the row type from the cast by itself, so line 51 passed with the code that
+  // reads the cast removed. A client typed `{ query(text) }` has no generic to
+  // infer, so here only that code can see `u: string`, and without it a lie
+  // would pass as `unknown`.
+  assert.deepEqual(props(at(62)), { u: "string" });
+});
+
+test("AN ARGUMENT TYPED `any` MAY BE A CALLBACK OR A SUBMITTABLE, so it counts as reading the result", () => {
+  // A cold review's round 3: a handler typed `any` in the values slot (pg calls
+  // a function there back with the rows), and a cursor typed `any`, both passed
+  // as "not read". The census cannot see what an `any` is, so it assumes the
+  // reading kind.
+  assert.equal(at(65).resultUsed, true);
+  assert.equal(at(65).declared.kind, "any");
+  assert.equal(census(at(65), [idColumn]).pass, false, "untyped, and read through the handler");
+  assert.deepEqual(at(68).statements, []);
+  assert.match(at(68).unresolved!, /^an argument typed `any`: it may be a Submittable/);
+  assert.equal(at(68).resultUsed, true);
+  assert.deepEqual(judgeCensus([at(68)], new Map(), types).unchecked, [at(68)]);
 });
 
 test("a cast on `.rows` is not read as a declaration: untyped, so it fails rather than passing unread", () => {
@@ -702,12 +734,12 @@ const commandSites = (aIs: Kind = "number"): QuerySite[] => [
 ];
 
 /** Runs the command's body; gives back what it printed and the exit code it set, then restores the real one. */
-async function command(client: pg.PoolClient, sites: QuerySite[], outside: string[] = []) {
+async function command(client: pg.PoolClient, sites: QuerySite[], scope?: Scope) {
   const printed: string[] = [];
   const before = process.exitCode;
   process.exitCode = undefined;
   try {
-    const result = await runCensus(client, sites, outside, (line) => printed.push(line));
+    const result = await runCensus(client, sites, scope, (line) => printed.push(line));
     return { result, printed, exitCode: process.exitCode };
   } finally {
     process.exitCode = before;
@@ -750,11 +782,11 @@ test("A FAILING CENSUS FAILS THE PROCESS, and a passing one leaves the exit code
   // that set it, in main(), and every test still passed.
   const passing = await command(fakeDatabase(COLUMNS).client, commandSites());
   assert.equal(passing.exitCode, undefined);
-  assert.equal(passing.printed.at(-1), "0 lies, 0 undescribed, 0 unchecked, 0 untyped and read, 0 folded. PASS");
+  assert.equal(passing.printed.at(-1), "0 lies, 0 undescribed, 0 unchecked, 0 untyped and read, 0 folded, 0 outside unaccepted. PASS");
 
   const lying = await command(fakeDatabase(COLUMNS).client, commandSites("string"));
   assert.equal(lying.exitCode, 1);
-  assert.equal(lying.printed.at(-1), "1 lies, 0 undescribed, 0 unchecked, 0 untyped and read, 0 folded. FAIL");
+  assert.equal(lying.printed.at(-1), "1 lies, 0 undescribed, 0 unchecked, 0 untyped and read, 0 folded, 0 outside unaccepted. FAIL");
   assert.ok(
     lying.printed.some((line) => /^ {2}src\/x\.ts:10 \[1\] +a +int8 +-> number +declared string$/.test(line)),
     lying.printed.join("\n"),
@@ -789,41 +821,34 @@ test("A FAILING REPORT NAMES EVERY SITE THAT FAILED IT, each under its own headi
   assert.match(under("UNCHECKED"), /^ {2}src\/x\.ts:50 +text, a parameter of run\(\)$/);
   assert.match(under("UNTYPED AND READ"), /^ {2}src\/x\.ts:40 +c /);
   assert.match(under("FOLDED TO LOWER CASE"), /^ {2}src\/x\.ts:60 +segmentId$/);
-  assert.equal(printed.at(-1), "1 lies, 1 undescribed, 1 unchecked, 1 untyped and read, 1 folded. FAIL");
+  assert.equal(printed.at(-1), "1 lies, 1 undescribed, 1 unchecked, 1 untyped and read, 1 folded, 0 outside unaccepted. FAIL");
   assert.equal(exitCode, 1);
 });
 
-test("the report names what the census cannot read, so nothing is skipped in silence", { timeout: 2000 }, async () => {
-  const { printed } = await command(fakeDatabase(COLUMNS).client, commandSites(), ["../osm-pipeline/scripts/lib/linkPlan.d.mts"]);
-  const outside = printed.findIndex((line) => line.startsWith("OUTSIDE THE CENSUS"));
-  assert.ok(outside >= 0, printed.join("\n"));
-  assert.equal(printed[outside + 1], "  ../osm-pipeline/scripts/lib/linkPlan.d.mts");
-  assert.ok(printed.some((line) => line.startsWith("NOTHING TO CHECK")));
+test("CODE THE CENSUS CANNOT READ FAILS IT, unless accepted by hand with a reason, which the report prints", { timeout: 2000 }, async () => {
+  // A cold review: linkPlan.mjs runs on the backend's client and its rows are
+  // read, yet the census passed it, against its own rule for queries it cannot
+  // read. Now each such module must be named in ACCEPTED_OUTSIDE, with why.
+  const lib = "../elsewhere/lib.d.mts";
+  const accepted = await command(fakeDatabase(COLUMNS).client, commandSites(), { outside: [lib], accepted: { [lib]: "read by hand" } });
+  assert.equal(accepted.result.pass, true);
+  const listed = accepted.printed.findIndex((line) => line.startsWith("OUTSIDE THE CENSUS, ACCEPTED BY HAND"));
+  assert.equal(accepted.printed[listed + 1], `  ${lib}: read by hand`);
+
+  const unaccepted = await command(fakeDatabase(COLUMNS).client, commandSites(), { outside: [lib], accepted: {} });
+  assert.deepEqual(unaccepted.result.unacceptedOutside, [lib]);
+  assert.equal(unaccepted.exitCode, 1);
+  const named = unaccepted.printed.findIndex((line) => line.startsWith("OUTSIDE THE CENSUS, NOT ACCEPTED"));
+  assert.equal(unaccepted.printed[named + 1], `  ${lib}`);
+  assert.equal(unaccepted.printed.at(-1), "0 lies, 0 undescribed, 0 unchecked, 0 untyped and read, 0 folded, 1 outside unaccepted. FAIL");
+
+  // An entry whose module is gone fails too, so the list cannot rot.
+  const gone = await command(fakeDatabase(COLUMNS).client, commandSites(), { outside: [], accepted: { [lib]: "read by hand" } });
+  assert.deepEqual(gone.result.acceptedGone, [lib]);
+  assert.equal(gone.exitCode, 1);
+  assert.ok(gone.printed.some((line) => line.startsWith("ACCEPTED BUT GONE")));
 });
 
-// -- the census over the real program --------------------------------------------
-
-test("THE REAL PROGRAM: every directory is searched, under the config that also sees evalLinkerFold.ts", () => {
-  // Every other test here runs on a fixture, so a cold review could point the
-  // census at tsconfig.json (which drops evalLinkerFold.ts), or skip routes/ or
-  // scripts/, and nothing failed. This loads what `npm run typecheck` loads.
-  const real = loadProgram(backendDir);
-  const found = findQuerySites(real, backendDir);
-  const files = new Set(found.map((s) => s.file));
-  for (const file of [
-    "src/routes/segments.ts",
-    "src/routes/sessions.ts",
-    "src/services/usableSessions.ts",
-    "src/scripts/findHoles.ts",
-    "src/scripts/evalLinkerFold.ts",
-  ]) {
-    assert.ok(files.has(file), `no query found in ${file}`);
-  }
-  assert.ok(![...files].some((file) => file.endsWith(".test.ts")), "a test's fake was taken for a query");
-  // The census's own describe is a Submittable, named, and delivers no rows.
-  const own = found.filter((s) => s.unresolved?.startsWith("DescribeStatement"));
-  assert.deepEqual(own.map((s) => [s.file, s.resultUsed]), [["src/scripts/evalQueryTypes.ts", false]]);
-  // osm-pipeline's linkPlan.mjs runs on the backend's client and is read
-  // through a declaration file: named, because its queries are not checked.
-  assert.deepEqual(unreadModules(real, backendDir), ["../osm-pipeline/scripts/lib/linkPlan.d.mts"]);
-});
+// The census over the real program, with the wiring main() uses, is in
+// evalQueryTypes.program.test.ts: loading the program costs about a second, and
+// a file of its own runs in parallel with this one.

@@ -66,12 +66,15 @@ only, so nothing executes, not even an `INSERT ... RETURNING`, and the session
 is read-only besides. Exits 1 on any lie; on any statement it could not
 describe; on any query whose result is read but whose statement it cannot read
 (built at runtime, or a Submittable such as `pg.Query`); on rows typed `any`
-that the code reads; and on a declared column that comes back under its
-lower-cased name (an unquoted alias). JavaScript the program runs through a
-declaration file, osm-pipeline's `linkPlan.mjs`, is outside what it can read,
-and the report names it. **It fails today, on purpose:** eleven `timestamptz`
-columns are declared `string` and arrive as `Date` (see `context/session.md`).
-Run it after any change to a query or a row type.
+that the code reads; on a declared column that comes back under its
+lower-cased name (an unquoted alias); when it finds no queries at all; and on
+code the program runs that it cannot read, unless `ACCEPTED_OUTSIDE` in
+`src/scripts/evalQueryTypes.ts` names it with why it is safe. One module is
+named there today: osm-pipeline's `linkPlan.mjs`, which `evalLinkerFold.ts` runs
+through a declaration file. An entry whose module is gone fails it too. **It
+fails today, on purpose:** eleven `timestamptz` columns are declared `string`
+and arrive as `Date` (see `context/session.md`). Run it after any change to a
+query or a row type.
 
 `npm run eval:linker` scores a **pipeline** decision by its effect on the
 backend. `osm-pipeline/scripts/link_canonical.mjs` decides which segments are

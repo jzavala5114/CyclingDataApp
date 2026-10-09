@@ -23,10 +23,12 @@ import { pool } from "../db/pool.js";
 // could not write. `DescribeStatement` is tested for the first, and
 // `runCensus`, which is everything the command does after finding the queries,
 // is tested for both against a fake client that records what it is sent.
+// `censusCommand`, which finds them, is run over the real program in a test.
 //
 // Its reach is the TypeScript program `npm run typecheck` sees, tests excluded.
 // A module that program imports as JavaScript, with only a declaration file
-// here, is code the census cannot read: it is listed by name, not skipped.
+// here, is code the census cannot read: it fails the census unless
+// ACCEPTED_OUTSIDE names it with the reason it is safe.
 //
 // Read-only.
 //
@@ -36,8 +38,10 @@ import { pool } from "../db/pool.js";
 // statement could not be described, when a query's result is read but its
 // statement is not readable here (built at runtime, or a Submittable), when a
 // query's rows are read but typed `any`, when a declared column comes back
-// under a lower-cased name, or when it found no queries at all. A census that
-// skipped a query has not shown that the query is fine.
+// under a lower-cased name, when it found no queries at all, or when the
+// program runs code outside its reach that ACCEPTED_OUTSIDE does not name (or
+// names, and the program no longer has). A census that skipped a query has not
+// shown that the query is fine.
 
 /** What a declared TypeScript type, or a value the driver produced, is at runtime. */
 export type Kind =
@@ -151,8 +155,8 @@ export function findQuerySites(program: ts.Program, backendDir: string): QuerySi
  * Declaration files outside node_modules: the code behind each is outside what
  * the census reads. Today that is one, osm-pipeline's linkPlan.d.mts, through
  * which evalLinkerFold.ts runs linkPlan.mjs on the backend's own client. Its
- * queries are not checked here, so the report names it rather than passing it
- * in silence.
+ * queries are not checked here, so it fails the census unless ACCEPTED_OUTSIDE
+ * names it.
  */
 export function unreadModules(program: ts.Program, backendDir: string): string[] {
   // TypeScript's own lib files live in node_modules too, so they are excluded here.
@@ -161,6 +165,19 @@ export function unreadModules(program: ts.Program, backendDir: string): string[]
     .filter((file) => file.isDeclarationFile && !/[\\/]node_modules[\\/]/.test(file.fileName))
     .map((file) => relative(backendDir, file.fileName));
 }
+
+/**
+ * Code the program runs that the census cannot read, each read by hand, with
+ * why it is safe. Anything else outside the census fails it, and so does an
+ * entry here whose module the program no longer has, so this list cannot rot.
+ */
+export const ACCEPTED_OUTSIDE: Readonly<Record<string, string>> = {
+  "../osm-pipeline/scripts/lib/linkPlan.d.mts":
+    "osm-pipeline's linkPlan.mjs. The backend runs only its buildLinkPlan, from " +
+    "evalLinkerFold.ts, a local tool the server never loads. That reads every id " +
+    "through Number() and its node ids out of json_agg, so it computes the same on " +
+    "either driver. Its write path, applyWrites, runs only from osm-pipeline itself.",
+};
 
 // A database call is node-postgres' own `query`, decided by the declaration the
 // call RESOLVES to rather than by how it is spelled, so `pool["query"](...)`
@@ -185,8 +202,13 @@ function queryCall(call: ts.CallExpression, checker: ts.TypeChecker): QuerySite[
 // the census's own DescribeStatement, which executes nothing and so delivers
 // no rows at all. A first version dropped every Submittable without a line,
 // and a `new pg.Query("select id from segments")` vanished from the report.
+// An argument typed `any` could be one, so it counts as one: the census cannot
+// see what it is.
 function submittableOf(arg: ts.Expression, checker: ts.TypeChecker): { what: string; delivers: boolean } | null {
   const type = checker.getTypeAtLocation(arg);
+  if (type.flags & ts.TypeFlags.Any) {
+    return { what: "an argument typed `any`: it may be a Submittable, whose statement and rows are not visible here", delivers: true };
+  }
   if (type.getProperty("submit") === undefined) return null;
   const symbol = type.getSymbol();
   // An anonymous type's symbol is called "__type", which names nothing.
@@ -273,8 +295,11 @@ function whatIsUnknown(node: ts.Expression, checker: ts.TypeChecker): string {
 // statement of its own. Assigned, returned, chained or passed on, it is read,
 // and so it is when the call hands pg a callback, which receives the result
 // however the call itself stands: `pool.query(sql, (err, r) => r.rows...)`.
+// An argument typed `any` may be that callback: pg takes a function in the
+// values slot as one, and the census cannot see what it is.
 function resultUsed(call: ts.CallExpression, checker: ts.TypeChecker): boolean {
   if (callbackOf(call, checker) !== undefined) return true;
+  if (call.arguments.slice(1).some((arg) => checker.getTypeAtLocation(arg).flags & ts.TypeFlags.Any)) return true;
   let node: ts.Node = call;
   while (ts.isAwaitExpression(node.parent) || ts.isParenthesizedExpression(node.parent)) node = node.parent;
   return !ts.isExpressionStatement(node.parent);
@@ -601,8 +626,24 @@ export interface Census {
    * `segmentid` and the declared `segmentId` is undefined on every row.
    */
   caseFolded: { site: QuerySite; name: string }[];
+  /** Code outside the census that ACCEPTED_OUTSIDE names, with why it is safe. */
+  outside: { module: string; why: string }[];
+  /** Code outside the census that nothing accepts: unread, so it fails. */
+  unacceptedOutside: string[];
+  /** Accepted modules the program no longer has: the list has gone stale. */
+  acceptedGone: string[];
   pass: boolean;
 }
+
+/** What the program runs beyond the census's reach, and what has been accepted. */
+export interface Scope {
+  /** What unreadModules found. */
+  outside: string[];
+  /** ACCEPTED_OUTSIDE in the command; a test's own list in a test. */
+  accepted: Readonly<Record<string, string>>;
+}
+
+const NOTHING_OUTSIDE: Scope = { outside: [], accepted: {} };
 
 /**
  * The verdict, from what the code declares and what the database described.
@@ -613,6 +654,7 @@ export function judgeCensus(
   described: Map<QuerySite, Description[]>,
   types: Map<number, ColumnType>,
   parserFor: (oid: number) => ((text: string) => unknown) | undefined = configuredParser,
+  scope: Scope = NOTHING_OUTSIDE,
 ): Census {
   const census: Census = {
     findings: [],
@@ -622,8 +664,16 @@ export function judgeCensus(
     untypedRead: [],
     neverReturned: [],
     caseFolded: [],
+    outside: [],
+    unacceptedOutside: [],
+    acceptedGone: [],
     pass: false,
   };
+  for (const module of scope.outside) {
+    if (Object.hasOwn(scope.accepted, module)) census.outside.push({ module, why: scope.accepted[module]! });
+    else census.unacceptedOutside.push(module);
+  }
+  census.acceptedGone = Object.keys(scope.accepted).filter((module) => !scope.outside.includes(module));
   for (const site of sites) {
     if (site.statements.length === 0) {
       (site.resultUsed ? census.unchecked : census.unread).push(site);
@@ -677,7 +727,9 @@ export function judgeCensus(
     census.undescribed.length === 0 &&
     census.unchecked.length === 0 &&
     census.untypedRead.length === 0 &&
-    census.caseFolded.length === 0;
+    census.caseFolded.length === 0 &&
+    census.unacceptedOutside.length === 0 &&
+    census.acceptedGone.length === 0;
   return census;
 }
 
@@ -701,7 +753,7 @@ const where = (site: QuerySite): string => `${site.file}:${site.line}`;
 export async function runCensus(
   client: pg.PoolClient,
   sites: QuerySite[],
-  outside: string[] = [],
+  scope: Scope = NOTHING_OUTSIDE,
   log: (line: string) => void = console.log,
 ): Promise<Census> {
   const described = new Map<QuerySite, Description[]>();
@@ -725,13 +777,29 @@ export async function runCensus(
     );
     for (const row of rows) types.set(row.oid, row);
   });
-  const census = judgeCensus(sites, described, types);
-  for (const line of report(sites, described, census, outside)) log(line);
+  const census = judgeCensus(sites, described, types, configuredParser, scope);
+  for (const line of report(sites, described, census)) log(line);
   if (!census.pass) process.exitCode = 1;
   return census;
 }
 
-function report(sites: QuerySite[], described: Map<QuerySite, Description[]>, census: Census, outside: string[]): string[] {
+/**
+ * The command over a whole program: every query findQuerySites finds in it,
+ * with the code it cannot read judged against ACCEPTED_OUTSIDE. A cold review
+ * dropped that list from main() and every test passed, so this wiring is run
+ * over the real program in a test too.
+ */
+export function censusCommand(
+  client: pg.PoolClient,
+  program: ts.Program,
+  backendDir: string,
+  log: (line: string) => void = console.log,
+): Promise<Census> {
+  const scope = { outside: unreadModules(program, backendDir), accepted: ACCEPTED_OUTSIDE };
+  return runCensus(client, findQuerySites(program, backendDir), scope, log);
+}
+
+function report(sites: QuerySite[], described: Map<QuerySite, Description[]>, census: Census): string[] {
   const out: string[] = [];
   const int8 = configuredParser(20);
   const statements = sites.reduce((n, s) => n + s.statements.length, 0);
@@ -769,6 +837,12 @@ function report(sites: QuerySite[], described: Map<QuerySite, Description[]>, ce
     census.caseFolded.map(name),
   );
   section(
+    "OUTSIDE THE CENSUS, NOT ACCEPTED: code the program runs that the census cannot read. " +
+      "Bring it into the program, or add it to ACCEPTED_OUTSIDE with why it is safe",
+    census.unacceptedOutside,
+  );
+  section("ACCEPTED BUT GONE: ACCEPTED_OUTSIDE names a module the program no longer has. Remove it", census.acceptedGone);
+  section(
     "RETURNED BUT NOT DECLARED: unreadable without a type error, so harmless unless the name is a typo",
     census.findings.filter((f) => f.verdict === "undeclared").map(row),
   );
@@ -781,14 +855,19 @@ function report(sites: QuerySite[], described: Map<QuerySite, Description[]>, ce
     census.findings.filter((f) => f.verdict === "untyped" && !f.site.resultUsed).map(row),
   );
   section("NOTHING TO CHECK: no statement readable here, and nothing reads a result", census.unread.map(unresolved));
-  section("OUTSIDE THE CENSUS: JavaScript the program runs through a declaration file. Its queries are not read here", outside);
+  section(
+    "OUTSIDE THE CENSUS, ACCEPTED BY HAND: the program runs it, the census cannot read it, and this is why that is safe",
+    census.outside.map(({ module, why }) => `${module}: ${why}`),
+  );
 
   const lies = census.findings.filter((f) => f.verdict === "lie").length;
   const untypedSites = new Set(census.untypedRead.map((f) => f.site)).size;
+  const unaccepted = census.unacceptedOutside.length + census.acceptedGone.length;
   out.push(
     "",
     `${lies} lies, ${census.undescribed.length} undescribed, ${census.unchecked.length} unchecked, ` +
-      `${untypedSites} untyped and read, ${census.caseFolded.length} folded. ${census.pass ? "PASS" : "FAIL"}`,
+      `${untypedSites} untyped and read, ${census.caseFolded.length} folded, ${unaccepted} outside unaccepted. ` +
+      `${census.pass ? "PASS" : "FAIL"}`,
   );
   return out;
 }
@@ -798,7 +877,7 @@ async function main(): Promise<void> {
   const program = loadProgram(backendDir);
   const client = await pool.connect();
   try {
-    await runCensus(client, findQuerySites(program, backendDir), unreadModules(program, backendDir));
+    await censusCommand(client, program, backendDir);
   } finally {
     client.release();
     await pool.end();

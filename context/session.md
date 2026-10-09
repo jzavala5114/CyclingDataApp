@@ -16,12 +16,14 @@ stale.
 
 **IN PROGRESS on branch `global-int8-parser` (2026-10-05 to 10-08): BUILT, NOT
 MERGED OR DEPLOYED. The cold critic's round 2 FAILED it on 2026-10-06; every
-round-2 finding was fixed on 2026-10-08 (see "Round-2 fixes" below), and cold
-critic round 3 is the next step.** Commits: `1206bed` (the parser, the fallout,
-the new eval `npm run eval:query-types`), `0bf631d` (critic round 1's fixes: a
-gate test on the `/segments` join, now `services/segmentsResponse.ts`; census
-blind spots closed), progress saves, then the round-2 fixes. **418 backend
-tests** (394 before them).
+round-2 finding was fixed (`044d29c`, 2026-10-08). Round 3 confirmed all ten
+closed and FAILED it on one new hole, pg's own `parseInt8` switch, plus smaller
+findings, all fixed the same day (see "Round-3 fixes" below); cold critic
+round 4 is the next step.** Commits: `1206bed` (the parser, the fallout, the
+new eval `npm run eval:query-types`), `0bf631d` (critic round 1's fixes: a gate
+test on the `/segments` join, now `services/segmentsResponse.ts`; census blind
+spots closed), progress saves, `044d29c` (round-2 fixes), then the round-3
+fixes. **422 backend tests** (394 before round 2's fixes).
 
 **What the critic is, and why it ran.** CLAUDE.md requires that a change be
 attacked before it ships by a separate sub-agent that did not build it: a
@@ -157,6 +159,46 @@ substance is here).
   during its review: the last pair completed at 19:27 on 2026-10-06 (progress
   log), and the copy it was handed was rewritten then.
 
+**Round 3 (2026-10-08, on `044d29c`): FAIL, and right.** Scoped, per Julian, to
+re-checking round 2 and attacking the new code: 35 mutants, 16 census probes.
+All ten round-2 findings CLOSED (C1b-C20 killed; C29 survives, correctly). What
+it found, all fixed on 2026-10-08; report in
+`int8-parser\critique\round3\critic\critic-round-3.md`:
+- **F1, major. pg's own switch, `pg.defaults.parseInt8`, got past every guard.**
+  `= true` installs int4's parseInt (rounds past 2^53), `= false` puts pg's
+  text parser back; one line in `src/index.ts` did either with all 418 tests
+  green, and `pgTypes.ts`'s comment claimed it was covered. **Fixed twice
+  over:** `pool.ts` now builds a `CheckedPool` whose `connect()` (which
+  `pool.query` also goes through) asks `driverReplaced()` (exported by
+  `pgTypes.ts` with the two parsers it registers) whether the int8 and int8[]
+  parsers are still its own, and fails the checkout with the reason if not:
+  every spelling, every process, before any row is parsed. And the source scan
+  now flags any mention of `parseInt8`, `setTypeParser` outside `pgTypes.ts`
+  (element access too), and any VALUE reference to pg's Pool or Client outside
+  `pool.ts` (`new (pg.Pool)`, `pg["Pool"]`, destructuring, an aliased import,
+  `pg-pool`), with a walk that must reach named files. The scan catches it at
+  commit time; the tripwire catches what the scan cannot spell.
+- **F2, minor.** An argument typed `any` after the statement now counts as a
+  possible callback (read), and a first argument typed `any` as a possible
+  Submittable (unchecked, fails).
+- **F3, minor.** `main()`'s wiring is now `censusCommand(client, program,
+  backendDir)`, run over the REAL program in `evalQueryTypes.program.test.ts`
+  with a database that describes every statement as columnless. And code the
+  census cannot read now FAILS it unless `ACCEPTED_OUTSIDE` names it with why
+  it is safe (linkPlan.mjs is the one entry); an entry whose module is gone
+  fails too.
+- **F4, minor.** The promise-cast test could not fail for pg's own query,
+  because TypeScript infers the generic from the cast; a plain-client fixture
+  (line 62) now needs the code.
+- **F5-F7, nits.** Scan spellings (above); the README's exit list completed;
+  the round-3 census output cited a line one off from the commit (it ran on the
+  working tree before two comment edits), so round 4's census is run from the
+  committed tree; `round3\before-after-summary.tsv` is round 2's, carried over
+  (labelled as such in `round4\README.txt`).
+- **The gate's time:** the suite takes about 3.5 s (it was 3.3 s at 394 tests,
+  already over CLAUDE.md's 2 s before this work); the real-program tests sit in
+  their own file so they run in parallel.
+
 **Verified, and not to redo unless a fix touches it:** all 14 read-only scripts
 run from frozen copies of main and the branch on fingerprinted data, 13
 byte-identical and `prune-sessions` differing only in printing `'5'` as `5`
@@ -168,14 +210,15 @@ own describe became a site), 0 numeric lies, 11 timestamp lies; the production
 build compiles with no sibling directories. The `/segments` rehearsal was not
 repeated for the round-2 fixes: `routes/segments.ts` is unchanged since it ran,
 and `routes/sessions.ts` gained only a type annotation, which compiles away.
+Round 3's tripwire DOES change the server's query path (every checkout now
+passes through `CheckedPool.connect`), so the rehearsal and three quick
+read-only scripts are re-run for it: results in `int8-parser\critique\round4\`.
 
-**How much is left, in order (working time, roughly 1.5 hours plus the
-critic):**
-1. **Cold critic round 3**, in the background. Julian asked on 2026-10-08 to
-   keep sub-agent use down, so it is scoped: re-check each round-2 finding and
-   attack only this round's new code. The brief is
-   `int8-parser\critique\round3\critic-brief.md`; its verdict goes to
-   `round3\critic\critic-round-3.md`. Loop until it passes; a round that cannot
+**How much is left, in order (working time, roughly 1 hour plus the critic):**
+1. **Cold critic round 4**, in the background, scoped like round 3 (Julian
+   asked on 2026-10-08 to keep sub-agent use down): re-check round 3's
+   findings and attack only the new code. Brief and verdict in
+   `int8-parser\critique\round4\`. Loop until it passes; a round that cannot
    pass names what is missing.
 2. **Ship, about 15 min, after Julian's go-ahead, since merging deploys.**
    Merge `global-int8-parser` into `main`
