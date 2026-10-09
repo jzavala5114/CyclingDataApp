@@ -55,7 +55,7 @@ async function main(): Promise<void> {
   // here legitimately -- riding somewhere with no imported segments, or a ride
   // too short to clear the traversal gate -- so it is a list to look at, not a
   // list to act on.
-  const { rows: unmatched } = await pool.query(
+  const { rows: unmatched } = await pool.query<{ id: number; started_at: Date; ended_at: Date | null; samples: number }>(
     `select s.id, s.started_at, s.ended_at,
             (select count(*)::int from session_samples x where x.session_id = s.id) as samples
        from sessions s

@@ -63,9 +63,14 @@ check that can tell a column declared `number` is arriving as text: the
 compiler checks code against the declared type, and the tests feed it fixtures
 built from that same declaration. It sends each statement as Parse + Describe
 only, so nothing executes, not even an `INSERT ... RETURNING`, and the session
-is read-only besides. Exits 1 on any lie, and on any statement it could not
-describe. **It fails today, on purpose:** eleven `timestamptz` columns are
-declared `string` and arrive as `Date` (see `context/session.md`, NEXT item 1).
+is read-only besides. Exits 1 on any lie; on any statement it could not
+describe; on any query whose result is read but whose statement it cannot read
+(built at runtime, or a Submittable such as `pg.Query`); on rows typed `any`
+that the code reads; and on a declared column that comes back under its
+lower-cased name (an unquoted alias). JavaScript the program runs through a
+declaration file, osm-pipeline's `linkPlan.mjs`, is outside what it can read,
+and the report names it. **It fails today, on purpose:** eleven `timestamptz`
+columns are declared `string` and arrive as `Date` (see `context/session.md`).
 Run it after any change to a query or a row type.
 
 `npm run eval:linker` scores a **pipeline** decision by its effect on the

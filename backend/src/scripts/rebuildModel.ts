@@ -83,7 +83,7 @@ try {
   client.release();
 }
 
-const { rows: summary } = await pool.query(
+const { rows: summary } = await pool.query<{ buckets: number; segments: number; implausible: number }>(
   `select count(*)::int as buckets,
           count(distinct segment_id)::int as segments,
           count(*) filter (where elevation_m < $1 or elevation_m > 3000)::int as implausible

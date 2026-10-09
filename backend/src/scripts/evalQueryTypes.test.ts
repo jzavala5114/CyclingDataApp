@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import ts from "typescript";
-import type { ColumnType, Declared, Description, Kind, QuerySite, RowType } from "./evalQueryTypes.js";
+import type { Column, ColumnType, Declared, Description, Kind, QuerySite, RowType } from "./evalQueryTypes.js";
 
 // pg's own int8 parser, captured BEFORE the census module loads: it imports
 // db/pool.ts, which replaces this parser for the whole process. The census has
@@ -21,7 +21,10 @@ const {
   judge,
   judgeCensus,
   kindOfValue,
+  loadProgram,
+  runCensus,
   showDeclared,
+  unreadModules,
   withReadOnlyTransaction,
 } = await import("./evalQueryTypes.js");
 
@@ -193,6 +196,21 @@ export async function generic<T extends QueryResultRow>() {
 declare const methodClient: { query(text: string): Promise<{ rows: unknown[] }> };
 export const viaMethod = methodClient.query("select 12 as n");
 export const viaElement = plain["query"]("select 13 as o");
+import { Query, type QueryResult } from "pg";
+declare function use(...values: unknown[]): void;
+export async function hidden() {
+  const { rows: holes } = await pool.query("select 14 as id");
+  const crash = holes[0].id.padStart(6);
+  const viaPromise = await (pool.query("select 15 as p") as Promise<QueryResult<{ p: number }>>);
+  const onRows = (await pool.query("select 16 as q")).rows as { q: string }[];
+  pool.query("select 17 as r", (err: Error, r: QueryResult<{ r: string }>) => use(err, r.rows));
+  pool.query("select 18 as s", (err, r) => use(err, r.rows));
+  pool.query(sqlVar, (err, r) => use(err, r.rows));
+  client.query(new Query<{ t: number }>("select 19 as t"));
+  return [crash, viaPromise, onRows];
+}
+class DescribeStatement { submit(): void {} }
+export const impostor = () => client.query(new DescribeStatement());
 `;
 const FIXTURE_TEST = `import type { Pool } from "pg";
 declare const pool: Pool;
@@ -253,19 +271,40 @@ test("finds every database call however it is reached, and nothing else; test fi
       [33, "pg"], // a config object
       [34, "pg"], // a choice between constants
       [35, "pg"], // an index signature
+      [36, "pg"], // a Submittable
       [37, "pg"], // runtime text, result discarded
       [41, "pg"], // a type parameter for a row
       [44, "structural"], // a method named query, declared outside pg
       [45, "structural"], // plain["query"]
+      [49, "pg"], [51, "pg"], [52, "pg"], // untyped, a cast on the promise, a cast on .rows
+      [53, "pg"], [54, "pg"], [55, "pg"], // callbacks: typed, untyped, with a runtime statement
+      [56, "pg"], // a pg.Query
+      [60, "pg"], // a Submittable that only shares the census's class name
     ],
   );
   assert.ok(sites.every((s) => s.file === "src/__census_fixture__.ts"), "the .test.ts fixture was described");
 });
 
-test("NOT a database call: a `.query(5)` on something else, and a Submittable", () => {
-  // Line 25 takes a number; line 36 hands pg a cursor-like object, which pg
-  // submits itself rather than parsing as SQL. Neither may be described.
-  assert.equal(sites.some((s) => s.line === 25 || s.line === 36), false);
+test("NOT a database call: a `.query(5)` on something else", () => {
+  assert.equal(sites.some((s) => s.line === 25), false);
+});
+
+test("A SUBMITTABLE IS A QUERY THE CENSUS CANNOT READ, named and counted as read, never dropped", () => {
+  // A cold review's probe: `client.query(new pg.Query("select id from
+  // segments"))` produced no site and no line. pg hands a Submittable the
+  // connection, so its statement is not readable here, and its rows reach the
+  // code through the object itself, wherever that is read. So it fails.
+  assert.deepEqual(at(56).statements, []);
+  assert.match(at(56).unresolved!, /^a Submittable \(Query\)/);
+  assert.equal(at(56).resultUsed, true);
+  assert.match(at(36).unresolved!, /^a Submittable \(\{ submit/);
+  assert.equal(at(36).resultUsed, true, "even when the call stands alone");
+  // Only the census's own class, from its own file, is exempt: not its name.
+  assert.match(at(60).unresolved!, /^a Submittable \(DescribeStatement\)/);
+  assert.equal(at(60).resultUsed, true);
+  const census = judgeCensus([at(56)], new Map(), types);
+  assert.deepEqual(census.unchecked, [at(56)]);
+  assert.equal(census.pass, false);
 });
 
 test("THE CALLS THE FIRST VERSION MISSED IN SILENCE are found: element access and a bound copy", () => {
@@ -397,10 +436,86 @@ test("CENSUS: a runtime statement whose result is READ fails it; one whose resul
   assert.equal(judgeCensus([discarded], new Map(), types).pass, true);
 });
 
-test("CENSUS: `any` rows are untyped column by column, and do not fail it", () => {
-  const result = census(site({ declared: { kind: "any" } }), [idColumn]);
-  assert.deepEqual(result.findings.map((f) => f.verdict), ["untyped"]);
+test("CENSUS: `any` rows that are READ fail it; the same rows with the result discarded do not", () => {
+  // A cold review's first finding: rows typed `any` passed, so the census
+  // passed code it had not checked at all.
+  const read = census(site({ declared: { kind: "any" } }), [idColumn]);
+  assert.deepEqual(read.findings.map((f) => f.verdict), ["untyped"]);
+  assert.deepEqual(read.untypedRead.map((f) => f.column), ["id"]);
+  assert.equal(read.pass, false);
+  const discarded = census(site({ declared: { kind: "any" }, resultUsed: false }), [idColumn]);
+  assert.deepEqual(discarded.untypedRead, []);
+  assert.equal(discarded.pass, true);
+});
+
+test("THE CRASH IT USED TO PASS: findHoles' `.padStart` on an int8, with the row type taken away", () => {
+  // Fixture line 49: `holes[0].id.padStart(6)` on untyped rows compiles, and
+  // throws on the configured driver. The census passed it until untyped rows
+  // that are read failed it.
+  assert.equal(at(49).declared.kind, "any");
+  assert.equal(at(49).resultUsed, true);
+  const result = census(at(49), [idColumn]);
+  assert.deepEqual(result.untypedRead.map((f) => [f.site.line, f.column]), [[49, "id"]]);
+  assert.equal(result.pass, false);
+});
+
+test("a statement returning no columns has nothing untyped to read, whatever reads its rowCount", () => {
+  // routes/sessions.ts DELETE: `const { rowCount } = await pool.query("delete ...")`.
+  const result = census(site({ declared: { kind: "any" } }), [{ columns: [] }]);
+  assert.deepEqual(result.untypedRead, []);
   assert.equal(result.pass, true);
+});
+
+test("a cast on the PROMISE declares the row type, read through to what it resolves to", () => {
+  assert.deepEqual(props(at(51)), { p: "number" });
+});
+
+test("a cast on `.rows` is not read as a declaration: untyped, so it fails rather than passing unread", () => {
+  // Reading every place rows can be typed after the call is a chase with no
+  // end (rows handed to a typed function, a typed `.then`). The census reads
+  // the generic, a cast on the result, and a callback's parameter; anything
+  // else is `any`, and `any` that is read fails, so it cannot pass by accident.
+  assert.equal(at(52).declared.kind, "any");
+  assert.equal(at(52).resultUsed, true);
+});
+
+test("CALLBACK STYLE reads the result: typed from the callback's parameter, untyped when it has none", () => {
+  // A cold review's probe: the callback's rows were never seen, and a runtime
+  // statement with a callback was filed as "result not read".
+  assert.equal(at(53).resultUsed, true);
+  assert.deepEqual(props(at(53)), { r: "string" });
+  assert.equal(at(54).resultUsed, true);
+  assert.equal(at(54).declared.kind, "any");
+  assert.equal(at(55).resultUsed, true, "a runtime statement whose callback reads the rows");
+  assert.deepEqual(judgeCensus([at(55)], new Map(), types).unchecked, [at(55)]);
+});
+
+test("AN UNQUOTED camelCase ALIAS fails: Postgres folds it to lower case, so the declared name is always undefined", () => {
+  // `select segment_id as segmentId` returns a column named "segmentid".
+  const row: RowType = { kind: "typed", props: new Map([["segmentId", declared(["number"])]]), index: null };
+  const result = census(site({ declared: row }), [{ columns: [{ name: "segmentid", oid: 20 }] }]);
+  assert.deepEqual(result.caseFolded.map((c) => c.name), ["segmentId"]);
+  assert.deepEqual(result.neverReturned, []);
+  assert.equal(result.pass, false);
+});
+
+test("a declared column that is simply absent is listed, and does not fail it", () => {
+  // The shared-interface case: SessionSample declared, a query filling part of it.
+  const row: RowType = { kind: "typed", props: new Map([["id", declared(["number"])], ["sessionId", declared(["number"])]]), index: null };
+  const result = census(site({ declared: row }), [idColumn]);
+  assert.deepEqual(result.neverReturned.map((n) => n.name), ["sessionId"]);
+  assert.deepEqual(result.caseFolded, []);
+  assert.equal(result.pass, true);
+});
+
+test("CENSUS: no sites at all fails it: a census that found nothing has checked nothing", () => {
+  assert.equal(judgeCensus([], new Map(), types).pass, false);
+});
+
+test("CENSUS: a column whose type the database did not describe stops it, rather than being skipped", () => {
+  // runCensus asks pg_type for every type it was described, so this cannot
+  // happen against the real server; if it ever does, a column is not dropped.
+  assert.throws(() => census(site(), [{ columns: [{ name: "id", oid: 99999 }] }]), /src\/x\.ts:1: no pg_type row for oid 99999/);
 });
 
 test("CENSUS: rows typed `unknown` pass every column honestly", () => {
@@ -522,4 +637,193 @@ test("anything that only follows an Execute is refused loudly", () => {
   assert.throws(() => statement.handleEmptyQuery(), /something was executed/);
   assert.throws(() => statement.handlePortalSuspended(), /something was executed/);
   assert.throws(() => statement.handleCopyInResponse(), /something was executed/);
+});
+
+// -- the command: what reaches the database, and whether failing fails ----------
+
+const PG_TYPE: Record<number, ColumnType> = {
+  16: BOOL,
+  20: INT8,
+  25: { typname: "text", category: "S", elementCategory: null },
+};
+
+/**
+ * The live database as runCensus meets it, answering by statement text the way
+ * the server does and recording everything it is sent: text as it is, a
+ * DescribeStatement as `DESCRIBE <text>`, anything else as EXECUTED.
+ */
+const fakeDatabase = (columnsOf: Record<string, Column[]>) => {
+  const sent: string[] = [];
+  const client = {
+    query: (arg: unknown, values?: unknown[]) => {
+      if (typeof arg === "string") {
+        if (!/from pg_type/.test(arg)) {
+          sent.push(arg);
+          return Promise.resolve({ rows: [] });
+        }
+        const oids = values?.[0] as number[];
+        sent.push(`PG_TYPE ${[...oids].sort((a, b) => a - b).join(",")}`);
+        return Promise.resolve({ rows: oids.map((oid) => ({ oid, ...PG_TYPE[oid]! })) });
+      }
+      if (!(arg instanceof DescribeStatement)) {
+        sent.push(`EXECUTED ${JSON.stringify(arg)}`);
+        return Promise.resolve({ rows: [] });
+      }
+      sent.push(`DESCRIBE ${arg.text}`);
+      queueMicrotask(() => {
+        const columns = columnsOf[arg.text];
+        if (columns === undefined) return arg.handleError(new Error(`relation for "${arg.text}" does not exist`));
+        arg.handleRowDescription({ fields: columns.map((c) => ({ name: c.name, dataTypeID: c.oid })) });
+        arg.handleReadyForQuery();
+      });
+      return arg;
+    },
+  } as unknown as pg.PoolClient;
+  return { client, sent };
+};
+
+// Two sites whose columns differ in name and type, the first sending either of
+// two statements, plus a runtime statement nothing reads: descriptions handed
+// to the wrong site would judge the wrong columns.
+const COLUMNS: Record<string, Column[]> = {
+  "select a from t": [{ name: "a", oid: 20 }],
+  "select b from t": [{ name: "b", oid: 25 }],
+  "select c from t": [{ name: "c", oid: 16 }],
+};
+const typedRow = (entries: [string, Kind][]): RowType => ({
+  kind: "typed",
+  props: new Map(entries.map(([name, kind]) => [name, declared([kind])])),
+  index: null,
+});
+const commandSites = (aIs: Kind = "number"): QuerySite[] => [
+  site({ line: 10, statements: ["select a from t", "select b from t"], declared: typedRow([["a", aIs], ["b", "string"]]) }),
+  site({ line: 20, statements: ["select c from t"], declared: typedRow([["c", "boolean"]]) }),
+  site({ line: 30, statements: [], unresolved: "${tuples.join(\", \")}", resultUsed: false }),
+];
+
+/** Runs the command's body; gives back what it printed and the exit code it set, then restores the real one. */
+async function command(client: pg.PoolClient, sites: QuerySite[], outside: string[] = []) {
+  const printed: string[] = [];
+  const before = process.exitCode;
+  process.exitCode = undefined;
+  try {
+    const result = await runCensus(client, sites, outside, (line) => printed.push(line));
+    return { result, printed, exitCode: process.exitCode };
+  } finally {
+    process.exitCode = before;
+  }
+}
+
+test("WHAT THE COMMAND SENDS THE LIVE DATABASE: describes inside BEGIN READ ONLY, then rollback, nothing else", { timeout: 2000 }, async () => {
+  // A cold review's two edits, executing each statement instead of describing
+  // it and dropping READ ONLY, would together have run rebuildModel's three
+  // DELETEs against the production model in autocommit, with every test green:
+  // the safety lived in main(), where no test reached. This pins all of it.
+  const { client, sent } = fakeDatabase(COLUMNS);
+  await command(client, commandSites());
+  assert.deepEqual(sent, [
+    "begin read only",
+    "savepoint describe", "DESCRIBE select a from t", "release savepoint describe",
+    "savepoint describe", "DESCRIBE select b from t", "release savepoint describe",
+    "savepoint describe", "DESCRIBE select c from t", "release savepoint describe",
+    "PG_TYPE 16,20,25",
+    "rollback",
+  ]);
+});
+
+test("EACH SITE IS JUDGED AGAINST ITS OWN STATEMENTS' COLUMNS, a two-statement site included", { timeout: 2000 }, async () => {
+  const { result } = await command(fakeDatabase(COLUMNS).client, commandSites());
+  assert.deepEqual(
+    result.findings.map((f) => [f.site.line, f.statement, f.column, f.typname, f.verdict]),
+    [
+      [10, 0, "a", "int8", "ok"],
+      [10, 1, "b", "text", "ok"],
+      [20, 0, "c", "bool", "ok"],
+    ],
+  );
+  assert.deepEqual(result.unread.map((s) => s.line), [30]);
+  assert.equal(result.pass, true);
+});
+
+test("A FAILING CENSUS FAILS THE PROCESS, and a passing one leaves the exit code alone", { timeout: 2000 }, async () => {
+  // "Can genuinely fail" rests on the exit code. A cold review deleted the line
+  // that set it, in main(), and every test still passed.
+  const passing = await command(fakeDatabase(COLUMNS).client, commandSites());
+  assert.equal(passing.exitCode, undefined);
+  assert.equal(passing.printed.at(-1), "0 lies, 0 undescribed, 0 unchecked, 0 untyped and read, 0 folded. PASS");
+
+  const lying = await command(fakeDatabase(COLUMNS).client, commandSites("string"));
+  assert.equal(lying.exitCode, 1);
+  assert.equal(lying.printed.at(-1), "1 lies, 0 undescribed, 0 unchecked, 0 untyped and read, 0 folded. FAIL");
+  assert.ok(
+    lying.printed.some((line) => /^ {2}src\/x\.ts:10 \[1\] +a +int8 +-> number +declared string$/.test(line)),
+    lying.printed.join("\n"),
+  );
+});
+
+test("a statement the database refuses fails the process too, and the describes after it still run", { timeout: 2000 }, async () => {
+  const { client, sent } = fakeDatabase({ "select c from t": COLUMNS["select c from t"]! });
+  const { result, exitCode } = await command(client, commandSites());
+  assert.deepEqual(result.undescribed.map((u) => u.site.line), [10, 10]);
+  assert.ok(sent.includes("DESCRIBE select c from t"));
+  assert.equal(exitCode, 1);
+});
+
+test("A FAILING REPORT NAMES EVERY SITE THAT FAILED IT, each under its own heading", { timeout: 2000 }, async () => {
+  const failing = [
+    site({ line: 10, statements: ["select a from t"], declared: typedRow([["a", "string"]]) }),
+    site({ line: 40, statements: ["select c from t"], declared: { kind: "any" } }),
+    site({ line: 50, statements: [], unresolved: "text, a parameter of run()" }),
+    site({ line: 60, statements: ["select x as segmentId from t"], declared: typedRow([["segmentId", "number"]]) }),
+    site({ line: 70, statements: ["select nope"] }),
+  ];
+  const db = fakeDatabase({ ...COLUMNS, "select x as segmentId from t": [{ name: "segmentid", oid: 20 }] });
+  const { printed, exitCode } = await command(db.client, failing);
+  const under = (heading: string): string => {
+    const at = printed.findIndex((line) => line.startsWith(heading));
+    assert.ok(at >= 0, `no ${heading} section in:\n${printed.join("\n")}`);
+    return printed[at + 1]!;
+  };
+  assert.match(under("LIES"), /^ {2}src\/x\.ts:10 +a /);
+  assert.match(under("COULD NOT BE DESCRIBED"), /^ {2}src\/x\.ts:70 /);
+  assert.match(under("UNCHECKED"), /^ {2}src\/x\.ts:50 +text, a parameter of run\(\)$/);
+  assert.match(under("UNTYPED AND READ"), /^ {2}src\/x\.ts:40 +c /);
+  assert.match(under("FOLDED TO LOWER CASE"), /^ {2}src\/x\.ts:60 +segmentId$/);
+  assert.equal(printed.at(-1), "1 lies, 1 undescribed, 1 unchecked, 1 untyped and read, 1 folded. FAIL");
+  assert.equal(exitCode, 1);
+});
+
+test("the report names what the census cannot read, so nothing is skipped in silence", { timeout: 2000 }, async () => {
+  const { printed } = await command(fakeDatabase(COLUMNS).client, commandSites(), ["../osm-pipeline/scripts/lib/linkPlan.d.mts"]);
+  const outside = printed.findIndex((line) => line.startsWith("OUTSIDE THE CENSUS"));
+  assert.ok(outside >= 0, printed.join("\n"));
+  assert.equal(printed[outside + 1], "  ../osm-pipeline/scripts/lib/linkPlan.d.mts");
+  assert.ok(printed.some((line) => line.startsWith("NOTHING TO CHECK")));
+});
+
+// -- the census over the real program --------------------------------------------
+
+test("THE REAL PROGRAM: every directory is searched, under the config that also sees evalLinkerFold.ts", () => {
+  // Every other test here runs on a fixture, so a cold review could point the
+  // census at tsconfig.json (which drops evalLinkerFold.ts), or skip routes/ or
+  // scripts/, and nothing failed. This loads what `npm run typecheck` loads.
+  const real = loadProgram(backendDir);
+  const found = findQuerySites(real, backendDir);
+  const files = new Set(found.map((s) => s.file));
+  for (const file of [
+    "src/routes/segments.ts",
+    "src/routes/sessions.ts",
+    "src/services/usableSessions.ts",
+    "src/scripts/findHoles.ts",
+    "src/scripts/evalLinkerFold.ts",
+  ]) {
+    assert.ok(files.has(file), `no query found in ${file}`);
+  }
+  assert.ok(![...files].some((file) => file.endsWith(".test.ts")), "a test's fake was taken for a query");
+  // The census's own describe is a Submittable, named, and delivers no rows.
+  const own = found.filter((s) => s.unresolved?.startsWith("DescribeStatement"));
+  assert.deepEqual(own.map((s) => [s.file, s.resultUsed]), [["src/scripts/evalQueryTypes.ts", false]]);
+  // osm-pipeline's linkPlan.mjs runs on the backend's client and is read
+  // through a declaration file: named, because its queries are not checked.
+  assert.deepEqual(unreadModules(real, backendDir), ["../osm-pipeline/scripts/lib/linkPlan.d.mts"]);
 });

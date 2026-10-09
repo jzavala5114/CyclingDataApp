@@ -5,30 +5,39 @@ import pg from "pg";
 import ts from "typescript";
 import { pool } from "../db/pool.js";
 
-// Asks the live database what every query in the backend returns, and checks
+// Asks the live database what every query in backend/src returns, and checks
 // that against the row type the code declares for it.
 //
 // The generic on `db.query<T>` is an assertion. node-postgres never sees it: it
 // hands JS whatever its parser for each column's Postgres type produces. So for
-// the life of the project `bigint` ids arrived as TEXT while nine interfaces
-// said `number` (paid-for #30), and nothing could notice. The compiler checks
-// code against the declared type, and the tests feed fixtures built from that
-// same declared type. Only the database knows what a column is, so this asks it.
+// the life of the project `bigint` ids arrived as TEXT while nine fields across
+// five interfaces said `number` (paid-for #30), and nothing could notice. The
+// compiler checks code against the declared type, and the tests feed fixtures
+// built from that same declared type. Only the database knows what a column
+// is, so this asks it.
 //
 // It executes nothing. Each statement goes out as Parse + Describe + Sync, the
 // messages a driver uses to learn a statement's result columns before binding
 // it, so an INSERT ... RETURNING is described without being run. The session
 // also sits inside BEGIN READ ONLY, so a statement that somehow did execute
-// could not write. `DescribeStatement` is tested for exactly that.
+// could not write. `DescribeStatement` is tested for the first, and
+// `runCensus`, which is everything the command does after finding the queries,
+// is tested for both against a fake client that records what it is sent.
+//
+// Its reach is the TypeScript program `npm run typecheck` sees, tests excluded.
+// A module that program imports as JavaScript, with only a declaration file
+// here, is code the census cannot read: it is listed by name, not skipped.
 //
 // Read-only.
 //
 //   npm run eval:query-types
 //
 // Exits 1 when a declared type disagrees with what the driver delivers, when a
-// statement could not be described, or when a query's result is read but its
-// statement is only known at runtime. A census that skipped a query has not
-// shown that the query is fine.
+// statement could not be described, when a query's result is read but its
+// statement is not readable here (built at runtime, or a Submittable), when a
+// query's rows are read but typed `any`, when a declared column comes back
+// under a lower-cased name, or when it found no queries at all. A census that
+// skipped a query has not shown that the query is fine.
 
 /** What a declared TypeScript type, or a value the driver produced, is at runtime. */
 export type Kind =
@@ -70,7 +79,8 @@ export interface QuerySite {
   via: "pg" | "structural";
   /**
    * Every statement the call can send, exactly as sent: one for a literal, one
-   * per branch for a choice between literals. Empty when built at runtime.
+   * per branch for a choice between literals. Empty when built at runtime, or
+   * when the call hands pg a Submittable, which sends its own messages.
    */
   statements: string[];
   /** What could not be read, when `statements` is empty. */
@@ -78,7 +88,8 @@ export interface QuerySite {
   /**
    * Whether anything reads the result. `await client.query(sql);` on a line of
    * its own asserts no row type, so a statement the census cannot read there
-   * has nothing to check. Read anywhere else, it is a hole in the census.
+   * has nothing to check. Read anywhere else, including by a callback, it is a
+   * hole in the census.
    */
   resultUsed: boolean;
   declared: RowType;
@@ -95,6 +106,9 @@ export function loadProgram(backendDir: string): ts.Program {
   }
   return ts.createProgram(parsed.fileNames, parsed.options);
 }
+
+const relative = (backendDir: string, fileName: string): string =>
+  path.relative(backendDir, fileName).split(path.sep).join("/");
 
 /**
  * Every database call outside the tests, with the statements it sends and the
@@ -113,14 +127,16 @@ export function findQuerySites(program: ts.Program, backendDir: string): QuerySi
       const via = ts.isCallExpression(node) ? queryCall(node, checker) : null;
       if (via !== null) {
         const call = node as ts.CallExpression;
-        const read = statementsOf(statementNode(call.arguments[0]!), checker);
+        const submitted = submittableOf(call.arguments[0]!, checker);
+        const read: { statements: string[] } | { unresolved: string } =
+          submitted === null ? statementsOf(statementNode(call.arguments[0]!), checker) : { unresolved: submitted.what };
         sites.push({
-          file: path.relative(backendDir, file.fileName).split(path.sep).join("/"),
+          file: relative(backendDir, file.fileName),
           line: file.getLineAndCharacterOfPosition(call.getStart(file)).line + 1,
           via,
           statements: "statements" in read ? read.statements : [],
           ...("unresolved" in read ? { unresolved: read.unresolved } : {}),
-          resultUsed: resultUsed(call),
+          resultUsed: submitted === null ? resultUsed(call, checker) : submitted.delivers,
           declared: declaredRow(call, checker),
         });
       }
@@ -131,6 +147,21 @@ export function findQuerySites(program: ts.Program, backendDir: string): QuerySi
   return sites;
 }
 
+/**
+ * Declaration files outside node_modules: the code behind each is outside what
+ * the census reads. Today that is one, osm-pipeline's linkPlan.d.mts, through
+ * which evalLinkerFold.ts runs linkPlan.mjs on the backend's own client. Its
+ * queries are not checked here, so the report names it rather than passing it
+ * in silence.
+ */
+export function unreadModules(program: ts.Program, backendDir: string): string[] {
+  // TypeScript's own lib files live in node_modules too, so they are excluded here.
+  return program
+    .getSourceFiles()
+    .filter((file) => file.isDeclarationFile && !/[\\/]node_modules[\\/]/.test(file.fileName))
+    .map((file) => relative(backendDir, file.fileName));
+}
+
 // A database call is node-postgres' own `query`, decided by the declaration the
 // call RESOLVES to rather than by how it is spelled, so `pool["query"](...)`
 // and a copy made with `pool.query.bind(pool)` count too, and an unrelated
@@ -138,13 +169,33 @@ export function findQuerySites(program: ts.Program, backendDir: string): QuerySi
 // argument carries SQL text: verifyRebuild and traceOutAndBack type their
 // client as `{ query(text) }` so a test can hand them a fake, and the first
 // version of this census, matching on pg's declaration alone, never saw those
-// queries at all. A Submittable is not a statement, so it is never one.
+// queries at all.
 function queryCall(call: ts.CallExpression, checker: ts.TypeChecker): QuerySite["via"] | null {
   const first = call.arguments[0];
-  if (first === undefined || checker.getTypeAtLocation(first).getProperty("submit") !== undefined) return null;
+  if (first === undefined) return null;
   const declaration = checker.getResolvedSignature(call)?.declaration;
   if (declaration !== undefined && isPgQuery(declaration)) return "pg";
   return calleeIsQuery(call.expression) && carriesText(first, checker) ? "structural" : null;
+}
+
+// A Submittable is an object pg hands the connection to: a `pg.Query`, a
+// cursor, a stream. It sends its own messages, so its statement cannot be read
+// here, and its rows reach the code through the object itself, never through
+// the call's value. So it counts as read, and fails the census, unless it is
+// the census's own DescribeStatement, which executes nothing and so delivers
+// no rows at all. A first version dropped every Submittable without a line,
+// and a `new pg.Query("select id from segments")` vanished from the report.
+function submittableOf(arg: ts.Expression, checker: ts.TypeChecker): { what: string; delivers: boolean } | null {
+  const type = checker.getTypeAtLocation(arg);
+  if (type.getProperty("submit") === undefined) return null;
+  const symbol = type.getSymbol();
+  // An anonymous type's symbol is called "__type", which names nothing.
+  const name = symbol !== undefined && !symbol.getName().startsWith("__") ? symbol.getName() : checker.typeToString(type);
+  const declaredHere = symbol?.declarations?.some((d) => /[\\/]evalQueryTypes\.ts$/.test(d.getSourceFile().fileName));
+  if (name === "DescribeStatement" && declaredHere === true) {
+    return { what: "DescribeStatement: the census's own Parse + Describe, which executes nothing", delivers: false };
+  }
+  return { what: `a Submittable (${name}): it sends its own messages, so its statement is not read here`, delivers: true };
 }
 
 const isPgQuery = (declaration: ts.Declaration): boolean =>
@@ -219,24 +270,49 @@ function whatIsUnknown(node: ts.Expression, checker: ts.TypeChecker): string {
 }
 
 // A result nothing reads asserts no row type: the call, perhaps awaited, is a
-// statement of its own. Assigned, returned, chained or passed on, it is read.
-function resultUsed(call: ts.CallExpression): boolean {
+// statement of its own. Assigned, returned, chained or passed on, it is read,
+// and so it is when the call hands pg a callback, which receives the result
+// however the call itself stands: `pool.query(sql, (err, r) => r.rows...)`.
+function resultUsed(call: ts.CallExpression, checker: ts.TypeChecker): boolean {
+  if (callbackOf(call, checker) !== undefined) return true;
   let node: ts.Node = call;
   while (ts.isAwaitExpression(node.parent) || ts.isParenthesizedExpression(node.parent)) node = node.parent;
   return !ts.isExpressionStatement(node.parent);
 }
 
-// The row type comes from the generic (`db.query<Row>(...)`) or, in a few
-// scripts, from a cast on the awaited result (`(await db.query(...)) as
-// { rows: Row[] }`). Both end up as the element type of `rows`.
+// pg's callback style: a function among the arguments after the statement.
+function callbackOf(call: ts.CallExpression, checker: ts.TypeChecker): { arg: ts.Expression; signature: ts.Signature } | undefined {
+  for (const arg of call.arguments.slice(1)) {
+    const [signature] = checker.getTypeAtLocation(arg).getCallSignatures();
+    if (signature !== undefined) return { arg, signature };
+  }
+  return undefined;
+}
+
+// The row type comes from the generic (`db.query<Row>(...)`), from a cast on
+// the result, awaited (`(await db.query(...)) as { rows: Row[] }`) or not
+// (`await (db.query(...) as Promise<QueryResult<Row>>)`), or from the result
+// parameter of a callback (`(err, r: QueryResult<Row>) => ...`). All of them
+// end up as the element type of `rows`. Anything else, a cast on `.rows`
+// itself, rows handed to a typed function, comes out `any`: unchecked, which
+// fails the census when the rows are read, so it cannot pass by accident.
 function declaredRow(call: ts.CallExpression, checker: ts.TypeChecker): RowType {
-  let outer: ts.Node = call.parent;
-  if (ts.isAwaitExpression(outer)) outer = outer.parent;
-  while (ts.isParenthesizedExpression(outer)) outer = outer.parent;
+  let node: ts.Node = call;
+  let cast: ts.TypeNode | undefined;
+  for (;;) {
+    const parent = node.parent;
+    if (ts.isAsExpression(parent) || ts.isTypeAssertionExpression(parent)) cast = parent.type;
+    else if (!ts.isAwaitExpression(parent) && !ts.isParenthesizedExpression(parent)) break;
+    node = parent;
+  }
+  const callback = callbackOf(call, checker);
+  const resultParameter = callback?.signature.getParameters()[1];
   const result =
-    ts.isAsExpression(outer) || ts.isTypeAssertionExpression(outer)
-      ? checker.getTypeFromTypeNode(outer.type)
-      : checker.getAwaitedType(checker.getTypeAtLocation(call));
+    cast !== undefined
+      ? checker.getAwaitedType(checker.getTypeFromTypeNode(cast))
+      : resultParameter !== undefined
+        ? checker.getTypeOfSymbolAtLocation(resultParameter, callback!.arg)
+        : checker.getAwaitedType(checker.getTypeAtLocation(call));
   const rows = result && checker.getPropertyOfType(result, "rows");
   if (!rows) return { kind: "any" };
   const rowsType = checker.getTypeOfSymbolAtLocation(rows, call);
@@ -512,11 +588,19 @@ export interface Census {
   findings: Finding[];
   /** A statement the database would not describe. */
   undescribed: { site: QuerySite; error: string }[];
-  /** The result is read, but the statement is only known at runtime. */
+  /** The result is read, but the statement is not readable here: built at runtime, or a Submittable. */
   unchecked: QuerySite[];
-  /** Built at runtime, and nothing reads the result: nothing to check. */
+  /** No statement to read, and nothing reads a result: nothing to check. */
   unread: QuerySite[];
+  /** Columns returned to code that reads them through `any`: nothing checks that code. */
+  untypedRead: Finding[];
   neverReturned: { site: QuerySite; name: string }[];
+  /**
+   * A declared column that never comes back while its lower-cased name does.
+   * Postgres folds an unquoted alias to lower case, so `as segmentId` returns
+   * `segmentid` and the declared `segmentId` is undefined on every row.
+   */
+  caseFolded: { site: QuerySite; name: string }[];
   pass: boolean;
 }
 
@@ -530,7 +614,16 @@ export function judgeCensus(
   types: Map<number, ColumnType>,
   parserFor: (oid: number) => ((text: string) => unknown) | undefined = configuredParser,
 ): Census {
-  const census: Census = { findings: [], undescribed: [], unchecked: [], unread: [], neverReturned: [], pass: false };
+  const census: Census = {
+    findings: [],
+    undescribed: [],
+    unchecked: [],
+    unread: [],
+    untypedRead: [],
+    neverReturned: [],
+    caseFolded: [],
+    pass: false,
+  };
   for (const site of sites) {
     if (site.statements.length === 0) {
       (site.resultUsed ? census.unchecked : census.unread).push(site);
@@ -565,11 +658,26 @@ export function judgeCensus(
       }
     });
     if (site.declared.kind === "typed") {
-      for (const name of site.declared.props.keys()) if (!returned.has(name)) census.neverReturned.push({ site, name });
+      for (const name of site.declared.props.keys()) {
+        if (returned.has(name)) continue;
+        const folded = name.toLowerCase();
+        (folded !== name && returned.has(folded) ? census.caseFolded : census.neverReturned).push({ site, name });
+      }
     }
   }
+  // Rows typed `any` that nothing reads assert nothing. Read, they are code the
+  // census passed without checking: the findHoles crash, `.padStart` on an int8,
+  // passed exactly that way once its row type was taken away.
+  census.untypedRead = census.findings.filter((f) => f.verdict === "untyped" && f.site.resultUsed);
   const lies = census.findings.filter((f) => f.verdict === "lie").length;
-  census.pass = lies === 0 && census.undescribed.length === 0 && census.unchecked.length === 0;
+  // A census that found no queries has checked nothing, however clean it reads.
+  census.pass =
+    sites.length > 0 &&
+    lies === 0 &&
+    census.undescribed.length === 0 &&
+    census.unchecked.length === 0 &&
+    census.untypedRead.length === 0 &&
+    census.caseFolded.length === 0;
   return census;
 }
 
@@ -579,69 +687,86 @@ interface TypeRow extends ColumnType {
 
 const where = (site: QuerySite): string => `${site.file}:${site.line}`;
 
-async function main(): Promise<void> {
-  const backendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-  const sites = findQuerySites(loadProgram(backendDir), backendDir);
-
+/**
+ * Everything the command does once it has found the queries: describe every
+ * statement inside a read-only transaction, look up the column types, judge,
+ * print the report, and fail the process when the census fails. It is handed
+ * the connection rather than opening one, so the test drives it with a fake
+ * that records what it is sent. What reaches the live database, and whether a
+ * failing census fails the process, are the two promises this file makes, and
+ * a cold review showed that while main() held this code, it could break either
+ * with every test green: executing statements outside READ ONLY would have run
+ * rebuildModel's three DELETEs against the production model.
+ */
+export async function runCensus(
+  client: pg.PoolClient,
+  sites: QuerySite[],
+  outside: string[] = [],
+  log: (line: string) => void = console.log,
+): Promise<Census> {
   const described = new Map<QuerySite, Description[]>();
   const types = new Map<number, ColumnType>();
-  const client = await pool.connect();
-  try {
-    await withReadOnlyTransaction(client, async () => {
-      const readable = sites.filter((site) => site.statements.length > 0);
-      const descriptions = await describeAll(client, readable.flatMap((site) => site.statements));
-      let next = 0;
-      for (const site of readable) {
-        described.set(site, descriptions.slice(next, next + site.statements.length));
-        next += site.statements.length;
-      }
-      const oids = [...new Set(descriptions.flatMap((d) => ("columns" in d ? d.columns : []).map((c) => c.oid)))];
-      const { rows } = await client.query<TypeRow>(
-        `select t.oid::int as oid, t.typname::text as typname, t.typcategory::text as category,
-                e.typcategory::text as "elementCategory"
-           from pg_type t
-           left join pg_type e on e.oid = t.typelem and t.typcategory = 'A'
-          where t.oid = any($1::int[])`,
-        [oids],
-      );
-      for (const row of rows) types.set(row.oid, row);
-    });
-  } finally {
-    client.release();
-    await pool.end();
-  }
-
+  await withReadOnlyTransaction(client, async () => {
+    const readable = sites.filter((site) => site.statements.length > 0);
+    const descriptions = await describeAll(client, readable.flatMap((site) => site.statements));
+    let next = 0;
+    for (const site of readable) {
+      described.set(site, descriptions.slice(next, next + site.statements.length));
+      next += site.statements.length;
+    }
+    const oids = [...new Set(descriptions.flatMap((d) => ("columns" in d ? d.columns : []).map((c) => c.oid)))];
+    const { rows } = await client.query<TypeRow>(
+      `select t.oid::int as oid, t.typname::text as typname, t.typcategory::text as category,
+              e.typcategory::text as "elementCategory"
+         from pg_type t
+         left join pg_type e on e.oid = t.typelem and t.typcategory = 'A'
+        where t.oid = any($1::int[])`,
+      [oids],
+    );
+    for (const row of rows) types.set(row.oid, row);
+  });
   const census = judgeCensus(sites, described, types);
+  for (const line of report(sites, described, census, outside)) log(line);
+  if (!census.pass) process.exitCode = 1;
+  return census;
+}
+
+function report(sites: QuerySite[], described: Map<QuerySite, Description[]>, census: Census, outside: string[]): string[] {
+  const out: string[] = [];
   const int8 = configuredParser(20);
   const statements = sites.reduce((n, s) => n + s.statements.length, 0);
   const withColumns = sites.filter((s) => (described.get(s) ?? []).some((d) => "columns" in d && d.columns.length > 0));
-  console.log(`query-type census: what the database returns, against what the code declares`);
-  console.log(`driver in this process: bigint arrives as ${int8 ? kindOfValue(int8("1")) : "string"}\n`);
-  console.log(
+  out.push(`query-type census: what the database returns, against what the code declares`);
+  out.push(`driver in this process: bigint arrives as ${int8 ? kindOfValue(int8("1")) : "string"}`, "");
+  out.push(
     `${sites.length} query call sites (${sites.filter((s) => s.via === "structural").length} through a client typed as ` +
       `\`{ query }\` rather than pg's), ${statements} statements described: ${withColumns.length} sites return columns, ` +
-      `${census.unread.length + census.unchecked.length} built at runtime, ${census.undescribed.length} could not be described`,
+      `${census.unread.length + census.unchecked.length} with no statement readable here, ` +
+      `${census.undescribed.length} could not be described`,
   );
 
   const section = (title: string, lines: string[]): void => {
     if (lines.length === 0) return;
-    console.log(`\n${title} (${lines.length})`);
-    for (const line of lines) console.log(`  ${line}`);
+    out.push("", `${title} (${lines.length})`, ...lines.map((line) => `  ${line}`));
   };
   const at = (f: Finding): string => (f.site.statements.length > 1 ? `${where(f.site)} [${f.statement + 1}]` : where(f.site));
   const row = (f: Finding): string =>
     `${at(f).padEnd(44)} ${f.column.padEnd(18)} ${f.typname.padEnd(10)} -> ${showDelivered(f.delivered).padEnd(9)}` +
     (f.declared ? ` declared ${showDeclared(f.declared)}` : "");
+  const name = ({ site, name }: { site: QuerySite; name: string }): string => `${where(site).padEnd(44)} ${name}`;
+  const unresolved = (s: QuerySite): string => `${where(s).padEnd(44)} ${s.unresolved}`;
 
+  if (sites.length === 0) out.push("", "NO QUERY SITES: a census that found nothing has checked nothing");
   section("LIES: the declared type does not admit what the driver delivers", census.findings.filter((f) => f.verdict === "lie").map(row));
   section("COULD NOT BE DESCRIBED", census.undescribed.map(({ site, error }) => `${where(site).padEnd(44)} ${error}`));
+  section("UNCHECKED: the result is read, but its statement is not readable here", census.unchecked.map(unresolved));
   section(
-    "UNCHECKED: the result is read, but the statement is only known at runtime",
-    census.unchecked.map((s) => `${where(s).padEnd(44)} ${s.unresolved}`),
+    "UNTYPED AND READ: rows are `any` and the code reads them, so nothing checks that code. Declare the row type",
+    census.untypedRead.map(row),
   );
   section(
-    "UNTYPED: rows are `any`, so the code reading them cannot be checked here. Read each by hand",
-    census.findings.filter((f) => f.verdict === "untyped").map(row),
+    "FOLDED TO LOWER CASE: Postgres returns an unquoted alias in lower case, so this declared column is always undefined. Quote the alias",
+    census.caseFolded.map(name),
   );
   section(
     "RETURNED BUT NOT DECLARED: unreadable without a type error, so harmless unless the name is a typo",
@@ -649,19 +774,35 @@ async function main(): Promise<void> {
   );
   section(
     "DECLARED BUT NEVER RETURNED: always undefined at runtime. Fine for a shared interface the query only partly fills",
-    census.neverReturned.map(({ site, name }) => `${where(site).padEnd(44)} ${name}`),
+    census.neverReturned.map(name),
   );
   section(
-    "BUILT AT RUNTIME, RESULT NOT READ: no row type is asserted, so nothing to check",
-    census.unread.map((s) => `${where(s).padEnd(44)} ${s.unresolved}`),
+    "UNTYPED, NOT READ: rows are `any`, but nothing reads the result",
+    census.findings.filter((f) => f.verdict === "untyped" && !f.site.resultUsed).map(row),
   );
+  section("NOTHING TO CHECK: no statement readable here, and nothing reads a result", census.unread.map(unresolved));
+  section("OUTSIDE THE CENSUS: JavaScript the program runs through a declaration file. Its queries are not read here", outside);
 
   const lies = census.findings.filter((f) => f.verdict === "lie").length;
-  console.log(
-    `\n${lies} lies, ${census.undescribed.length} undescribed, ${census.unchecked.length} unchecked. ` +
-      `${census.pass ? "PASS" : "FAIL"}`,
+  const untypedSites = new Set(census.untypedRead.map((f) => f.site)).size;
+  out.push(
+    "",
+    `${lies} lies, ${census.undescribed.length} undescribed, ${census.unchecked.length} unchecked, ` +
+      `${untypedSites} untyped and read, ${census.caseFolded.length} folded. ${census.pass ? "PASS" : "FAIL"}`,
   );
-  if (!census.pass) process.exitCode = 1;
+  return out;
+}
+
+async function main(): Promise<void> {
+  const backendDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+  const program = loadProgram(backendDir);
+  const client = await pool.connect();
+  try {
+    await runCensus(client, findQuerySites(program, backendDir), unreadModules(program, backendDir));
+  } finally {
+    client.release();
+    await pool.end();
+  }
 }
 
 // Only when run as the entry point, so the test can import the pieces without

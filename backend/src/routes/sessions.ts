@@ -14,7 +14,7 @@ const createSchema = z.object({ startedAt: z.string().optional() });
 
 sessionsRouter.post("/", asyncRoute(async (req, res) => {
   const { startedAt } = createSchema.parse(req.body ?? {});
-  const { rows } = await pool.query(
+  const { rows } = await pool.query<{ id: number; started_at: Date }>(
     `insert into sessions (started_at)
      values (coalesce($1::timestamptz, now()))
      returning id, started_at`,

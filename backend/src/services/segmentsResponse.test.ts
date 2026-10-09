@@ -56,14 +56,6 @@ test("THE JOIN: a segment's buckets and coverage, filed under their own ids, rea
   assert.ok(Math.abs(drawnM(line!) - 80) < 2, `the coverage lookup hit: drawn ${drawnM(line!).toFixed(1)} m`);
 });
 
-test("THE FAILURE IT GUARDS: one side of the join as text, and the street ships blank without a word", () => {
-  // What a query casting its ids to text would do, or a driver configured on
-  // one side only. "49704" is what pg's default parser returns for an int8.
-  const asText = buckets.map((b) => ({ ...b, segmentId: ID as unknown as number }));
-  const [result] = segmentsWithLines([segment], asText, coverage);
-  assert.deepEqual(result!.directionalLines, []);
-});
-
 test("each segment gets only its own buckets, and one with none is sent without a line", () => {
   const other: Segment = { ...segment, id: int8("49705") };
   const result = segmentsWithLines([segment, other], buckets, coverage);

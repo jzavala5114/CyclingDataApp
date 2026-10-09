@@ -169,9 +169,11 @@ export async function buildLinkPlan(client, { onProgress, batchSize = BATCH } = 
       const path = JSON.parse(row.path_gj).coordinates;
       const roads = row.roads.map((r) => ({ id: Number(r.id), coords: JSON.parse(r.gj).coordinates }));
       const m = measureFrontage(path, roads);
-      // Node ids are bigints, so pg hands them back as strings. Normalise, or
-      // the connectivity test compares a string to a number and finds nothing
-      // connected -- which fails closed, and so would have been invisible.
+      // Node ids arrive inside json_agg, so they are JSON numbers whatever a
+      // driver does with a bigint column. String() keeps the connectivity test
+      // comparing one type should that ever change: comparing a string to a
+      // number finds nothing connected, which fails closed and so would be
+      // invisible.
       const meta = new Map(
         row.roads.map((r) => [Number(r.id), { name: r.name, a: String(r.a), b: String(r.b) }]),
       );

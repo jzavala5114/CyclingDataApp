@@ -1,6 +1,9 @@
 // Every bigint parses as a number before anything can query through this pool.
-// A parser is looked up when each row arrives, so the import has to be HERE, with
-// the only Pool, not first in the file. See pgTypes.ts.
+// pg looks a type's parser up once per result, when its column descriptions
+// arrive, so what matters is that this import has run before the first query.
+// Placing it in the module that builds the only Pool guarantees that: nothing
+// can reach this Pool without loading it. See pgTypes.ts, and pool.test.ts for
+// what checks both.
 import "./pgTypes.js";
 import { Pool } from "pg";
 

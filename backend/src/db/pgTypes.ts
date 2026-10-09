@@ -15,9 +15,9 @@ import { bigintId } from "./pgNumbers.js";
 //
 // **It changes more than the ids.** Every int8 result becomes a number: an
 // uncast `count(*)`, `sum()` over an int column, `row_number()`. `npm run
-// eval:query-types` asks the database for the type of every column every query
-// returns and checks each against the type the code declares, under the driver
-// as configured here.
+// eval:query-types` asks the database for the type of every column each query
+// in backend/src returns and checks it against the type the code declares,
+// under the driver as configured here. Its header says what it cannot read.
 //
 // An int8 too large to be exact throws rather than rounding (see bigintId), and
 // pg turns a throwing parser into a rejected query, so the query that read it
@@ -28,15 +28,16 @@ import { bigintId } from "./pgNumbers.js";
 // (`$1::bigint[]` appears only as a parameter), but `array_agg(id)` would
 // otherwise be the one place an id still arrived as text.
 //
-// `numeric` stays text, deliberately. It is arbitrary precision, and the one
-// numeric this backend reads, `bad_share` in usableSessions.ts, is converted
+// `numeric` stays text, deliberately. It is arbitrary precision. The numeric
+// this backend computes with, `bad_share` in usableSessions.ts, is converted
 // where it is read by numericOrNull, which knows what NULL and Infinity mean
-// there.
+// there; the only other, `len` in evalLinkerFold.ts, is only printed.
 //
 // Its own module so a test can configure the driver exactly as production does
 // by importing it, without building a Pool. `db/pool.ts`, which builds the only
 // Pool, imports it, so no query in the server or any script can run before it
-// has; db/pool.test.ts fails if that import goes.
+// has. db/pool.test.ts fails if that import goes, if a parser that rounds
+// replaces this one, or if any other file builds a Pool or registers a parser.
 
 type TypeId = Parameters<typeof pg.types.getTypeParser>[0];
 
