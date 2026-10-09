@@ -198,6 +198,20 @@ it found, all fixed on 2026-10-08; report in
 - **The gate's time:** the suite takes about 3.5 s (it was 3.3 s at 394 tests,
   already over CLAUDE.md's 2 s before this work); the real-program tests sit in
   their own file so they run in parallel.
+- **Evidence (`int8-parser\critique\round4\`, `8eeeb4f`):** 113 mutants, each
+  against the whole gate suite with survivors typechecked: 109 killed, every
+  round-3 survivor among them, and the 4 controls survive. (Round 1's census
+  mutants and round 3's are both numbered N1, N3, N5 in that log; their
+  descriptions tell them apart.) The live census from the committed tree: 82
+  sites, 11 timestamp lies, nothing else. Rides 86 and 87 landed after
+  2026-10-06, so main's frozen copy and the branch were re-run on today's
+  data: `find-holes` and `verify-barometer` byte-identical, `prune-sessions`
+  differing only in `'5'` against `5`, every exit 0 (the tripwire stays silent
+  in real processes). The `/segments` rehearsal on today's data: production
+  and the branch's server run locally both give whole-response hash
+  `ba5cd316e15be6e4` (746 segments, 953 lines, 5,194 stops), ids text in
+  production and numbers on the branch; production's hash was the same before
+  and after.
 
 **Verified, and not to redo unless a fix touches it:** all 14 read-only scripts
 run from frozen copies of main and the branch on fingerprinted data, 13
@@ -224,19 +238,27 @@ read-only scripts are re-run for it: results in `int8-parser\critique\round4\`.
    Merge `global-int8-parser` into `main`
    (fast-forward) and push, which deploys. In the session scratchpad
    (`C:\Users\Julian\AppData\Local\Temp\claude\c--Users-Julian-Documents-GitHub-CyclingDataApp\e24d4bb5-018e-46b7-89ee-9dee82f392bf\scratchpad\`):
-   `bash watch-deploy.sh` until `builtAt` moves, then `node segments-probe.mjs`,
-   which must print hash `0a2be04de99909af` with `idTypes ["number"]`. Then
+   **First, just before merging, `node segments-probe.mjs` against production**
+   and keep its hash: the old expected hash, `0a2be04de99909af`, went stale when
+   rides 86 and 87 landed (on 2026-10-08 it was `ba5cd316e15be6e4`, and the
+   branch's local server matched it). After the merge, `bash watch-deploy.sh`
+   until `builtAt` moves, then `node segments-probe.mjs` again: the same hash as
+   the pre-merge probe, with `idTypes ["number"]`. A ride landing in between
+   moves the hash legitimately, so compare counts and re-probe if it moved. Then
    close and reopen the app once (MapScreen's transient double-draw).
 3. **Notes, about 20 min.** `notes-int8.mjs` in the scratchpad rewrites this
-   file's top for the closed state, but it predates round 2: add rounds 2-3
-   first, dry-run with `NOTES=<copy>`, then `node notes-int8.mjs <main commit>
-   <builtAt> <tests> "<critic verdict>"`; commit on a branch, merge, push.
+   file's top for the closed state. Its text already covers rounds 1-3 (11
+   swaps, dry-run clean on 2026-10-08); add round 4's verdict and the new
+   rehearsal hash, dry-run with `NOTES=<copy>`, then `node notes-int8.mjs <main
+   commit> <builtAt> <tests> "<critic verdict>"`; commit on a branch, merge,
+   push.
 4. **Clean up.** Delete the frozen copies in `scratchpad\cmp\` (on 2026-10-08
    `cmp\before` also gained the current census and main's
    `tsconfig.check.json`, for the census-on-main run). Each
    `backend\node_modules` in them is a JUNCTION into the repo: remove the link
-   itself first, never recurse through it. Check round 3's critic folder for a
-   junction the same way. (Round 1's critic left one under
+   itself first, never recurse through it. Check the round 3 and round 4
+   critics' folders for a junction the same way (round 3's critic reported
+   removing its own). (Round 1's critic left one under
    `int8-parser\critique\critic\repro\`; removed 2026-10-06.)
 
 **Found on the way, not fixed: timestamps arrive as `Date` and `Date.parse()`
