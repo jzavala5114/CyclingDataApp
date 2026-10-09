@@ -173,10 +173,11 @@ export function unreadModules(program: ts.Program, backendDir: string): string[]
  */
 export const ACCEPTED_OUTSIDE: Readonly<Record<string, string>> = {
   "../osm-pipeline/scripts/lib/linkPlan.d.mts":
-    "osm-pipeline's linkPlan.mjs. The backend runs only its buildLinkPlan, from " +
-    "evalLinkerFold.ts, a local tool the server never loads. That reads every id " +
-    "through Number() and its node ids out of json_agg, so it computes the same on " +
-    "either driver. Its write path, applyWrites, runs only from osm-pipeline itself.",
+    "osm-pipeline's linkPlan.mjs. The backend runs two of its functions, from " +
+    "evalLinkerFold.ts, a local tool the server never loads: decide, which is pure, " +
+    "and buildLinkPlan, the only one that queries. That reads every id through " +
+    "Number() and its node ids out of json_agg, so it computes the same on either " +
+    "driver. Its write path, applyWrites, runs only from osm-pipeline itself.",
 };
 
 // A database call is node-postgres' own `query`, decided by the declaration the
@@ -195,6 +196,14 @@ function queryCall(call: ts.CallExpression, checker: ts.TypeChecker): QuerySite[
   return calleeIsQuery(call.expression) && carriesText(first, checker) ? "structural" : null;
 }
 
+// An argument the census cannot see into: typed `any`, or `never` (what a
+// cast `as never` leaves, assignable anywhere), or a spread of arguments. It
+// could be a callback or a Submittable, so it is assumed to be the kind that
+// reads the result. A cold review passed a typed callback through each of
+// these and the census filed it as unread.
+const opaque = (arg: ts.Expression, checker: ts.TypeChecker): boolean =>
+  ts.isSpreadElement(arg) || (checker.getTypeAtLocation(arg).flags & (ts.TypeFlags.Any | ts.TypeFlags.Never)) !== 0;
+
 // A Submittable is an object pg hands the connection to: a `pg.Query`, a
 // cursor, a stream. It sends its own messages, so its statement cannot be read
 // here, and its rows reach the code through the object itself, never through
@@ -202,13 +211,15 @@ function queryCall(call: ts.CallExpression, checker: ts.TypeChecker): QuerySite[
 // the census's own DescribeStatement, which executes nothing and so delivers
 // no rows at all. A first version dropped every Submittable without a line,
 // and a `new pg.Query("select id from segments")` vanished from the report.
-// An argument typed `any` could be one, so it counts as one: the census cannot
-// see what it is.
+// An opaque argument could be one, so it counts as one.
 function submittableOf(arg: ts.Expression, checker: ts.TypeChecker): { what: string; delivers: boolean } | null {
-  const type = checker.getTypeAtLocation(arg);
-  if (type.flags & ts.TypeFlags.Any) {
-    return { what: "an argument typed `any`: it may be a Submittable, whose statement and rows are not visible here", delivers: true };
+  if (opaque(arg, checker)) {
+    return {
+      what: "an argument the census cannot see into (typed `any` or `never`, or spread): it may be a Submittable, whose statement and rows are not visible here",
+      delivers: true,
+    };
   }
+  const type = checker.getTypeAtLocation(arg);
   if (type.getProperty("submit") === undefined) return null;
   const symbol = type.getSymbol();
   // An anonymous type's symbol is called "__type", which names nothing.
@@ -295,11 +306,11 @@ function whatIsUnknown(node: ts.Expression, checker: ts.TypeChecker): string {
 // statement of its own. Assigned, returned, chained or passed on, it is read,
 // and so it is when the call hands pg a callback, which receives the result
 // however the call itself stands: `pool.query(sql, (err, r) => r.rows...)`.
-// An argument typed `any` may be that callback: pg takes a function in the
-// values slot as one, and the census cannot see what it is.
+// An opaque argument may be that callback: pg takes a function in the values
+// slot as one, and the census cannot see what it is.
 function resultUsed(call: ts.CallExpression, checker: ts.TypeChecker): boolean {
   if (callbackOf(call, checker) !== undefined) return true;
-  if (call.arguments.slice(1).some((arg) => checker.getTypeAtLocation(arg).flags & ts.TypeFlags.Any)) return true;
+  if (call.arguments.slice(1).some((arg) => opaque(arg, checker))) return true;
   let node: ts.Node = call;
   while (ts.isAwaitExpression(node.parent) || ts.isParenthesizedExpression(node.parent)) node = node.parent;
   return !ts.isExpressionStatement(node.parent);

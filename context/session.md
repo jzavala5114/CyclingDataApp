@@ -18,8 +18,9 @@ stale.
 MERGED OR DEPLOYED. The cold critic's round 2 FAILED it on 2026-10-06; every
 round-2 finding was fixed (`044d29c`, 2026-10-08). Round 3 confirmed all ten
 closed and FAILED it on one new hole, pg's own `parseInt8` switch, plus smaller
-findings, all fixed the same day (see "Round-3 fixes" below); cold critic
-round 4 is the next step.** Commits: `1206bed` (the parser, the fallout, the
+findings, fixed the same day (`8eeeb4f`). Round 4 confirmed those closed and
+FAILED it on minor and nit findings only, also fixed the same day (see
+"Round 4" below); cold critic round 5 is the next step.** Commits: `1206bed` (the parser, the fallout, the
 new eval `npm run eval:query-types`), `0bf631d` (critic round 1's fixes: a gate
 test on the `/segments` join, now `services/segmentsResponse.ts`; census blind
 spots closed), progress saves, `044d29c` (round-2 fixes), then the round-3
@@ -213,6 +214,42 @@ it found, all fixed on 2026-10-08; report in
   production and numbers on the branch; production's hash was the same before
   and after.
 
+**Round 4 (2026-10-08, on `0abc022`): FAIL, minor and nits only.** All seven
+round-3 findings CLOSED (N1, N1b, N3, N5, N12, N16 killed; probes N.c and N.d
+fail the census). Report: `int8-parser\critique\round4\critic\critic-round-4.md`.
+What it found, all fixed on 2026-10-08:
+- **G1, minor.** No test sent a healthy `pool.query` through the checkout's
+  CALLBACK branch, the one pg-pool's `query` uses: a refactor making every query
+  hang (H1) or reject (H2) passed. Now a test runs a healthy `pool.query`, a
+  promise checkout and a callback checkout through a real, never-connected pg
+  Client handed out by a stubbed connection step.
+- **G2, minor.** `pool.options.types = { getTypeParser }` got past the
+  tripwire, which read only the registry, while pg asks a client's own `types`
+  first; the server would have rounded silently. Now every checkout also checks
+  the CLIENT it hands out, through pg's own lookup (`clientReplaced` in
+  `pgTypes.ts`), refuses a client set to binary (pg-int8's binary parser
+  returns text), and releases a refused client WITH the error, which makes
+  pg-pool remove it. The scan also flags `types` given by assignment or in any
+  object literal (unless it is an array, the census's Parse message), and
+  `binary` anywhere.
+- **G3, minor.** `export { Pool } from "pg"` in one file let another build a
+  Pool past the scan. The scan now flags re-exports of Pool or Client, and
+  `export * from "pg"` or `"pg-pool"`.
+- **G4, nit.** A replacement made while a client is checked out reaches that
+  client's later queries; the comments said "fails the query". They now say
+  the next checkout refuses.
+- **G5, nit.** Arguments spread from a tuple, and a callback cast `as never`,
+  passed the census as unread. Both are now "opaque", like `any`.
+- **G6, nit.** `binary` (covered above). **G7, nit.** `ACCEPTED_OUTSIDE` said
+  only buildLinkPlan runs; `decide`, which is pure, runs too. Reworded.
+- Accepted, as round 2 accepted it: `main()` itself is a one-line hand-off to
+  `censusCommand`, which is tested; a mutant bypassing it in `main()` survives.
+- **Evidence so far (`int8-parser\critique\round5\`):** 127 mutants, each
+  against the whole gate suite, survivors typechecked: 0 not as expected, 123
+  killed (round 4's H1, H2, E1, E3 among them, plus H3-H8, E4, R32, R33), and
+  the 4 controls survive. 425 backend tests, typecheck clean. NOT yet redone
+  for this round: the live census and the rehearsal (step 0 below).
+
 **Verified, and not to redo unless a fix touches it:** all 14 read-only scripts
 run from frozen copies of main and the branch on fingerprinted data, 13
 byte-identical and `prune-sessions` differing only in printing `'5'` as `5`
@@ -229,11 +266,25 @@ passes through `CheckedPool.connect`), so the rehearsal and three quick
 read-only scripts are re-run for it: results in `int8-parser\critique\round4\`.
 
 **How much is left, in order (working time, roughly 1 hour plus the critic):**
-1. **Cold critic round 4**, in the background, scoped like round 3 (Julian
-   asked on 2026-10-08 to keep sub-agent use down): re-check round 3's
+0. **Finish round 5's evidence, about 15 min, all read-only. Paused here on
+   2026-10-08 at Julian's request.** The checkout now checks each client
+   (`pool.ts` changed again), so from the committed tree: `npm run
+   eval:query-types > round5\census-on-branch.txt`; the three script checks,
+   main's frozen copy (`scratchpad\cmp\before`) against the branch, for
+   `find-holes`, `prune-sessions` (never `--apply`) and `verify-barometer`,
+   with `node tmp-fingerprint.mjs` before and after (round 4's README and
+   `script-checks\` show the exact form); and the `/segments` rehearsal:
+   probe production, start the branch's server with `PORT=3999 node --import
+   tsx src/index.ts`, probe it with `BASE=http://localhost:3999`, probe
+   production again, then stop the server (`taskkill //PID <pid> //F`, the PID
+   from `netstat -ano`). Write `round5\README.txt` like round 4's, append the
+   commit to `round5\critic-brief.md` (already written), then launch the critic.
+1. **Cold critic round 5**, in the background, scoped like rounds 3 and 4
+   (Julian asked on 2026-10-08 to keep sub-agent use down): re-check round 4's
    findings and attack only the new code. Brief and verdict in
-   `int8-parser\critique\round4\`. Loop until it passes; a round that cannot
-   pass names what is missing.
+   `int8-parser\critique\round5\`. Loop until it passes; a round that cannot
+   pass names what is missing. Rounds 2 to 4 each found less, and round 4's
+   findings were all minor or nits.
 2. **Ship, about 15 min, after Julian's go-ahead, since merging deploys.**
    Merge `global-int8-parser` into `main`
    (fast-forward) and push, which deploys. In the session scratchpad

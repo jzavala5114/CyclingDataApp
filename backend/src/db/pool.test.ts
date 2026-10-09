@@ -52,14 +52,60 @@ const REPLACEMENTS: [string, () => void, RegExp][] = [
   ["the int8[] parser alone", () => pg.types.setTypeParser(1016 as TypeId, (text: string) => text), /int8\[\] \(1016\) parser/],
 ];
 
+type Handed = pg.Client & { release: (err?: unknown) => void; released: unknown[]; queried: string[] };
+
+/**
+ * A real pg Client, never connected, as the pool's connection step hands one
+ * out: its parsers are looked up by pg's own code, from the registry or from
+ * the `types` it was given. Its query answers with one row and records the
+ * text, and its release records what it was released with.
+ */
+function handed(config?: pg.ClientConfig): Handed {
+  const client = new pg.Client(config) as Handed;
+  client.released = [];
+  client.queried = [];
+  client.release = (err?: unknown) => void client.released.push(err);
+  client.query = ((text: string, _values: unknown, callback: (err: Error | undefined, result: unknown) => void) => {
+    client.queried.push(text);
+    process.nextTick(() => callback(undefined, { rows: [{ id: 84 }] }));
+  }) as never;
+  return client;
+}
+
+/**
+ * The pool's real connection step, replaced: it hands out `client`, either way
+ * pg-pool can be asked. Like pg-pool, its `done` is the client's own release.
+ */
+const handOut = (t: { mock: { method: typeof import("node:test").mock.method } }, client: Handed) =>
+  t.mock.method(pg.Pool.prototype, "connect", function (callback?: (err: undefined, c: Handed, done: (err?: unknown) => void) => void) {
+    if (callback === undefined) return Promise.resolve(client);
+    process.nextTick(() => callback(undefined, client, client.release));
+    return undefined;
+  } as never);
+
+test("A HEALTHY QUERY goes through the checkout, both ways pg-pool asks for one", { timeout: 2000 }, async (t) => {
+  // pool.query checks out with a CALLBACK (pg-pool's query calls
+  // this.connect(cb)), and every route uses pool.query. A cold review made
+  // that branch drop the callback, so every query hung, and every test passed.
+  const client = handed();
+  const reached = handOut(t, client);
+  const result = await pool.query("select 1");
+  assert.deepEqual(result.rows, [{ id: 84 }]);
+  assert.deepEqual(client.queried, ["select 1"]);
+  assert.deepEqual(client.released, [undefined], "released after the query, back to the pool");
+  assert.equal(await pool.connect(), client);
+  const viaCallback = await new Promise((resolve, reject) => pool.connect((err, c) => (err ? reject(err) : resolve(c))));
+  assert.equal(viaCallback, client);
+  assert.equal(reached.mock.callCount(), 3);
+});
+
 test("THE TRIPWIRE: a parser replaced after pool.ts loaded fails every checkout and query, with the reason, before connecting", { timeout: 2000 }, async (t) => {
   // A cold review's round 3: `pg.defaults.parseInt8 = true` in src/index.ts
   // made the server round ids past 2^53, and `= false` made them text again,
   // with every test green. A line like that can sit in any file, under any
-  // spelling, so pool.ts checks the registry itself on each checkout. Here the
-  // pool's real connection step is replaced by a counter: with a parser
-  // replaced, nothing may reach it.
-  const reached = t.mock.method(pg.Pool.prototype, "connect", async () => ({ release: () => undefined }));
+  // spelling, so pool.ts checks the registry itself on each checkout. With a
+  // parser replaced, nothing may reach the connection step.
+  const reached = handOut(t, handed());
   try {
     for (const [what, replace, names] of REPLACEMENTS) {
       replace();
@@ -70,10 +116,31 @@ test("THE TRIPWIRE: a parser replaced after pool.ts loaded fails every checkout 
       reinstall();
     }
     assert.equal(reached.mock.callCount(), 0, "a checkout with a replaced parser reached the connection step");
-    await pool.connect();
-    assert.equal(reached.mock.callCount(), 1, "with pgTypes.ts's parsers in place, a checkout goes through");
   } finally {
     reinstall();
+  }
+});
+
+test("A CLIENT WITH PARSERS OF ITS OWN, or set to binary, is refused at checkout and removed from the pool", { timeout: 2000 }, async (t) => {
+  // A cold review's round 4: `pool.options.types = { getTypeParser }` got past
+  // a tripwire that read only the registry, because pg asks a client's own
+  // `types` first, and the server rounded past 2^53 without a word. So the
+  // client a checkout hands out is checked too, through pg's own lookup.
+  const rounding = { getTypeParser: (oid: number, format?: string) => (oid === 20 ? Number : pg.types.getTypeParser(oid as TypeId, format as "text")) };
+  for (const [what, config, reason] of [
+    ["a Pool given its own types", { types: rounding }, /a checked-out client's int8 \(20\) parser is not the one db\/pgTypes\.ts installed/],
+    ["a Pool set to binary", { binary: true }, /asks for binary results/],
+  ] as [string, pg.ClientConfig, RegExp][]) {
+    const client = handed(config);
+    const reached = handOut(t, client);
+    await assert.rejects(pool.query("select 1"), reason, `pool.query, ${what}`);
+    await assert.rejects(pool.connect(), reason, `pool.connect(), ${what}`);
+    const viaCallback = await new Promise<Error | undefined>((resolve) => pool.connect((err) => resolve(err)));
+    assert.match(String(viaCallback), reason, `pool.connect(callback), ${what}`);
+    assert.deepEqual(client.queried, [], `${what}: nothing was sent on it`);
+    assert.equal(client.released.length, 3, `${what}: every refused client was released`);
+    assert.ok(client.released.every((err) => err instanceof Error), `${what}: released WITH the error, so pg-pool removes it`);
+    reached.mock.restore();
   }
 });
 
@@ -83,9 +150,11 @@ test("THE TRIPWIRE: a parser replaced after pool.ts loaded fails every checkout 
 // never pass through it, and in a process that never loads pool.ts, ids are
 // text again. The census cannot notice either: it judges every query with its
 // own process's driver. A cold review built a second Pool in findHoles.ts and
-// every test passed. So this reads every source file, for each way of reaching
-// pg's constructors, a parser registration, or the parseInt8 switch, which is
-// also caught here at commit time rather than by the tripwire in production.
+// every test passed, and the next one reached pg's Pool through a re-export.
+// So this reads every source file, for each way of reaching or re-exporting
+// pg's constructors, of giving anything parsers of its own or binary results,
+// of registering a parser, and the parseInt8 switch. The tripwire would refuse
+// most of these in production; this refuses them at commit time.
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONSTRUCTORS = new Set(["Pool", "Client"]);
 
@@ -94,27 +163,40 @@ function driverEscapes(file: string, text: string): string[] {
   const at = (node: ts.Node): string => `${file}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`;
   const nameOf = (node: ts.Node | undefined): string | undefined =>
     node !== undefined && (ts.isIdentifier(node) || ts.isStringLiteralLike(node)) ? node.text : undefined;
-  const lastName = (e: ts.Expression): string | undefined => {
-    while (ts.isParenthesizedExpression(e)) e = e.expression;
-    if (ts.isPropertyAccessExpression(e)) return e.name.text;
-    if (ts.isElementAccessExpression(e)) return nameOf(e.argumentExpression);
-    return nameOf(e);
-  };
-  const property = (literal: ts.ObjectLiteralExpression, name: string) =>
-    literal.properties.find((p) => nameOf(p.name) === name);
-  // A config is an object handed to pg, or one shaped like a query's or a
-  // connection's: built beforehand, it reaches pg all the same. A Parse
-  // message's `types` is an array of parameter type ids, a different thing.
-  const isConfig = (literal: ts.ObjectLiteralExpression): boolean => {
-    const parent = literal.parent;
-    const handed =
-      (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
-      (parent.arguments ?? []).some((arg) => arg === literal) &&
-      /^(query|connect|Pool|Client)$/.test(lastName(parent.expression) ?? "");
-    return handed || property(literal, "text") !== undefined || property(literal, "connectionString") !== undefined;
+  // A property given a value, in an object literal or by assignment, whatever
+  // object it lands on: a config built beforehand reaches pg all the same.
+  const given = (node: ts.Node): { name: string | undefined; value: ts.Expression | undefined } | undefined => {
+    if (ts.isPropertyAssignment(node)) return { name: nameOf(node.name), value: node.initializer };
+    if (ts.isShorthandPropertyAssignment(node)) return { name: node.name.text, value: undefined };
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const target = node.left;
+      if (ts.isPropertyAccessExpression(target)) return { name: target.name.text, value: node.right };
+      if (ts.isElementAccessExpression(target)) return { name: nameOf(target.argumentExpression), value: node.right };
+    }
+    return undefined;
   };
   const found: string[] = [];
   const visit = (node: ts.Node): void => {
+    // Re-exports hand pg's constructors to files that never name pg.
+    if (ts.isExportDeclaration(node) && !node.isTypeOnly) {
+      const from = nameOf(node.moduleSpecifier);
+      if (from === "pg-pool") found.push(`${at(node)} re-exports pg-pool`);
+      const clause = node.exportClause;
+      if (from === "pg" && clause === undefined) found.push(`${at(node)} re-exports all of pg`);
+      if (from === "pg" && clause !== undefined && ts.isNamedExports(clause)) {
+        for (const element of clause.elements) {
+          const exported = (element.propertyName ?? element.name).text;
+          if (!element.isTypeOnly && CONSTRUCTORS.has(exported)) found.push(`${at(element)} re-exports pg's ${exported}`);
+        }
+      }
+    }
+    // Parsers of its own, or binary results, given to anything. A Parse
+    // message's `types` is an array of parameter type ids, a different thing.
+    const property = given(node);
+    if (property?.name === "types" && !(property.value !== undefined && ts.isArrayLiteralExpression(property.value))) {
+      found.push(`${at(node)} brings its own parsers`);
+    }
+    if (property?.name === "binary") found.push(`${at(node)} asks for binary results`);
     if (file !== "db/pool.ts") {
       // Any value reference to pg's constructors, however it is spelled. Type
       // positions (`pg.Pool` in an annotation, `import type`) are not values.
@@ -138,11 +220,6 @@ function driverEscapes(file: string, text: string): string[] {
             : undefined;
       if (reached !== undefined && CONSTRUCTORS.has(reached)) found.push(`${at(node)} reaches for pg's ${reached}`);
     }
-    if (ts.isObjectLiteralExpression(node) && isConfig(node)) {
-      const types = property(node, "types");
-      const parameterIds = types !== undefined && ts.isPropertyAssignment(types) && ts.isArrayLiteralExpression(types.initializer);
-      if (types !== undefined && !parameterIds) found.push(`${at(node)} brings its own parsers`);
-    }
     const word = ts.isIdentifier(node) || ts.isStringLiteralLike(node) ? node.text : undefined;
     if (word === "setTypeParser" && file !== "db/pgTypes.ts") found.push(`${at(node)} replaces a parser`);
     if (word === "parseInt8") found.push(`${at(node)} touches pg.defaults.parseInt8`);
@@ -152,7 +229,7 @@ function driverEscapes(file: string, text: string): string[] {
   return found;
 }
 
-test("THE ONLY POOL: no other file reaches pg's Pool or Client, brings its own parsers, registers one, or touches parseInt8", () => {
+test("THE ONLY POOL: no other file reaches or re-exports pg's Pool or Client, brings its own parsers or binary results, registers a parser, or touches parseInt8", () => {
   const files = (readdirSync(SRC, { recursive: true }) as string[])
     .filter((name) => name.endsWith(".ts") && !name.endsWith(".test.ts"))
     .map((name) => name.split(path.sep).join("/"));
@@ -175,12 +252,21 @@ test("...and that check finds each escape when one is there", () => {
   assert.deepEqual(escapes(`const P = pg.Pool;`), ["scripts/x.ts:1 reaches for pg's Pool"]);
   assert.deepEqual(escapes(`const { Pool: P } = pg;`), ["scripts/x.ts:1 reaches for pg's Pool"]);
   assert.deepEqual(escapes(`import PgPool from "pg-pool";`), ["scripts/x.ts:1 imports pg-pool"]);
-  // Parsers of its own.
+  // ...or handed on under another module's name (a cold review's round 4).
+  assert.deepEqual(escapes(`export { Pool } from "pg";`), ["scripts/x.ts:1 re-exports pg's Pool"]);
+  assert.deepEqual(escapes(`export { Client as C } from "pg";`), ["scripts/x.ts:1 re-exports pg's Client"]);
+  assert.deepEqual(escapes(`export * from "pg";`), ["scripts/x.ts:1 re-exports all of pg"]);
+  assert.deepEqual(escapes(`export * from "pg-pool";`), ["scripts/x.ts:1 re-exports pg-pool"]);
+  // Parsers of its own, or binary results, given however.
   assert.deepEqual(escapes(`pool.query({ text: "select 1", types: { getTypeParser } });`), ["scripts/x.ts:1 brings its own parsers"]);
   assert.deepEqual(escapes(`const config = { text: "select 1", types };\npool.query(config);`), ["scripts/x.ts:1 brings its own parsers"]);
   assert.deepEqual(escapes(`export const pool = new Pool({ connectionString, types: custom });`, "db/pool.ts"), [
     "db/pool.ts:1 brings its own parsers",
   ]);
+  assert.deepEqual(escapes(`pool.options.types = { getTypeParser };`), ["scripts/x.ts:1 brings its own parsers"]);
+  assert.deepEqual(escapes(`Object.assign(pool.options, { types: custom });`), ["scripts/x.ts:1 brings its own parsers"]);
+  assert.deepEqual(escapes(`pool.query({ text: "select 1", binary: true });`), ["scripts/x.ts:1 asks for binary results"]);
+  assert.deepEqual(escapes(`pg.defaults.binary = true;`), ["scripts/x.ts:1 asks for binary results"]);
   // A parser replaced, or pg's switch, however spelled.
   assert.deepEqual(escapes(`pg.types.setTypeParser(20, (t) => parseInt(t, 10));`), ["scripts/x.ts:1 replaces a parser"]);
   assert.deepEqual(escapes(`pg.types["setTypeParser"](20, Number);`), ["scripts/x.ts:1 replaces a parser"]);
@@ -193,5 +279,6 @@ test("...and that check finds each escape when one is there", () => {
   assert.deepEqual(escapes(`pg.types.setTypeParser(20, parse);`, "db/pgTypes.ts"), []);
   assert.deepEqual(escapes(`import type { Pool, PoolClient } from "pg";\nlet db: pg.Pool;\ntype C = typeof pg.Client;`), []);
   assert.deepEqual(escapes(`import { type Pool } from "pg";`), []);
+  assert.deepEqual(escapes(`export type { Pool } from "pg";\nexport { type Client } from "pg";`), []);
   assert.deepEqual(escapes(`connection.parse({ name: "", text: "select 1", types: [] }, false);`), []);
 });

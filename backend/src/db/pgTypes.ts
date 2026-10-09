@@ -41,12 +41,16 @@ import { bigintId } from "./pgNumbers.js";
 // The registry it writes to is global, so anything later in the process can
 // write over it: a stray setTypeParser, or pg's own `pg.defaults.parseInt8`
 // switch, which installs int4's parseInt (rounds past 2^53) when set true and
-// pg's text parser when set false. So `driverReplaced` says whether these are
-// still the parsers in place, and pool.ts asks it on every checkout, which
-// every query goes through: in any process, a replaced parser fails the query
-// with the reason. db/pool.test.ts holds that, and also fails if pool.ts stops
-// importing this module, or if any other source file builds a Pool or Client,
-// brings its own parsers, registers one, or mentions `parseInt8`.
+// pg's text parser when set false. And a client asks its own `types` first,
+// if it was given any, and reads no text parser at all when set to binary. So
+// pool.ts asks `driverReplaced` (the registry) and `clientReplaced` (the client
+// a checkout hands out) on every checkout, which every pool.query is, and
+// refuses the checkout with the reason. A replacement made while a client is
+// already checked out reaches that client's later queries until it is
+// released; the next checkout refuses. db/pool.test.ts holds all of that, and
+// fails if pool.ts stops importing this module, or if any other source file
+// reaches pg's Pool or Client, re-exports them, gives anything its own parsers
+// or binary results, registers a parser, or mentions `parseInt8`.
 
 type TypeId = Parameters<typeof pg.types.getTypeParser>[0];
 
@@ -71,15 +75,39 @@ export const int8ArrayFromText = (text: string): unknown => convertElements(pgIn
 pg.types.setTypeParser(INT8, int8FromText);
 pg.types.setTypeParser(INT8_ARRAY, int8ArrayFromText);
 
-/** Why int8 values would not arrive through the parsers above, or null when they would. */
+/** Which of the two parsers a lookup no longer finds. */
+const replacedIn = (parserFor: (oid: TypeId) => unknown): string[] =>
+  [
+    parserFor(INT8) === int8FromText ? null : "int8 (20)",
+    parserFor(INT8_ARRAY) === int8ArrayFromText ? null : "int8[] (1016)",
+  ].filter((name): name is string => name !== null);
+
+/** Why the registry would not deliver ids through the parsers above, or null when it would. */
 export function driverReplaced(): string | null {
-  const replaced = [
-    pg.types.getTypeParser(INT8, "text") === int8FromText ? null : "int8 (20)",
-    pg.types.getTypeParser(INT8_ARRAY, "text") === int8ArrayFromText ? null : "int8[] (1016)",
-  ].filter((name) => name !== null);
+  const replaced = replacedIn((oid) => pg.types.getTypeParser(oid, "text"));
   if (replaced.length === 0) return null;
   return (
     `the driver's ${replaced.join(" and ")} parser is no longer the one db/pgTypes.ts installed, ` +
     "so ids would arrive as text or rounded. Something replaced it: setTypeParser, or pg.defaults.parseInt8"
+  );
+}
+
+/**
+ * The same question for one client, which is what a query really reads with:
+ * pg asks the client's own `types` before the registry, and a client set to
+ * binary reads none of the text parsers.
+ */
+export function clientReplaced(client: pg.ClientBase): string | null {
+  if ((client as unknown as { binary?: boolean }).binary === true) {
+    return (
+      "a checked-out client asks for binary results, which db/pgTypes.ts's parsers never see: " +
+      "pg.defaults.binary, or binary in the Pool's config"
+    );
+  }
+  const replaced = replacedIn((oid) => client.getTypeParser(oid, "text"));
+  if (replaced.length === 0) return null;
+  return (
+    `a checked-out client's ${replaced.join(" and ")} parser is not the one db/pgTypes.ts installed: ` +
+    "the Pool or the client was given types of its own, so ids would arrive as text or rounded"
   );
 }

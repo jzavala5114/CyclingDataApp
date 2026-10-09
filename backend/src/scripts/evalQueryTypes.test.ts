@@ -218,6 +218,12 @@ export function anyCallback(handler: any) {
 export function anySubmittable(cursor: any) {
   client.query(cursor);
 }
+export function spreadArgs(args: readonly [string, (err: Error, r: QueryResult<{ id: string }>) => void]) {
+  pool.query(...args);
+}
+export function neverCallback(handler: (err: Error, r: QueryResult<{ id: string }>) => void) {
+  pool.query("select 22 as w", handler as never);
+}
 `;
 const FIXTURE_TEST = `import type { Pool } from "pg";
 declare const pool: Pool;
@@ -289,6 +295,7 @@ test("finds every database call however it is reached, and nothing else; test fi
       [60, "pg"], // a Submittable that only shares the census's class name
       [62, "structural"], // a cast on a plain client's promise
       [65, "pg"], [68, "pg"], // an argument typed `any`: a callback, a Submittable
+      [71, "pg"], [74, "pg"], // arguments spread, and a callback cast `as never`
     ],
   );
   assert.ok(sites.every((s) => s.file === "src/__census_fixture__.ts"), "the .test.ts fixture was described");
@@ -497,9 +504,21 @@ test("AN ARGUMENT TYPED `any` MAY BE A CALLBACK OR A SUBMITTABLE, so it counts a
   assert.equal(at(65).declared.kind, "any");
   assert.equal(census(at(65), [idColumn]).pass, false, "untyped, and read through the handler");
   assert.deepEqual(at(68).statements, []);
-  assert.match(at(68).unresolved!, /^an argument typed `any`: it may be a Submittable/);
+  assert.match(at(68).unresolved!, /^an argument the census cannot see into \(typed `any` or `never`, or spread\)/);
   assert.equal(at(68).resultUsed, true);
   assert.deepEqual(judgeCensus([at(68)], new Map(), types).unchecked, [at(68)]);
+});
+
+test("...AND SO ARE ARGUMENTS SPREAD, OR CAST `as never`: neither can be seen into", () => {
+  // A cold review's round 4: a statement and a typed callback spread from a
+  // tuple were filed under "nothing to check", and a callback cast `as never`
+  // into the values slot as "not read". Both read rows at runtime.
+  assert.deepEqual(at(71).statements, []);
+  assert.match(at(71).unresolved!, /^an argument the census cannot see into/);
+  assert.equal(at(71).resultUsed, true);
+  assert.deepEqual(judgeCensus([at(71)], new Map(), types).unchecked, [at(71)]);
+  assert.equal(at(74).resultUsed, true);
+  assert.equal(census(at(74), [idColumn]).pass, false, "untyped, and read through the callback");
 });
 
 test("a cast on `.rows` is not read as a declaration: untyped, so it fails rather than passing unread", () => {

@@ -4,7 +4,7 @@
 // import has run before the first query, and nothing can reach this Pool
 // without it. See pgTypes.ts, and pool.test.ts for what checks this file.
 import { Pool, type PoolClient } from "pg";
-import { driverReplaced } from "./pgTypes.js";
+import { clientReplaced, driverReplaced } from "./pgTypes.js";
 
 type Checkout = Parameters<Pool["connect"]>[0];
 
@@ -12,11 +12,14 @@ type Checkout = Parameters<Pool["connect"]>[0];
 // can replace them after this module has loaded: a stray setTypeParser, or pg's
 // own `pg.defaults.parseInt8 = true` (int4's parseInt, which rounds past 2^53)
 // or `= false` (pg's text parser, ids as text again), the most copied line for
-// getting bigints as numbers. A cold review put the switch in index.ts and every
-// test passed. So every checkout asks whether the parsers are still
-// pgTypes.ts's, and pool.query checks out through connect() too: a replaced
-// parser fails the query with the reason, in any process, before any row comes
-// back as something the database did not send.
+// getting bigints as numbers. A client also asks its own `types` first, if the
+// Pool's options gave it any, and a client set to binary reads no text parser.
+// Cold reviews put each of these past every test. So every checkout, which
+// pool.query goes through too, checks the registry before connecting and the
+// client it hands out after, and refuses with the reason. A refused client is
+// released with the error, which removes it from the pool. A replacement made
+// while a client is already checked out reaches that client's later queries
+// until it is released; the next checkout refuses.
 class CheckedPool extends Pool {
   connect(): Promise<PoolClient>;
   connect(callback: Checkout): void;
@@ -28,7 +31,23 @@ class CheckedPool extends Pool {
       process.nextTick(() => callback(error, undefined, () => undefined));
       return;
     }
-    return callback === undefined ? super.connect() : super.connect(callback);
+    if (callback === undefined) {
+      return super.connect().then((client) => {
+        const wrong = clientReplaced(client);
+        if (wrong === null) return client;
+        const error = new Error(wrong);
+        client.release(error);
+        throw error;
+      });
+    }
+    super.connect((err, client, done) => {
+      if (err || client === undefined) return callback(err, client, done);
+      const wrong = clientReplaced(client);
+      if (wrong === null) return callback(undefined, client, done);
+      const error = new Error(wrong);
+      done(error);
+      callback(error, undefined, () => undefined);
+    });
   }
 }
 
