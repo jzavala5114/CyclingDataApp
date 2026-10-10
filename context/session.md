@@ -3,7 +3,7 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-10-05.
+Last updated 2026-10-10.
 
 **Read the four blocks below before anything else.** They are the authoritative
 queue and state. Everything after them is evidence and history: where a section
@@ -12,493 +12,39 @@ stale.
 
 ## NEXT, IN ORDER
 
-### 1. Make every bigint id a number at the driver: one global int8 parser
+### 1. Timestamps arrive as `Date`, and `Date.parse()` throws away their milliseconds
 
-**WHERE THIS STANDS (2026-10-10): cold critic round 6 FAILED `dcec070`.
-JULIAN DECIDED (2026-10-10): fix F1-F7, stop the critic loop there (no round
-7, so this ships WITHOUT a critic PASS, on his decision), and ship after his
-go-ahead. F1-F7 are FIXED in `9b68a1f` (429 backend tests, typecheck clean,
-196 mutants with every anchor matching; the 26 new and changed ones all as
-expected). The final full mutation run was going into
-`int8-parser\critique\round6-fixes\mutation-run.txt`. NEXT: check it says "0
-not as expected"; re-run the live census (expect 82 sites, 11 timestamp lies,
-0 else); then ASK JULIAN FOR THE GO-AHEAD TO MERGE (merging deploys), and only
-then step 2 (ship) below. Nothing is pushed, merged or deployed.** What
-`9b68a1f` does: F1, the scan reads `import P = pgx.Pool` and `export import`;
-F2, constructor parameter properties count as class members; F3, a test pins
-pool.ts's exports to `pool` alone; F4, pg imported whole may only be read on
-into (`pg.types`, `pg[key]`, a type), so `export default pg` and `const db =
-pg` are flagged; F5, the census claims only casts on the argument itself; F6,
-a cast over a string, number, bigint, boolean, null, undefined or `T[]` array
-no longer counts as hiding a callback; F7, binary tested with `"true"`. Round
-6's report:
-`int8-parser\critique\round6\critic\critic-round-6.md`. All five round-5
-findings CLOSED (each reproduction re-run). New, all in this round's code:
-F1 minor, `import P = pgx.Pool` (an ImportEqualsDeclaration, its `pgx.Pool` a
-QualifiedName) passes the scan, and findHoles reads ids as text; F2 minor, a
-class parameter property `constructor(readonly types = rounding)` spread into
-a query config passes the member rule, ids past 2^53 round silently; F3 nit,
-pool.ts `export { Pool }` (no module specifier) passes, a second unchecked
-Pool; F4 nit, `import pg from "pg"; export default pg` not flagged where
-written (a consumer's `.Pool` is); F5 nit, a cast one level down (`flag ? (h
-as unknown as any[]) : []`) hides a callback from the census; F6 nit, `[1] as
-number[]` in the values slot now fails a healthy unread query; F7 nit, the
-truthy-binary test tries only `true` and `1`, so `== true` survives (add
-`"true"`). The critic's fixes: `ts.isImportEqualsDeclaration` with an
-EntityName ending in Pool or Client (and `export import`); parameter
-properties in the member rule; flag a local export of a binding imported from
-pg; narrow F5's title or walk operands; let `opaque` ask the innermost layer
-before assuming a callback; a string binary case. Round 6's critic cost 196k
-tokens. Round 6's evidence, all
-read-only from the committed tree, in `round6\` with a README: the full
-mutation run on `dcec070`, 176 mutants, 0 not as expected (172 killed, the 4
-controls survive); the run on `3e348fb` found R33 (the `never` flag in
-`opaque`) dead once casts were opaque, which `dcec070` removed. The live
-census: 82 sites, 11 timestamp lies, 0 of every other kind, identical to round
-5's apart from line numbers. The `/segments` rehearsal: production, the
-branch's local server and production again all `ba5cd316e15be6e4` (746
-segments, 953 lines, 5,194 stops), ids numbers on the branch. What `3e348fb`
-changed:
-R1, a failed-connection test (A1, A1b killed). R2, `clientReplaced` tests
-binary by truthiness; the scan in `pool.test.ts` is rewritten: each name it
-looks for counts as an identifier in listed places and as a string or
-template literal ANYWHERE (computed keys, element access, `Reflect.set`,
-`Object.defineProperty`), `.types`/`.binary` read through any assignment,
-members of every kind; its comment lists exactly what it reads and that a
-name assembled at runtime is beyond it (P2f, P4b, P3, and 30 SC mutants on
-the scan's own rules, killed). R3, the binary comments reworded. R4, a cast
-argument is opaque, `callbackOf` looks under casts and reads the handler's own
-parameter types, and a statement is read off the value under its cast (fixture
-lines 76-86, CB1-CB10 killed). R5, `export * as x from "pg"` and `export {
-default } from "pg"` flagged (E3d, E3e killed). A first run of the new mutants
-found CB6 and CB7 (`satisfies`, `!`) equivalent on the fixture; fixture lines
-83-84 (a cast under each) now kill them. Round 5's report:
-`C:\Users\Julian\AppData\Local\Temp\int8-parser\critique\round5\critic\critic-round-5.md`
-(its mutants and probes are beside it, `work\critic-mutants-5.mjs` and
-`work\backend\probe5\`). All seven round-4 findings are CLOSED, and the
-checkout behaves correctly at runtime. What failed, and the planned fix:
-- **R1, minor (rubrics 5, 3).** `pool.ts:44`, `if (err || client === undefined)
-  return callback(err, client, done);`, the connection-error path every
-  `pool.query` takes, has no test. Mutant A1 (`return;`) hangs every query
-  while the database is down; A1b (`callback(undefined, client, done)`) throws
-  an uncaught TypeError that would crash the server. Both pass 425/425.
-  **Fix:** in `pool.test.ts`, a stubbed connection step that answers with an
-  error: `pool.query`, `pool.connect()` and `pool.connect(cb)` must each get
-  that error (the promise branch rejects through `super.connect()` already).
-- **R2, minor (rubrics 1, 8, 9).** Two spellings pass both the scan and the
-  checkout. P2f: per-query parsers under a computed key, `{ ["types"]:
-  rounding, text }`. P4b: `(pool.options as X).binary ||= 1`: the scan's
-  `given()` (`pool.test.ts:168-177`) reads only `=` and never computed keys,
-  and `clientReplaced` tests `binary === true` (`pgTypes.ts:101`) while pg
-  tests truthiness (`pg/lib/client.js:102`, `:739`). **Fix:** `given()` reads
-  every assignment operator (`=`, `||=`, `&&=`, `??=`) and computed keys that
-  are string literals, and every object member (property, shorthand, method,
-  get/set accessor); `clientReplaced` tests truthiness. Then make the
-  comments exact rather than "however": the scan reads names written as an
-  identifier, a string, or a computed string literal (`pgTypes.ts:50-53`,
-  `pool.test.ts:154-156` and `:260`).
-- **R3, nit (rubric 8).** "a client set to binary reads no text parser"
-  (`pool.ts:16`, `pgTypes.ts:45`, `:97-98`, `:103`) is false: pg asks for
-  binary only on parameterized queries, so others still read the text parser.
-  **Fix:** reword; refusing a binary client stays right (pg-int8's binary
-  parser returns int8 as text).
-- **R4, nit (rubric 7).** A callback cast `as unknown as any[]` or `as unknown
-  as undefined` passes the census silently. **Fix:** `callbackOf` and
-  `resultUsed` look through casts (`as`, `<T>`, parentheses, `!`, `satisfies`)
-  to the value; a function underneath is a callback. Add fixture lines and a
-  test.
-- **R5, nit.** `export * as pgx from "pg"` is not flagged where it is written
-  (harmless: any `pgx.Pool` is). **Fix:** flag it.
+**Found 2026-10-05 by `npm run eval:query-types`. Not fixed. A live defect in
+the matcher, the spike filter and the ride processor, so it reaches every
+ride.** node-postgres parses `timestamptz` into a JS `Date`, while
+`SessionSample.recordedAt` is typed `string` (as are `endedAt` in
+`routes/sessions.ts` and two columns in `pruneEmptySessions.ts`: 11 lies at
+10 query sites). Every consumer calls `Date.parse(sample.recordedAt)`, and
+`Date.parse` of a `Date` goes through `String(date)`, which has no
+milliseconds, so **every fix time is truncated to the whole second** (measured:
+a `Date` at `:12.987Z` comes back 987 ms early). Measured 2026-10-05:
+**34,361 of 34,402 stored fixes (99.9%) carry a sub-second part, the median gap
+between consecutive fixes is 2 s, and 3,511 gaps are under 1 s**, so a 0.4 s
+gap can read as 0 s or 1 s. Production sites: `segmentMatcher.ts:744` and
+`:844-845` (stitch gaps, against `STITCH_WINDOW_S`), `positionSpikes.ts:101-103`
+and `:209` (the speeds the spike filter judges), `sessionProcessor.ts:231` and
+`:261-262`. Confirmed that nothing converts the rows between the query and the
+matcher. Every replay script inherits it, so **every matcher number in this
+file was measured with it.** The tests cannot see it: their fixtures use ISO
+strings, where `Date.parse` is exact.
 
-**Then, in order:** (DONE 2026-10-09: mutants added, `3e348fb` and `dcec070`
-committed, both full runs, the census, the rehearsal, `round6\README.txt`, the
-brief. Round 6's critic was launched, then stopped at Julian's request before
-its verdict. Never edit `backend/src`, run the census or commit while a
-mutation run is going, since it rewrites files in place.) Relaunch round 6's
-critic (see the top of this item), then read its verdict. If it FAILS, fix, run the mutants, commit, redo the census
-and rehearsal, and brief round 7 the same way. Rounds 2 to 5 each found less;
-if round 6 finds only further contrived spellings, put the choice to Julian:
-stop the loop with the scan's limits stated exactly, or keep going. On a PASS:
-ship (step 2 below, after Julian's go-ahead), then notes, then cleanup.
-
-**IN PROGRESS on branch `global-int8-parser` (2026-10-05 to 10-09): BUILT, NOT
-MERGED OR DEPLOYED. The cold critic's round 2 FAILED it on 2026-10-06; every
-round-2 finding was fixed (`044d29c`, 2026-10-08). Round 3 confirmed all ten
-closed and FAILED it on one new hole, pg's own `parseInt8` switch, plus smaller
-findings, fixed the same day (`8eeeb4f`). Round 4 confirmed those closed and
-FAILED it on minor and nit findings only, also fixed the same day (`d321bd5`,
-see "Round 4" below). Round 5 confirmed those closed and FAILED it on minor
-findings and nits (R1-R5 above), fixed 2026-10-09 (`3e348fb`).** Commits: `1206bed`
-(the parser, the fallout, the new eval `npm run eval:query-types`), `0bf631d`
-(critic round 1's fixes: a gate test on the `/segments` join, now
-`services/segmentsResponse.ts`; census blind spots closed), progress saves,
-`044d29c` (round-2 fixes), `8eeeb4f` (round-3 fixes), `d321bd5` (round-4
-fixes), `3e348fb` (round-5 fixes). **427 backend tests** (394 before round 2's
-fixes).
-
-**What the critic is, and why it ran.** CLAUDE.md requires that a change be
-attacked before it ships by a separate sub-agent that did not build it: a
-"cold critic" that gets only the code, the evidence and a rubric frozen before
-the work began, never the builder's reasoning, and whose job is to REJECT. It
-may not touch the repository or the database; it mutates its own scratch copy.
-The rubric's nine lines: one mechanism makes every int8 a number in every
-process; nothing relies on ids being text; past 2^53 a query fails loudly
-without a crash; numeric is untouched; every guard test fails when its
-behaviour breaks; every test file states which driver it runs; the census
-executes nothing, never skips a query in silence and fails when it cannot
-check; comments are true; the phone's contract holds. **Round 1** (2026-10-05)
-was cut off by the account's rate limit before its verdict, but its evidence
-drove `0bf631d`. **Round 2** (2026-10-06) reviewed `1206bed` + `0bf631d`; full
-report and probes in `C:\Users\Julian\AppData\Local\Temp\int8-parser\critique\round2\critic\`
-(a temp folder: the substance is here).
-
-**Round 2: FAIL.** The driver change itself held: one parser, loaded by the only
-Pool, which both routes and all 18 scripts use; past 2^53 the query is rejected
-and the process lives; numeric untouched; confirmed in a compiled production
-build under plain node. It failed on the census and on guard tests:
-- **Major 1. The census passes queries it cannot check whose result is READ.**
-  An `untyped` verdict never fails it (`judgeCensus`, `evalQueryTypes.ts:572`),
-  and `declaredRow` (`:232-245`) reads only a generic or a cast directly on the
-  awaited call, so a cast on `.rows`, a cast on the promise, rows handed to a
-  typed function, a typed `.then` callback and a callback-style query all come
-  out `any`. The findHoles crash, rewritten with untyped rows, passes. Three
-  real untyped-and-read sites: `routes/sessions.ts:17` (POST /sessions),
-  `pruneEmptySessions.ts:58`, `rebuildModel.ts:86`. **Fix:** untyped-and-read
-  fails the census (a callback counts as reading), and those three get generics.
-- **Major 2. Production's driver could round past 2^53 with every test green.**
-  `pool.test.ts` checks only "84" -> 84, so a `pool.ts` that swapped pgTypes.ts
-  for a lenient `Number` parser (mutant C1b), or kept it and then registered the
-  common `parseInt` override (C2), passes everything. **Fix:** assert in
-  `pool.test.ts` that the configured parser throws on "9007199254740993".
-- **Major 3. Nothing tests that the census's `main()` uses its safety helpers.**
-  Replacing describe with execute AND dropping READ ONLY (C18b + C19, two edits
-  together) passes every test, and in the real statement order the census would
-  then run, in autocommit, `delete from session_segment_matches`, `segment_coverage`
-  and `segment_elevation_buckets` (from `rebuildModel.ts:54-56` and
-  `verifyRebuild.ts:99-101`): **the production elevation model.** Latent, two
-  edits away, but the census points at production. Also untested in `main()`:
-  the exit code (C17) and descriptions lining up with their sites (C20).
-  **Fix:** extract `runCensus(client, sites)` and test it with the fake client
-  the `describeAll` test already uses.
-- **Minor.** (4) Census scope is never asserted on the real program: reading
-  `tsconfig.json` instead (which drops `evalLinkerFold.ts`), or skipping
-  `routes/` or `scripts/`, survives (C13-C15). (5) Silent skips and misreports:
-  a `pg.Query` passed to `client.query` vanishes without a line; a
-  callback-style runtime statement reads as "result not read";
-  `osm-pipeline/scripts/lib/linkPlan.mjs:162` runs on the backend's client and
-  never appears (another service's untyped JS: cover it or record it as out of
-  scope); an unquoted camelCase alias, which pg lowercases so the field is
-  always undefined, passes. (6) "Only one Pool" is a comment, not a check: a
-  script building its own Pool survives (C4), and the census would not notice.
-  (7) The routes' wire contracts are untested: the route stringifying ids
-  before the join (C11, a blank map) and POST /sessions returning the id as
-  text (C12) both survive. The phone is fine either way.
-- **Nits.** `MapScreen.tsx:113-114` draws stale lines until restart if the app
-  is open across the deploy (known, cosmetic). `pgTypes.ts:31-34` says
-  bad_share is "the one numeric this backend reads", false: `evalLinkerFold.ts:263`
-  reads `len` (typed string, only printed). `pool.ts:2-3`: a parser is looked up
-  once per result, not per row. `evalQueryTypes.ts:13`: "nine fields", not
-  "nine interfaces". `backend/README.md:66` omits the `unchecked` exit.
-  `segmentsResponse.test.ts:59` asserts the blank-street FAILURE, so it would
-  block hardening the join to tolerate mixed id types: delete it.
-- **And it was right about my evidence.** "54 mutants, all as expected" (in
-  `0bf631d`'s message and this note's last version) was never re-run after N6
-  was retired; the file on disk is the 55-mutant run in which N6 survived.
-  `census-on-main-driver.txt` came from the round-1 census, not the current one.
-  (The prune-sessions diff it found missing is now saved.)
-
-**Round-2 fixes, 2026-10-08.** Evidence in
-`C:\Users\Julian\AppData\Local\Temp\int8-parser\critique\round3\` (temp; the
-substance is here).
-- **Major 1.** Rows typed `any` that the code reads now fail the census
-  (`Census.untypedRead`; `any` rows nothing reads still pass). A callback counts
-  as reading the result. The row type is now also read from a cast on the
-  promise and from a callback's result parameter; any other place (a cast on
-  `.rows`, rows handed to a typed function) stays `any`, which fails when read,
-  so it cannot pass by accident. The three real sites got row types. The
-  findHoles crash written untyped (fixture line 49) now FAILS.
-- **Major 2.** `pool.test.ts` asserts that the driver pool.ts leaves in place
-  throws on `9007199254740993`, for int8 and int8[]. C1b and C2 are killed.
-- **Major 3.** `runCensus(client, sites, outside, log)` is everything `main()`
-  did after finding the queries, the exit code included. A recording fake
-  client pins exactly what reaches the database: `begin read only`; per
-  statement `savepoint describe`, the describe, `release savepoint describe`;
-  the pg_type lookup; `rollback`. C17-C20, C18b and C18c are killed.
-- **Minor 4.** A gate test loads the real program (about 1.3 s) and asserts
-  sites in `routes/`, `services/`, `scripts/` and `evalLinkerFold.ts`. C13-C15
-  are killed.
-- **Minor 5.** A Submittable (`pg.Query`, a cursor) is now a site that fails
-  the census, except the census's own `DescribeStatement` (by class AND file).
-  A runtime statement with a callback is unchecked, so it fails. `linkPlan.mjs`
-  is named under OUTSIDE THE CENSUS (through `linkPlan.d.mts`). An unquoted
-  camelCase alias fails (`Census.caseFolded`). A census with no sites fails.
-  A column whose type pg_type did not return throws, which kills C16 (round 2
-  had judged it equivalent).
-- **Minor 6.** `pool.test.ts` scans every non-test source file: no other
-  `new Pool`/`new Client` (under any import name), no `types` parser override
-  on a query or connection config (passed directly or built beforehand), no
-  `setTypeParser` outside `pgTypes.ts`. It has its own control test. C4, C4b
-  and C4c are killed.
-- **Minor 7.** `routes/segments.test.ts` and `routes/sessions.test.ts` drive
-  the real routers over HTTP, `pool.query` mocked, rows built by the configured
-  driver. C10-C12 are killed.
-- **Nits.** Comments fixed: pgTypes' numeric claim, pool.ts's lookup timing,
-  the census header and the README's exit conditions. The segmentsResponse test
-  that asserted the blank-street failure is deleted (C29, a String()-keyed
-  join, now survives, as a hardening should). `linkPlan.mjs:172`'s pre-existing
-  wrong comment is corrected: node ids come out of `json_agg`, so they are JSON
-  numbers on any driver.
-- **MapScreen's transient double-draw** cannot be fixed from here: the app
-  that is open across the deploy is the installed APK. After the deploy, close
-  and reopen the app once.
-- **Mutation run (`mutation-run-3.txt`)**: 92 mutants, each against the WHOLE
-  gate suite, survivors also typechecked. An earlier run of the same harness
-  (`mutation-run-3-first.txt`) found one claimed-equivalent control wrong: S14
-  (int8[] syntax read by the int4[] parser) is caught by the new pool test,
-  because its refusal names 9007199254740992 instead of the 9007199254740993
-  the database sent. It is now an ordinary mutant.
-- **Census, live and read-only:** on the branch (`census-on-branch.txt`): 82
-  sites, 11 timestamp lies, 0 untyped and read, FAIL by design. The CURRENT
-  census on main's code and driver (`census-on-main.txt`, from the frozen copy
-  of `origin/main` 235f963): 56 lies, 44 of them int8 declared `number`
-  arriving as text, plus the 3 untyped sites: FAIL, as it should.
-- `segments-probe.mjs` is now in the evidence folder: it normalises `id` to
-  text before hashing, and the response carries no other int8 field (`id`,
-  `streetName`, `geom`, `lengthM`, `directionalLines`), so the identical hash
-  across the type change is honest. `before-after-summary.tsv` holds all 14
-  pairs. Round 2 reported four missing because the run was still finishing
-  during its review: the last pair completed at 19:27 on 2026-10-06 (progress
-  log), and the copy it was handed was rewritten then.
-
-**Round 3 (2026-10-08, on `044d29c`): FAIL, and right.** Scoped, per Julian, to
-re-checking round 2 and attacking the new code: 35 mutants, 16 census probes.
-All ten round-2 findings CLOSED (C1b-C20 killed; C29 survives, correctly). What
-it found, all fixed on 2026-10-08; report in
-`int8-parser\critique\round3\critic\critic-round-3.md`:
-- **F1, major. pg's own switch, `pg.defaults.parseInt8`, got past every guard.**
-  `= true` installs int4's parseInt (rounds past 2^53), `= false` puts pg's
-  text parser back; one line in `src/index.ts` did either with all 418 tests
-  green, and `pgTypes.ts`'s comment claimed it was covered. **Fixed twice
-  over:** `pool.ts` now builds a `CheckedPool` whose `connect()` (which
-  `pool.query` also goes through) asks `driverReplaced()` (exported by
-  `pgTypes.ts` with the two parsers it registers) whether the int8 and int8[]
-  parsers are still its own, and fails the checkout with the reason if not:
-  every spelling, every process, before any row is parsed. And the source scan
-  now flags any mention of `parseInt8`, `setTypeParser` outside `pgTypes.ts`
-  (element access too), and any VALUE reference to pg's Pool or Client outside
-  `pool.ts` (`new (pg.Pool)`, `pg["Pool"]`, destructuring, an aliased import,
-  `pg-pool`), with a walk that must reach named files. The scan catches it at
-  commit time; the tripwire catches what the scan cannot spell.
-- **F2, minor.** An argument typed `any` after the statement now counts as a
-  possible callback (read), and a first argument typed `any` as a possible
-  Submittable (unchecked, fails).
-- **F3, minor.** `main()`'s wiring is now `censusCommand(client, program,
-  backendDir)`, run over the REAL program in `evalQueryTypes.program.test.ts`
-  with a database that describes every statement as columnless. And code the
-  census cannot read now FAILS it unless `ACCEPTED_OUTSIDE` names it with why
-  it is safe (linkPlan.mjs is the one entry); an entry whose module is gone
-  fails too.
-- **F4, minor.** The promise-cast test could not fail for pg's own query,
-  because TypeScript infers the generic from the cast; a plain-client fixture
-  (line 62) now needs the code.
-- **F5-F7, nits.** Scan spellings (above); the README's exit list completed;
-  the round-3 census output cited a line one off from the commit (it ran on the
-  working tree before two comment edits), so round 4's census is run from the
-  committed tree; `round3\before-after-summary.tsv` is round 2's, carried over
-  (labelled as such in `round4\README.txt`).
-- **The gate's time:** the suite takes about 3.5 s (it was 3.3 s at 394 tests,
-  already over CLAUDE.md's 2 s before this work); the real-program tests sit in
-  their own file so they run in parallel.
-- **Evidence (`int8-parser\critique\round4\`, `8eeeb4f`):** 113 mutants, each
-  against the whole gate suite with survivors typechecked: 109 killed, every
-  round-3 survivor among them, and the 4 controls survive. (Round 1's census
-  mutants and round 3's are both numbered N1, N3, N5 in that log; their
-  descriptions tell them apart.) The live census from the committed tree: 82
-  sites, 11 timestamp lies, nothing else. Rides 86 and 87 landed after
-  2026-10-06, so main's frozen copy and the branch were re-run on today's
-  data: `find-holes` and `verify-barometer` byte-identical, `prune-sessions`
-  differing only in `'5'` against `5`, every exit 0 (the tripwire stays silent
-  in real processes). The `/segments` rehearsal on today's data: production
-  and the branch's server run locally both give whole-response hash
-  `ba5cd316e15be6e4` (746 segments, 953 lines, 5,194 stops), ids text in
-  production and numbers on the branch; production's hash was the same before
-  and after.
-
-**Round 4 (2026-10-08, on `0abc022`): FAIL, minor and nits only.** All seven
-round-3 findings CLOSED (N1, N1b, N3, N5, N12, N16 killed; probes N.c and N.d
-fail the census). Report: `int8-parser\critique\round4\critic\critic-round-4.md`.
-What it found, all fixed on 2026-10-08:
-- **G1, minor.** No test sent a healthy `pool.query` through the checkout's
-  CALLBACK branch, the one pg-pool's `query` uses: a refactor making every query
-  hang (H1) or reject (H2) passed. Now a test runs a healthy `pool.query`, a
-  promise checkout and a callback checkout through a real, never-connected pg
-  Client handed out by a stubbed connection step.
-- **G2, minor.** `pool.options.types = { getTypeParser }` got past the
-  tripwire, which read only the registry, while pg asks a client's own `types`
-  first; the server would have rounded silently. Now every checkout also checks
-  the CLIENT it hands out, through pg's own lookup (`clientReplaced` in
-  `pgTypes.ts`), refuses a client set to binary (pg-int8's binary parser
-  returns text), and releases a refused client WITH the error, which makes
-  pg-pool remove it. The scan also flags `types` given by assignment or in any
-  object literal (unless it is an array, the census's Parse message), and
-  `binary` anywhere.
-- **G3, minor.** `export { Pool } from "pg"` in one file let another build a
-  Pool past the scan. The scan now flags re-exports of Pool or Client, and
-  `export * from "pg"` or `"pg-pool"`.
-- **G4, nit.** A replacement made while a client is checked out reaches that
-  client's later queries; the comments said "fails the query". They now say
-  the next checkout refuses.
-- **G5, nit.** Arguments spread from a tuple, and a callback cast `as never`,
-  passed the census as unread. Both are now "opaque", like `any`.
-- **G6, nit.** `binary` (covered above). **G7, nit.** `ACCEPTED_OUTSIDE` said
-  only buildLinkPlan runs; `decide`, which is pure, runs too. Reworded.
-- Accepted, as round 2 accepted it: `main()` itself is a one-line hand-off to
-  `censusCommand`, which is tested; a mutant bypassing it in `main()` survives.
-- **Evidence so far (`int8-parser\critique\round5\`):** 127 mutants, each
-  against the whole gate suite, survivors typechecked: 0 not as expected, 123
-  killed (round 4's H1, H2, E1, E3 among them, plus H3-H8, E4, R32, R33), and
-  the 4 controls survive. 425 backend tests, typecheck clean. NOT yet redone
-  for this round: the live census and the rehearsal (step 0 below).
-
-**Verified, and not to redo unless a fix touches it:** all 14 read-only scripts
-run from frozen copies of main and the branch on fingerprinted data, 13
-byte-identical and `prune-sessions` differing only in printing `'5'` as `5`
-(`eval:smoothing` exits 1 on BOTH sides, its own verdict, see item 6); the
-branch's server run locally returns `/segments` with production's whole-response
-hash, `0a2be04de99909af`, ids now numbers, while a broken-join control returns 0
-lines; the live census finds 81 sites (82 since 2026-10-08, when the census's
-own describe became a site), 0 numeric lies, 11 timestamp lies; the production
-build compiles with no sibling directories. The `/segments` rehearsal was not
-repeated for the round-2 fixes: `routes/segments.ts` is unchanged since it ran,
-and `routes/sessions.ts` gained only a type annotation, which compiles away.
-Round 3's tripwire DOES change the server's query path (every checkout now
-passes through `CheckedPool.connect`), so the rehearsal and three quick
-read-only scripts are re-run for it: results in `int8-parser\critique\round4\`.
-
-**How much is left, in order (working time, roughly 1 hour plus the critic):**
-0. **DONE 2026-10-09: round 5's evidence, all read-only, from the committed
-   tree (`d321bd5`), in `int8-parser\critique\round5\` with a README.** The
-   live census: 82 sites, 11 timestamp lies, 0 of every other kind. Main's
-   frozen copy against the branch on today's data (unchanged since
-   2026-10-08): `find-holes` and `verify-barometer` byte-identical,
-   `prune-sessions` only `'5'` against `5`, every exit 0. The `/segments`
-   rehearsal: production, the branch's local server and production again all
-   `ba5cd316e15be6e4` (746 segments, 953 lines), ids numbers on the branch;
-   its GET went through the per-client check on a real pg client. How it was
-   run, for next time: the census by `npm run eval:query-types`; the scripts
-   as `npx tsx <cmp\before copy>` then `npx tsx src/scripts/<name>.ts` with
-   `node tmp-fingerprint.mjs` before and after (`prune-sessions` never with
-   `--apply`); the server with `PORT=3999 node --import tsx src/index.ts`,
-   probed with `BASE=http://localhost:3999 node segments-probe.mjs`, then
-   `taskkill //PID <pid> //F` (PID from `netstat -ano`).
-1. **Cold critic round 5: DONE 2026-10-09, FAIL on minor findings and nits
-   (R1-R5, at the top of this item), fixed in `3e348fb`. Next: round 6's
-   evidence (the census and the rehearsal, as in step 0), then round 6, its
-   brief drafted in `int8-parser\critique\round6\`.** Scoped like rounds 3 and 4
-   (Julian asked on 2026-10-08 to keep sub-agent use down): re-check round 4's
-   findings and attack only the new code. Brief and verdict in
-   `int8-parser\critique\round5\`. Loop until it passes; a round that cannot
-   pass names what is missing. Rounds 2 to 4 each found less, and round 4's
-   findings were all minor or nits.
-2. **Ship, about 15 min, after Julian's go-ahead, since merging deploys.**
-   Merge `global-int8-parser` into `main`
-   (fast-forward) and push, which deploys. In the session scratchpad
-   (`C:\Users\Julian\AppData\Local\Temp\claude\c--Users-Julian-Documents-GitHub-CyclingDataApp\e24d4bb5-018e-46b7-89ee-9dee82f392bf\scratchpad\`):
-   **First, just before merging, `node segments-probe.mjs` against production**
-   and keep its hash: the old expected hash, `0a2be04de99909af`, went stale when
-   rides 86 and 87 landed (on 2026-10-08 it was `ba5cd316e15be6e4`, and the
-   branch's local server matched it). After the merge, `bash watch-deploy.sh`
-   until `builtAt` moves, then `node segments-probe.mjs` again: the same hash as
-   the pre-merge probe, with `idTypes ["number"]`. A ride landing in between
-   moves the hash legitimately, so compare counts and re-probe if it moved. Then
-   close and reopen the app once (MapScreen's transient double-draw).
-3. **Notes, about 20 min.** `notes-int8.mjs` in the scratchpad rewrites this
-   file's top for the closed state. Its text already covers rounds 1-3 (11
-   swaps, dry-run clean on 2026-10-08); add round 4's verdict and the new
-   rehearsal hash, dry-run with `NOTES=<copy>`, then `node notes-int8.mjs <main
-   commit> <builtAt> <tests> "<critic verdict>"`; commit on a branch, merge,
-   push.
-4. **Clean up.** Delete the frozen copies in `scratchpad\cmp\` (on 2026-10-08
-   `cmp\before` also gained the current census and main's
-   `tsconfig.check.json`, for the census-on-main run). Each
-   `backend\node_modules` in them is a JUNCTION into the repo: remove the link
-   itself first, never recurse through it. Check the round 3 and round 4
-   critics' folders for a junction the same way (round 3's critic reported
-   removing its own). (Round 1's critic left one under
-   `int8-parser\critique\critic\repro\`; removed 2026-10-06.)
-
-**Found on the way, not fixed: timestamps arrive as `Date` and `Date.parse()`
-drops their milliseconds** (34,361 of 34,402 fixes carry a sub-second part;
-the matcher, the spike filter and the ride processor are all affected). It
-becomes item 1 when this one closes; the notes script writes it up.
-
-**Recommended on 2026-10-04 as the fastest and the safest of three options,
-all three measured.** Julian asked which would take the least time and this is
-the answer, and he gave the go-ahead on 2026-10-05. The order of this list is a
-recommendation he can change. node-postgres returns `bigint` as text, and nine
-fields in `types/index.ts` are typed `number` while holding text:
-`Segment.id`, `osmWayId`, `startNodeId`, `endNodeId`; `SessionSample.id`,
-`sessionId`; `MatchedRun.segmentId`; `ElevationBucket.segmentId`;
-`SegmentCoverage.segmentId`. **They are joined to each other**, so converting
-one without its partners ships every street with an empty profile and throws
-nothing (see the Open items entry). A single parser converts all of them at
-once, so they cannot get out of step. That is why (b) beats doing it by hand.
-
-**Build:**
-- `backend/src/db/pgTypes.ts` calling
-  `pg.types.setTypeParser(20, (text) => bigintId(text, "int8 column"))`,
-  imported on the first line of `db/pool.ts`. **Its own module, not a side
-  effect inside pool.ts**, because no test imports pool.ts: a registration that
-  lives only there leaves every test on pg's default while production runs
-  numbers. Its test imports the module and asserts the parser turns "84" into
-  84 and throws on "9007199254740993".
-- `numeric` (OID 1700) is not int8 and stays text: keep `numericOrNull` for
-  `bad_share`. Int8 ARRAYS have their own parser (OID 1016); none come back to
-  JS today, only `$1::bigint[]` inputs, so leave it and say so in the module.
-
-**Fix, found 2026-10-04 by searching for code that relies on ids being text:**
-- **The one crash:** `findHoles.ts:91` calls `line.segmentId.padStart(6)`
-  without `String()`, so `npm run find-holes` would throw a TypeError. Retype
-  `BucketRow.segment_id` and `LineHoles.segmentId` to `number` and update
-  `findHoles.test.ts`.
-- **Five row types declaring a bigint column as `string`**, which become lies
-  the other way: `findHoles.ts:29`, `evalLinkerFold.ts:261` (`id`),
-  `pruneEmptySessions.ts:18` (`id`), `demElevation.ts:68` and `:104`
-  (`segment_id`; its `Number(row.segment_id)` calls become no-ops, remove them).
-- **The premise tests** in `pgNumbers.test.ts` and `usableSessions.test.ts` build
-  fixtures with pg's DEFAULT int8 parser. Decide on purpose whether they test the
-  converter against raw driver text or the configured driver. Do not let import
-  order decide it.
-
-**Already checked, do not re-check:**
-- The ride-end path (`sessionProcessor` -> `demElevation`) keys DEM rows with a
-  template literal, `${segmentId}|...`, which gives "123" for both 123 and
-  "123". Safe.
-- No `::text` cast on any id; no ordering comparison (`<`, `>`, `localeCompare`)
-  on any id; every other `padStart` on an id is already wrapped in `String()`.
-- **No phone change is needed.** `mobile/src/services/api.ts:45` already types
-  the id `number`, so this makes it true. One side effect: `MapScreen.tsx:113-114`
-  merges segments by `id`, so if the app is open across the deploy one batch of
-  lines draws twice until it is reopened. Cosmetic. The persisted session id
-  (`useTrackingSession.ts:399`) is never compared by value.
-- The alternatives, measured on a scratch copy so nobody measures them again:
-  (a) convert 16 query sites by hand, same end state as (b); (c) retype the nine
-  as `string`: 243 type errors in 16 files, 164 in tests (153 in
-  `coverageExtent.test.ts`).
-
-**Verify with checks that CAN fail:**
-- **Live `/segments`, before and after the deploy.** Baseline taken 2026-10-05
-  over `minLon=-105.1&minLat=38.6&maxLon=-104.5&maxLat=39.1`: **745 segments,
-  all 745 with at least one directional line, 951 directional lines, 0 lines
-  with fewer than 2 points, 0 lines with zero `colorStops`, 5,181 `colorStops`
-  in total, `id` sent as a string.** After: the same counts, `id` sent as a
-  number. Any drop is the join failure.
-- **A `trace-passes` replay PINNED to a fixed ride list.** Unlike the
-  session-id fix, where the replay was blind because that id is only a label,
-  segment ids are Map keys throughout the matcher, so any mixed comparison moves
-  the counts. Pin it: session 85 arrived mid-task on 2026-10-04 and moved every
-  unpinned number.
-- Then `builtAt` moving.
+**Options, not yet measured:** (a) a global `timestamptz` parser returning the
+ISO string, the same shape as the int8 fix: every `string` declaration becomes
+true, JSON output stays byte-identical (`JSON.stringify` of a `Date` IS that
+ISO string), and every `Date.parse` becomes exact at once; (b) retype to
+`Date` and call `.getTime()`, which the compiler would then demand at about 30
+sites. **Unlike the int8 fix it changes matcher output**, so measure before
+choosing: `trace-passes`, `eval:spikes` and `eval:coverage` before and
+after on frozen data, the way 2026-10-05 did (frozen copies, a data fingerprint
+around each pair). Rides already in the model keep their truncated times until
+a `rebuild-model`, which writes production: **Julian's go-ahead before the
+rebuild.** When it lands, `npm run eval:query-types` should pass with 0 lies;
+then delete "It fails today, on purpose" from `backend/README.md`.
 
 ### 2. Grade session 85
 
@@ -542,6 +88,13 @@ See "What is left for the matcher".
 - **`eval:heading` and `eval:spikes`** still report `gate` columns from the
   classifier before `9c13174`. Their conclusions rest on wrong-dir and discard
   rate, which that fix does not touch, so they stand; the gate columns do not.
+- **`npm run eval:smoothing` exits 1, and did on `main` before this change.**
+  Seen 2026-10-06 in the int8 before/after run (byte-identical output both
+  sides, so not caused by it). The zero-phase smoother loses on its isolated
+  within-ride measure, **1.461 m -> 1.579 m (+0.118 m)**, while winning on shape
+  error against terrain (-0.512 m) and cross-ride disagreement (-0.052 m).
+  Unexamined: whether that measure already failed when the smoother shipped on
+  2026-09-24, with fewer rides.
 - **Debt:** the linker's measuring tools have no tests, and
   `context/architecture.html` is over a month stale.
 
@@ -558,6 +111,8 @@ See "What is left for the matcher".
 | "the gate losses were unstitched fragments" | **No.** Each is one pre-stitch run (close to a base rate). The traversals fragment across SEGMENTS, which the stitcher cannot join | "The gate sweep: ATTEMPTED" |
 | the pass ledger's cause order | **Fixed** in `9c13174`. `gate` is 4 passes / 179 m over 44 rides | paid-for #31 |
 | `SessionVerdict.id` and `bad_share` arriving as text | **Fixed** in `af653f8`, converted at the boundary | paid-for #30 |
+| every bigint (ids, uncast `count(*)`) arriving as text | **Fixed at the driver** in `6d6b174`: `db/pgTypes.ts`, one parser for every process. Live `/segments` byte-identical apart from the id's type | "What landed on 2026-10-10" |
+| checking the code's row types against the database | **`npm run eval:query-types`**: Parse + Describe, executes nothing. 82 sites, 0 numeric lies, 0 untyped reads | `backend/README.md` |
 | whether a docs-only push deploys | **No.** Railway watches `backend/**`; tested 2026-10-04 | commit `4b028c8` |
 | the barometer | **Finished.** Session 84 graded `alive`, 1366 of 1367 fixes barometric | "The barometer: shipped, installed, verified" |
 
@@ -567,13 +122,17 @@ See "What is left for the matcher".
 - **`TANGENT_WINDOW_M`.** Closed on 2026-10-04 and reopened the same day. Item 5.
 - **The same-way class.** Unexplained. Item 6.
 
-## STATE, 2026-10-05
+## STATE, 2026-10-10
 
-`main` is the only branch, local and remote; last code change `af653f8`.
-Production serves `builtAt 2026-10-05T00:07:16.856Z`, verified by the timestamp
-moving. Live model **745 segments / 951 lines** (counts above). **328 backend
-tests, 56 app tests**; `mobile/` has a gate lane. **45 usable rides**; session 85
-is the newest and ungraded. A deploy failed once on 2026-09-30, see note 29,
+`main` is the base; `global-int8-parser` is merged into it. Last code
+change `9b68a1f`, merged to `main` as `6d6b174`. Production serves `builtAt 2026-10-10T15:14:32.196Z`, verified by
+the timestamp moving. Live model **746 segments / 953 lines**, and the deploy
+changed nothing in it: the whole `/segments` response hashes the same as
+before, ids now numbers. **429 backend tests, 56 app tests**; `mobile/`
+has a gate lane. **45 usable rides** counted on 2026-10-05; session 85 was the
+newest then and is ungraded, and rides 86 and 87 landed on 2026-10-08. `npm
+run eval:query-types` fails on 11 timestamp lies, by design, until NEXT 1
+lands. A deploy failed once on 2026-09-30, see note 29,
 before adding anything to `backend/` that imports outside it.
 
 **How every measurement here is run, each rule learned by breaking it:**
@@ -583,6 +142,9 @@ before adding anything to `backend/` that imports outside it.
   its silence about anything shorter is not evidence.
 - **Verify a deploy by `builtAt` moving, never by status**, and if a timestamp
   looks unexplained, suspect the recorded baseline before the deploy trigger.
+- **Compare before and after from FROZEN copies** (`git archive` of `main`, a copy
+  of the branch), back to back, with a data fingerprint around each pair.
+  Running from the working tree lets a later edit leak into an earlier run.
 - **A Windows junction in a scratch copy points INTO the repo.** Delete the link
   itself (`[System.IO.Directory]::Delete(path, $false)`); never recurse into it.
 
@@ -595,15 +157,15 @@ Where to start depends on what you came for:
 |---|---|
 | know what the app is and how a ride becomes a coloured line | "What it is", "Layout", "Data flow" |
 | change anything in the backend | "Bugs already paid for" — 31 failure modes, each one paid for once already |
-| run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker` |
+| run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. Item 1 is fully specified, including what not to re-check |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. Item 1 says what to measure before choosing, and where Julian's go-ahead is needed |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
 ## Where things stand
 
-**Current state is in "STATE, 2026-10-05" at the top.** This section keeps the
+**Current state is in "STATE, 2026-10-10" at the top.** This section keeps the
 older history of what was cleared and when.
 
 Cleared on 2026-10-01: the measurement tooling merged, the derived heading and
@@ -998,9 +560,15 @@ Keep these in mind before "simplifying" anything.
     honestly and maps through them, and the nine `Number()` wrappers are gone.
     The tests build their fixtures with pg's OWN type parsers, so they test the
     driver rather than a belief about it; restoring the bug fails 9 of them and
-    13 of 13 mutants die. **Nine more fields in the shared types lie the same
-    way and are NOT fixed** -- see the open item, and read its warning about
-    join partners before touching any of them.
+    13 of 13 mutants die. **Then fixed at the driver** (built from 2026-10-05,
+    shipped 2026-10-10, `6d6b174`):
+    `db/pgTypes.ts` makes every int8 a number in every process, int8 arrays
+    too, so the nine fields in the shared types and every uncast `count(*)`
+    became true at once, join partners together. `npm run eval:query-types`
+    now asks the database for every query's column types and checks them
+    against the declared row types; it found two lies the hand search had
+    missed, and the timestamp one that is NEXT 1. **Rule: the row type on a
+    query is an assertion. Only the database can check it.**
 31. **A one-fix threshold decided a verdict, twice in one day.** The pass
     ledger in `traceOutAndBack.ts` tried `gate` before its next-door share
     test and fired on the mere EXISTENCE of a run, so one stray fix forming a
@@ -2640,6 +2208,163 @@ time: a number produced by argument, with nothing checking the case where it
 should have said no.** The cure is the same every time too: go and measure the
 real thing.
 
+### What landed on 2026-10-10
+
+**Every bigint now arrives as a number, and there is a check that the code's
+row types match the database.** Item 1 of the 2026-10-05 handoff, built on
+`global-int8-parser` from 2026-10-05 to 10-10 and merged at `6d6b174`, with
+several stops on the way (the account's session limit, context saves, and a
+stop at Julian's request), each saved by a commit.
+
+1. **`db/pgTypes.ts`** replaces node-postgres's int8 parser, and its int8-array
+   parser, with `bigintId`; `db/pool.ts`, which builds the only Pool, imports
+   it, so the server and every script get it before their first query. An id past 2^53
+   fails that query with the value in the message: pg catches a throwing parser
+   and rejects the query, it does not crash (pinned against pg's own `Query`
+   in `pgTypes.test.ts`). `numeric` stays text.
+2. **`npm run eval:query-types`**, new: walks the TypeScript program for every
+   query call, describes each statement on the live database (Parse + Describe
+   + Sync inside `BEGIN READ ONLY`, a savepoint per statement: nothing is bound
+   or executed, not even an `INSERT ... RETURNING`), and judges the declared
+   row type against what the configured driver delivers. **Run on `main`'s
+   code and driver it reports 56 lies, 44 of them ids declared `number`
+   arriving as text, plus 3 untyped sites**, so it can fail. On the branch: 82
+   sites, **0 numeric lies, 0 untyped reads**, and 11 timestamp lies that are
+   NEXT 1. A call counts as pg's by the declaration it RESOLVES to, however it
+   is spelled. It FAILS on a statement it cannot read when the code reads the
+   result (a wrapper's parameter is named outright), on rows typed `any` that
+   the code reads, on a Submittable other than its own, on an unquoted
+   camelCase alias, and on finding no queries at all. The one module it cannot
+   see into, osm-pipeline's `linkPlan.mjs`, is named in its report.
+3. **Fallout fixed:** `findHoles.ts` would have crashed (`padStart` on a
+   number; now `String()`, with a test whose fixture comes from the driver's own
+   parser); seven row fields declared int columns as `string`; six `Number()`
+   wrappers had become no-ops, one under a comment saying ids arrive as text;
+   and `evalLinkerFold.ts`'s header still argued its cross-directory import could
+   not affect the deploy, the reasoning note 29 records as having broken one.
+4. **The handoff spec was wrong twice, both found by checking it, not by
+   trusting it.** "No test imports pool.ts": six do, through the script each
+   tests. "Five row types declare a bigint as `string`": the census found
+   seven lies, including `evalLinkerFold`'s `parent` and a count typed
+   `string` that was wrong under both drivers.
+5. **The census had blind spots, found by its own tests and a cold review.**
+   It matched on pg's declaration, so a client typed as `{ query(text) }`
+   (`verifyRebuild`, `traceOutAndBack`) was invisible. The review then found it
+   skipped, IN SILENCE, a bound copy of `query`, element access, a plain client
+   given a variable, a config object, a choice of constants, and every column of
+   an index-signature row; and 13 of the review's 14 mutants survived, because
+   the verdict and the read-only guard lived in `main`, where no test reached.
+   All fixed and tested. Two pieces of code proved dead under mutation and are
+   gone: a span-by-span template reader (TypeScript 5.9 folds a template of
+   constants into one string literal type in every context) and an explicit
+   `getApparentType`. And one statement failing to describe would have aborted
+   the transaction and failed every describe after it: shown against the live
+   database with a control, and fenced with savepoints.
+6. **The join this whole change protects had no gate test.** The review moved
+   the route's bucket lookup onto a text id and all 371 tests passed. The join
+   now lives in `services/segmentsResponse.ts`, moved unchanged out of the
+   route, and its test feeds it rows from the configured driver: the bucket
+   lookup must colour the line and the coverage lookup must set its extent.
+7. **The cold critic's round 2 (2026-10-06) failed it, and was right.** The
+   census passed rows typed `any` that the code read, the findHoles crash among
+   them. Production's driver could round past 2^53 with every test green,
+   because only "84" was checked. And the census's own `main()` was untested:
+   two plausible edits, executing instead of describing and dropping READ ONLY,
+   would have run `rebuildModel`'s three DELETEs against the production model
+   in autocommit, with every test green. Also: the census's scope was never
+   checked on the real program, Submittables were dropped in silence, "only one
+   Pool" was a comment, and the routes' wire contracts were untested. Fixed on
+   2026-10-08. Untyped reads fail. `runCensus` holds the command, and a
+   recording fake pins every message it sends. `pool.test.ts` pins exactness
+   and scans the source for a second Pool, a parser override or a stray
+   `setTypeParser`. Route tests pin both ids as JSON numbers over HTTP.
+8. **Round 3 (2026-10-08) confirmed all of that closed and failed it on pg's
+   own switch.** `pg.defaults.parseInt8 = true` installs int4's parseInt
+   (rounds past 2^53) and `= false` puts pg's text parser back; one line in
+   `src/index.ts` did either with every test green. Fixed twice over. A
+   `CheckedPool` in `db/pool.ts` asks, on every checkout (which every
+   `pool.query` is), whether the int8 and int8[] parsers are still the ones
+   `pgTypes.ts` registered, and fails the query with the reason if not: every
+   spelling, every process. And the source scan flags `parseInt8` and every
+   spelling of a second Pool it was shown. Also: an argument typed `any` now
+   counts as a possible callback or Submittable; code the census cannot read
+   fails it unless `ACCEPTED_OUTSIDE` says why it is safe (linkPlan.mjs is the
+   one entry); and the command's wiring runs over the real program in a test.
+9. **Round 4 (2026-10-08) confirmed that closed and failed it on minor
+   findings only.** A Pool given `types` of its own got past a tripwire that
+   read only the registry, because pg asks a client's own types first; and the
+   callback checkout that every `pool.query` uses had no healthy-path test.
+   Fixed: each checkout also checks the client it hands out, through pg's own
+   lookup, refuses a binary client, and releases a refused client with the
+   error so pg-pool drops it; a healthy query is tested both ways.
+10. **Round 5 (2026-10-09) confirmed that closed and failed it on minor
+    findings and nits.** The failed-connection path had no test (two one-line
+    slips would have hung every request through an outage, or crashed the
+    server); `binary ||= 1` got past a check for `=== true`; per-query
+    parsers under a computed key, `{ ["types"]: t }`, got past the scan; a
+    callback cast `as unknown as any[]` passed the census. Fixed: a
+    failed-connection test; binary judged by truthiness, as pg judges it; the
+    scan rewritten so each name counts as an identifier in listed places and as
+    a string or template literal anywhere; the census treats a cast argument as
+    opaque and reads callbacks and statements by the value under the cast.
+11. **Round 6 (2026-10-10) confirmed that closed and failed it on two more
+    spellings the scan's comment claimed**, a TypeScript import alias (`import
+    P = pgx.Pool`) and a constructor parameter property `types`, plus five
+    nits. All seven fixed in `9b68a1f`. **Then Julian stopped the review loop
+    (2026-10-10)**: rounds 4 to 6 each found only unusual spellings at the edge
+    of what a scan that reads syntax claims, at about 200k tokens a round. So
+    this shipped without a critic PASS, on his decision. The scan's comment
+    (`db/pool.test.ts`) now says it reads syntax, lists every spelling it
+    catches, and calls anything else beyond it; the checkout refuses the
+    Pool-level ones in production whatever their spelling. A test pins
+    `db/pool.ts`'s exports to the pool alone.
+
+**Verified, each against a control that could fail:**
+- **14 read-only scripts**, each run from a frozen copy of `main` and then of
+  the branch, back to back, with a data fingerprint around every pair
+  (unchanged for all 14): **13 byte-identical**, and `prune-sessions` differs
+  only in printing `'5'` as `5`. Includes `trace-passes`, the pinned replay the
+  spec asked for, and every eval that keys a Map or a Set on an id.
+  `eval-smoothing` exits 1 on BOTH sides: its own verdict on the smoother, not a
+  crash (it runs all 45 rides and every number matches); see NEXT item 6.
+- **Live `/segments`, rehearsed before the deploy** by running the branch's
+  server locally against the same database: 745 segments, 951 lines, 5,181
+  colour stops, the hash of the whole response `0a2be04de99909af` identical to
+  production's, ids now numbers. **The control**, the same server with the
+  bucket lookup handed a text id: status 200, 745 segments, **0 lines, 0 colour
+  stops**, exactly the silent failure the spec warned of, and the hash moved.
+  Repeated after the join moved into its own module: the same hash. **Repeated
+  on 2026-10-08 for the checkout tripwire**, after rides 86 and 87 had landed:
+  production and the branch both `ba5cd316e15be6e4` (746 segments, 953
+  lines), and main and the branch re-run on that data for `find-holes`,
+  `verify-barometer` and `prune-sessions`, with the same result as before.
+  Repeated on 2026-10-09 for the per-client check: production, the branch and
+  production again, all `ba5cd316e15be6e4`.
+- **After the deploy**: `builtAt` moved to `2026-10-10T15:14:32.196Z`, and production's
+  `/segments` matched its own probe from just before the merge: same hash,
+  746 segments, 953 lines, 5,194 colour stops, ids numbers.
+- The production build in a copy of `backend/` with no siblings, as note 29
+  requires, and the compiled `pool.js` under plain `node` (round 2); then
+  production itself on 2026-10-10.
+- **196 mutants**, each run against the whole gate suite and, when the suite
+  missed it, the typecheck: 192 killed, every critic survivor among them, and 4
+  equivalent controls survive by design (the import's position in `pool.ts`,
+  `findHoles.test.ts`'s redundant import, the pass-through parser check, and a
+  join keyed by `String()`, the hardening a deleted test used to block). An
+  earlier "54 mutants, all as expected" had not been re-run after a change;
+  round 2 caught it. Round 2's "equivalent" S14 (int8[] syntax read by the int4[]
+  parser) was not: its refusal names a rounded value, and the new pool test
+  catches it. Round 5's runs found three new mutants surviving: two (CB6, CB7)
+  for want of a fixture line, since added, and one (R33) because the code it
+  broke had become dead, since removed. The harness is
+  `backend/tmp-mutate-int8.mjs`, gitignored; it and every run's output are in
+  `/tmp/int8-parser/critique/`.
+- **Cold critic:** round 1 was cut off by the account's rate limit before its
+  verdict, and its evidence drove item 6 and most of item 5. Rounds 2 to 6
+  each failed it (items 7 to 11), rounds 4 to 6 on minor findings and nits
+  only; it shipped without a pass, on Julian's decision (item 11). Round 6's report: `/tmp/int8-parser/critique/round6/critic/critic-round-6.md`.
+- 429 backend tests (328 before), 56 app tests, typecheck clean.
+
 ### What landed on 2026-10-04
 
 **A day of four closures and no features.** Every one of them came from
@@ -2746,8 +2471,8 @@ What remains is small, and splits into three honest groups.
   Session 83's last fix landed in session 84, 21 s before session 84 began.
 - ~~**`SessionVerdict.id` is typed `number` and arrives as a string.**~~
   **FIXED 2026-10-04** (paid-for #30), with `bad_share` alongside it. The
-  wider class -- nine more fields, joined to each other -- is an open decision,
-  see Open items.
+  wider class -- nine more fields, joined to each other -- **fixed at the
+  driver, shipped 2026-10-10** (`6d6b174`).
 
 **Test and doc debt:**
 - **The linker's own measuring tools have no tests**, flagged by the third cold
@@ -3194,7 +2919,10 @@ trails, and every tangent window from 0 to 20 m.
   contract change), and a SQL `::int` cast cannot be tested without a
   database. Converting at the TypeScript boundary can be, against pg's own
   parser output.
-- **Nine more database numbers are typed `number` and arrive as text.**
+- ~~**Nine more database numbers are typed `number` and arrive as text.**~~
+  **FIXED by option (b), at the driver, shipped 2026-10-10** (`6d6b174`,
+  "What landed on 2026-10-10"). The join-partner warning below is why it had to be (b): one
+  parser moved all nine together. Kept for the record.
   Measured at runtime 2026-10-04, and the first count of six was wrong -- a cold
   review found the join partners. In `types/index.ts`: `Segment.id`,
   `osmWayId`, `startNodeId`, `endNodeId`; `SessionSample.id`, `sessionId`;
