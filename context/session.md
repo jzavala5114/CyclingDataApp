@@ -14,17 +14,25 @@ stale.
 
 ### 1. Make every bigint id a number at the driver: one global int8 parser
 
-**IN PROGRESS on branch `global-int8-parser` (2026-10-05 to 10-08): BUILT, NOT
+**WHERE THIS STANDS (2026-10-09): cold critic round 5 is RUNNING, on `d321bd5`.
+Its verdict lands in `C:\Users\Julian\AppData\Local\Temp\int8-parser\critique\round5\critic\critic-round-5.md`.
+If that file exists, read it and act on it. If it does not, the run was cut
+off: launch it again with the same brief (`round5\critic-brief.md`, already
+naming `d321bd5`). Step 0 below (round 5's evidence) is DONE. Nothing is
+pushed, merged or deployed.**
+
+**IN PROGRESS on branch `global-int8-parser` (2026-10-05 to 10-09): BUILT, NOT
 MERGED OR DEPLOYED. The cold critic's round 2 FAILED it on 2026-10-06; every
 round-2 finding was fixed (`044d29c`, 2026-10-08). Round 3 confirmed all ten
 closed and FAILED it on one new hole, pg's own `parseInt8` switch, plus smaller
 findings, fixed the same day (`8eeeb4f`). Round 4 confirmed those closed and
-FAILED it on minor and nit findings only, also fixed the same day (see
-"Round 4" below); cold critic round 5 is the next step.** Commits: `1206bed` (the parser, the fallout, the
-new eval `npm run eval:query-types`), `0bf631d` (critic round 1's fixes: a gate
-test on the `/segments` join, now `services/segmentsResponse.ts`; census blind
-spots closed), progress saves, `044d29c` (round-2 fixes), then the round-3
-fixes. **422 backend tests** (394 before round 2's fixes).
+FAILED it on minor and nit findings only, also fixed the same day (`d321bd5`,
+see "Round 4" below); cold critic round 5 is running.** Commits: `1206bed`
+(the parser, the fallout, the new eval `npm run eval:query-types`), `0bf631d`
+(critic round 1's fixes: a gate test on the `/segments` join, now
+`services/segmentsResponse.ts`; census blind spots closed), progress saves,
+`044d29c` (round-2 fixes), `8eeeb4f` (round-3 fixes), `d321bd5` (round-4
+fixes). **425 backend tests** (394 before round 2's fixes).
 
 **What the critic is, and why it ran.** CLAUDE.md requires that a change be
 attacked before it ships by a separate sub-agent that did not build it: a
@@ -266,20 +274,22 @@ passes through `CheckedPool.connect`), so the rehearsal and three quick
 read-only scripts are re-run for it: results in `int8-parser\critique\round4\`.
 
 **How much is left, in order (working time, roughly 1 hour plus the critic):**
-0. **Finish round 5's evidence, about 15 min, all read-only. Paused here on
-   2026-10-08 at Julian's request.** The checkout now checks each client
-   (`pool.ts` changed again), so from the committed tree: `npm run
-   eval:query-types > round5\census-on-branch.txt`; the three script checks,
-   main's frozen copy (`scratchpad\cmp\before`) against the branch, for
-   `find-holes`, `prune-sessions` (never `--apply`) and `verify-barometer`,
-   with `node tmp-fingerprint.mjs` before and after (round 4's README and
-   `script-checks\` show the exact form); and the `/segments` rehearsal:
-   probe production, start the branch's server with `PORT=3999 node --import
-   tsx src/index.ts`, probe it with `BASE=http://localhost:3999`, probe
-   production again, then stop the server (`taskkill //PID <pid> //F`, the PID
-   from `netstat -ano`). Write `round5\README.txt` like round 4's, append the
-   commit to `round5\critic-brief.md` (already written), then launch the critic.
-1. **Cold critic round 5**, in the background, scoped like rounds 3 and 4
+0. **DONE 2026-10-09: round 5's evidence, all read-only, from the committed
+   tree (`d321bd5`), in `int8-parser\critique\round5\` with a README.** The
+   live census: 82 sites, 11 timestamp lies, 0 of every other kind. Main's
+   frozen copy against the branch on today's data (unchanged since
+   2026-10-08): `find-holes` and `verify-barometer` byte-identical,
+   `prune-sessions` only `'5'` against `5`, every exit 0. The `/segments`
+   rehearsal: production, the branch's local server and production again all
+   `ba5cd316e15be6e4` (746 segments, 953 lines), ids numbers on the branch;
+   its GET went through the per-client check on a real pg client. How it was
+   run, for next time: the census by `npm run eval:query-types`; the scripts
+   as `npx tsx <cmp\before copy>` then `npx tsx src/scripts/<name>.ts` with
+   `node tmp-fingerprint.mjs` before and after (`prune-sessions` never with
+   `--apply`); the server with `PORT=3999 node --import tsx src/index.ts`,
+   probed with `BASE=http://localhost:3999 node segments-probe.mjs`, then
+   `taskkill //PID <pid> //F` (PID from `netstat -ano`).
+1. **Cold critic round 5, RUNNING since 2026-10-09**, in the background, scoped like rounds 3 and 4
    (Julian asked on 2026-10-08 to keep sub-agent use down): re-check round 4's
    findings and attack only the new code. Brief and verdict in
    `int8-parser\critique\round5\`. Loop until it passes; a round that cannot
