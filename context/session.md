@@ -14,17 +14,28 @@ stale.
 
 ### 1. Make every bigint id a number at the driver: one global int8 parser
 
-**WHERE THIS STANDS (2026-10-09): R1-R5 below are FIXED in `3e348fb` and
-`dcec070` (427 backend tests, typecheck clean), and round 6's evidence is
-DONE. COLD CRITIC ROUND 6 was stopped once at Julian's request (its partial
-work, no links inside, moved to `critique\round6-stopped-critic\`) and
-RELAUNCHED 2026-10-10 on `dcec070`. NEXT: read
-`int8-parser\critique\round6\critic\critic-round-6.md`. If it is missing,
-relaunch with the prompt "Read and follow the brief at
-C:\Users\Julian\AppData\Local\Temp\int8-parser\critique\round6\critic-brief.md
-exactly", after moving any partial `round6\critic\` aside the same way (check
-`Get-ChildItem -Recurse -Attributes ReparsePoint` finds no link first). Nothing
-is pushed, merged or deployed.** Round 6's evidence, all
+**WHERE THIS STANDS (2026-10-10): COLD CRITIC ROUND 6 FAILED `dcec070`.
+DECISION PENDING WITH JULIAN: fix F1-F7 and stop the loop (recommended), fix
+and run round 7, or rebuild the scan on the type checker. Do not start work
+until he answers. Nothing is pushed, merged or deployed.** Report:
+`int8-parser\critique\round6\critic\critic-round-6.md`. All five round-5
+findings CLOSED (each reproduction re-run). New, all in this round's code:
+F1 minor, `import P = pgx.Pool` (an ImportEqualsDeclaration, its `pgx.Pool` a
+QualifiedName) passes the scan, and findHoles reads ids as text; F2 minor, a
+class parameter property `constructor(readonly types = rounding)` spread into
+a query config passes the member rule, ids past 2^53 round silently; F3 nit,
+pool.ts `export { Pool }` (no module specifier) passes, a second unchecked
+Pool; F4 nit, `import pg from "pg"; export default pg` not flagged where
+written (a consumer's `.Pool` is); F5 nit, a cast one level down (`flag ? (h
+as unknown as any[]) : []`) hides a callback from the census; F6 nit, `[1] as
+number[]` in the values slot now fails a healthy unread query; F7 nit, the
+truthy-binary test tries only `true` and `1`, so `== true` survives (add
+`"true"`). The critic's fixes: `ts.isImportEqualsDeclaration` with an
+EntityName ending in Pool or Client (and `export import`); parameter
+properties in the member rule; flag a local export of a binding imported from
+pg; narrow F5's title or walk operands; let `opaque` ask the innermost layer
+before assuming a callback; a string binary case. Round 6's critic cost 196k
+tokens. Round 6's evidence, all
 read-only from the committed tree, in `round6\` with a README: the full
 mutation run on `dcec070`, 176 mutants, 0 not as expected (172 killed, the 4
 controls survive); the run on `3e348fb` found R33 (the `never` flag in
