@@ -111,13 +111,16 @@ See "What is left for the matcher".
 
 ## STATE, 2026-10-10
 
-`main` is the base; `global-int8-parser` is merged into it. Last code
-change `9b68a1f`, merged to `main` as `6d6b174`. Production serves `builtAt 2026-10-10T15:14:32.196Z`, verified by
-the timestamp moving. Live model **746 segments / 953 lines**, and the deploy
+`main` is the base, and every task branch is merged into it:
+`global-int8-parser`, `int8-shipped-notes`, `demote-timestamps` and
+`session-notes`, still on origin and locally, safe to delete. Last code change
+`9b68a1f`, merged to `main` as `6d6b174`; everything since is notes. Production
+serves `builtAt 2026-10-10T15:14:32.196Z`, verified by the timestamp moving. Live model **746 segments / 953 lines**, and the deploy
 changed nothing in it: the whole `/segments` response hashes the same as
 before, ids now numbers. **429 backend tests, 56 app tests**; `mobile/`
 has a gate lane. **45 usable rides** counted on 2026-10-05; session 85 was the
-newest then and is ungraded, and rides 86 and 87 landed on 2026-10-08. `npm
+newest then and is ungraded, and rides 86 and 87 landed on 2026-10-08; 50 sessions hold 34,866 fixes
+(counted 2026-10-10). `npm
 run eval:query-types` fails on 11 timestamp lies, by design: measured
 negligible on 2026-10-10 (NEXT item 5). A deploy failed once on 2026-09-30, see note 29,
 before adding anything to `backend/` that imports outside it.
@@ -125,6 +128,9 @@ before adding anything to `backend/` that imports outside it.
 **How every measurement here is run, each rule learned by breaking it:**
 - **Pin the control to a fixed ride list.** New rides arrive mid-task.
 - **Before trusting a check, run the input that should make it say no.**
+- **Count what a fix would change, not what it touches.** The timestamp defect
+  touched 99.9% of fix times and changed 2 of 34,866 verdicts; it sat at NEXT 1
+  for five days on the first number.
 - **A witness with a floor cannot speak below it.** `findPasses` needs 25 m, so
   its silence about anything shorter is not evidence.
 - **Verify a deploy by `builtAt` moving, never by status**, and if a timestamp
@@ -137,6 +143,18 @@ before adding anything to `backend/` that imports outside it.
 
 **The house defect**, shared by six of the nine errors made on 2026-10-04: **a
 check that cannot fail, reported as a check that passed.**
+
+**How work is sized since 2026-10-10.** CLAUDE.md is untracked by design, so
+this is the record of what changed in it and why. Every triage block carries a
+token Budget line, so Julian can veto an expensive run before it starts.
+Critic rounds are capped, medium one and large two, and stop early after two
+rounds of only nits; more rounds run only on Julian's say. A finding blocks
+shipping only with a plausible path to it, and only once the builder has
+re-run its reproduction. A fix whose payoff is unknown gets a 30-minute
+read-only measurement first. Why: the int8 review ran six rounds, rounds 4 to
+6 found only code nobody here would write at about 200k tokens a round, and
+the timestamp item measured negligible after five days at the top of the
+queue.
 
 Where to start depends on what you came for:
 
