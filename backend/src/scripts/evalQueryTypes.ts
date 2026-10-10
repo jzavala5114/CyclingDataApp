@@ -31,7 +31,7 @@ import { pool } from "../db/pool.js";
 // ACCEPTED_OUTSIDE names it with the reason it is safe.
 //
 // It trusts the types it reads. A query's argument it cannot see into, typed
-// `any` or `never`, spread, or cast, counts as one that reads rows: as the
+// `any`, spread, or cast, counts as one that reads rows: as the
 // statement, a Submittable it cannot read; after it, a callback. Under casts
 // it reads the value: a config's text by the text's own type, and a callback
 // by its own parameter types. A value whose own declaration was cast is what
@@ -203,15 +203,18 @@ function queryCall(call: ts.CallExpression, checker: ts.TypeChecker): QuerySite[
   return calleeIsQuery(call.expression) && carriesText(first, checker) ? "structural" : null;
 }
 
-// An argument the census cannot see into: typed `any`, or `never` (assignable
-// anywhere), a spread of arguments, or cast, since a cast says what a value is
-// to be taken as rather than what it is. It could be a callback or a
-// Submittable, so it is assumed to be the kind that reads the result. Cold
-// reviews passed a typed callback through each of these, the last as `as
-// unknown as any[]` in the values slot, and the census filed it as unread.
+// An argument the census cannot see into: typed `any`, a spread of arguments,
+// or cast (`as never` among them), since a cast says what a value is to be
+// taken as rather than what it is. It could be a callback or a Submittable, so
+// it is assumed to be the kind that reads the result. Cold reviews passed a
+// typed callback through each of these, the last as `as unknown as any[]` in
+// the values slot, and the census filed it as unread. Without a cast, a value
+// is typed `never` only where none exists at runtime (a call that throws, a
+// branch that cannot run) or where `!` was put on null or undefined, which pg
+// takes as no values; a declaration typed `never` is what it says, like any.
 const opaque = (arg: ts.Expression, checker: ts.TypeChecker): boolean =>
   ts.isSpreadElement(arg) ||
-  (checker.getTypeAtLocation(arg).flags & (ts.TypeFlags.Any | ts.TypeFlags.Never)) !== 0 ||
+  (checker.getTypeAtLocation(arg).flags & ts.TypeFlags.Any) !== 0 ||
   layersOf(arg).some((layer) => ts.isAsExpression(layer) || ts.isTypeAssertionExpression(layer));
 
 // An argument, then what it holds under each of its parentheses, casts, `!`
@@ -244,7 +247,7 @@ function layersOf(arg: ts.Expression): ts.Expression[] {
 function submittableOf(arg: ts.Expression, checker: ts.TypeChecker): { what: string; delivers: boolean } | null {
   if (opaque(arg, checker)) {
     return {
-      what: "an argument the census cannot see into (typed `any` or `never`, spread, or cast): it may be a Submittable, whose statement and rows are not visible here",
+      what: "an argument the census cannot see into (typed `any`, spread, or cast): it may be a Submittable, whose statement and rows are not visible here",
       delivers: true,
     };
   }

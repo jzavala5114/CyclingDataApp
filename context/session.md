@@ -14,10 +14,28 @@ stale.
 
 ### 1. Make every bigint id a number at the driver: one global int8 parser
 
-**WHERE THIS STANDS (2026-10-09): cold critic round 5 FAILED `d321bd5` on
-minor findings and nits only (R1-R5 below). NEXT: fix R1-R5. No code has
-changed since `738cc0d`; the fixes have not been started. Nothing is pushed,
-merged or deployed.** Report:
+**WHERE THIS STANDS (2026-10-09): R1-R5 below are FIXED in `3e348fb`, plus
+the commit after it (427 backend tests, typecheck clean). The full mutation
+run on `3e348fb` (`round6\mutation-run-6a-3e348fb.txt`) found one survivor,
+R33: with casts opaque, the `never` flag in `opaque` was dead code, so the
+next commit drops it. A second full run on that commit was going into
+`int8-parser\critique\round6\mutation-run-6.txt`; check it says "0 not as
+expected", then do the "Then, in order" steps below from the live census on.
+Nothing is pushed, merged or deployed.** What `3e348fb` changed:
+R1, a failed-connection test (A1, A1b killed). R2, `clientReplaced` tests
+binary by truthiness; the scan in `pool.test.ts` is rewritten: each name it
+looks for counts as an identifier in listed places and as a string or
+template literal ANYWHERE (computed keys, element access, `Reflect.set`,
+`Object.defineProperty`), `.types`/`.binary` read through any assignment,
+members of every kind; its comment lists exactly what it reads and that a
+name assembled at runtime is beyond it (P2f, P4b, P3, and 30 SC mutants on
+the scan's own rules, killed). R3, the binary comments reworded. R4, a cast
+argument is opaque, `callbackOf` looks under casts and reads the handler's own
+parameter types, and a statement is read off the value under its cast (fixture
+lines 76-86, CB1-CB10 killed). R5, `export * as x from "pg"` and `export {
+default } from "pg"` flagged (E3d, E3e killed). A first run of the new mutants
+found CB6 and CB7 (`satisfies`, `!`) equivalent on the fixture; fixture lines
+83-84 (a cast under each) now kill them. Round 5's report:
 `C:\Users\Julian\AppData\Local\Temp\int8-parser\critique\round5\critic\critic-round-5.md`
 (its mutants and probes are beside it, `work\critic-mutants-5.mjs` and
 `work\backend\probe5\`). All seven round-4 findings are CLOSED, and the
@@ -55,13 +73,13 @@ checkout behaves correctly at runtime. What failed, and the planned fix:
 - **R5, nit.** `export * as pgx from "pg"` is not flagged where it is written
   (harmless: any `pgx.Pool` is). **Fix:** flag it.
 
-**Then, in order:** add mutants A1, A1b, P2f, P4b, the disguised callback and
-R5 to `backend/tmp-mutate-int8.mjs`; `node tmp-mutate-int8.mjs --anchors`;
-run all of them into `int8-parser\critique\round6\` (about 12 minutes; never
-edit `backend/src` while it runs); commit; re-run the live census and the
-`/segments` rehearsal from the committed tree (step 0's commands below; the
-`binary` check is a runtime change); write `round6\README.txt` and
-`round6\critic-brief.md` (copy round 5's, scoped to R1-R5 and the new diff);
+**Then, in order:** (DONE: mutants added, anchors checked, `3e348fb`
+committed, full run started; never edit `backend/src`, run the census or
+commit while a mutation run is going, since it rewrites files in place.)
+Re-run the live census and the `/segments` rehearsal from the committed tree
+(step 0's commands below; the `binary` check is a runtime change); write
+`round6\README.txt`; fill `__COMMIT__`/`__FULL__` in `round6\critic-brief.md`
+(already drafted, scoped to R1-R5 and `git diff d321bd5..3e348fb -- backend`);
 launch round 6's critic, narrower still. Rounds 2 to 5 each found less; if
 round 6 finds only further contrived spellings, put the choice to Julian:
 stop the loop with the scan's limits stated exactly, or keep going.
@@ -72,12 +90,14 @@ round-2 finding was fixed (`044d29c`, 2026-10-08). Round 3 confirmed all ten
 closed and FAILED it on one new hole, pg's own `parseInt8` switch, plus smaller
 findings, fixed the same day (`8eeeb4f`). Round 4 confirmed those closed and
 FAILED it on minor and nit findings only, also fixed the same day (`d321bd5`,
-see "Round 4" below); cold critic round 5 is running.** Commits: `1206bed`
+see "Round 4" below). Round 5 confirmed those closed and FAILED it on minor
+findings and nits (R1-R5 above), fixed 2026-10-09 (`3e348fb`).** Commits: `1206bed`
 (the parser, the fallout, the new eval `npm run eval:query-types`), `0bf631d`
 (critic round 1's fixes: a gate test on the `/segments` join, now
 `services/segmentsResponse.ts`; census blind spots closed), progress saves,
 `044d29c` (round-2 fixes), `8eeeb4f` (round-3 fixes), `d321bd5` (round-4
-fixes). **425 backend tests** (394 before round 2's fixes).
+fixes), `3e348fb` (round-5 fixes). **427 backend tests** (394 before round 2's
+fixes).
 
 **What the critic is, and why it ran.** CLAUDE.md requires that a change be
 attacked before it ships by a separate sub-agent that did not build it: a
@@ -335,7 +355,9 @@ read-only scripts are re-run for it: results in `int8-parser\critique\round4\`.
    probed with `BASE=http://localhost:3999 node segments-probe.mjs`, then
    `taskkill //PID <pid> //F` (PID from `netstat -ano`).
 1. **Cold critic round 5: DONE 2026-10-09, FAIL on minor findings and nits
-   (R1-R5, at the top of this item). Fix them, then round 6.** Scoped like rounds 3 and 4
+   (R1-R5, at the top of this item), fixed in `3e348fb`. Next: round 6's
+   evidence (the census and the rehearsal, as in step 0), then round 6, its
+   brief drafted in `int8-parser\critique\round6\`.** Scoped like rounds 3 and 4
    (Julian asked on 2026-10-08 to keep sub-agent use down): re-check round 4's
    findings and attack only the new code. Brief and verdict in
    `int8-parser\critique\round5\`. Loop until it passes; a round that cannot

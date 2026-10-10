@@ -516,7 +516,7 @@ test("AN ARGUMENT TYPED `any` MAY BE A CALLBACK OR A SUBMITTABLE, so it counts a
   assert.equal(at(65).declared.kind, "any");
   assert.equal(census(at(65), [idColumn]).pass, false, "untyped, and read through the handler");
   assert.deepEqual(at(68).statements, []);
-  assert.match(at(68).unresolved!, /^an argument the census cannot see into \(typed `any` or `never`, spread, or cast\)/);
+  assert.match(at(68).unresolved!, /^an argument the census cannot see into \(typed `any`, spread, or cast\)/);
   assert.equal(at(68).resultUsed, true);
   assert.deepEqual(judgeCensus([at(68)], new Map(), types).unchecked, [at(68)]);
 });
