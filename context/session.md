@@ -14,10 +14,24 @@ stale.
 
 ### 1. Make every bigint id a number at the driver: one global int8 parser
 
-**WHERE THIS STANDS (2026-10-10): COLD CRITIC ROUND 6 FAILED `dcec070`.
-DECISION PENDING WITH JULIAN: fix F1-F7 and stop the loop (recommended), fix
-and run round 7, or rebuild the scan on the type checker. Do not start work
-until he answers. Nothing is pushed, merged or deployed.** Report:
+**WHERE THIS STANDS (2026-10-10): cold critic round 6 FAILED `dcec070`.
+JULIAN DECIDED (2026-10-10): fix F1-F7, stop the critic loop there (no round
+7, so this ships WITHOUT a critic PASS, on his decision), and ship after his
+go-ahead. F1-F7 are FIXED in `9b68a1f` (429 backend tests, typecheck clean,
+196 mutants with every anchor matching; the 26 new and changed ones all as
+expected). The final full mutation run was going into
+`int8-parser\critique\round6-fixes\mutation-run.txt`. NEXT: check it says "0
+not as expected"; re-run the live census (expect 82 sites, 11 timestamp lies,
+0 else); then ASK JULIAN FOR THE GO-AHEAD TO MERGE (merging deploys), and only
+then step 2 (ship) below. Nothing is pushed, merged or deployed.** What
+`9b68a1f` does: F1, the scan reads `import P = pgx.Pool` and `export import`;
+F2, constructor parameter properties count as class members; F3, a test pins
+pool.ts's exports to `pool` alone; F4, pg imported whole may only be read on
+into (`pg.types`, `pg[key]`, a type), so `export default pg` and `const db =
+pg` are flagged; F5, the census claims only casts on the argument itself; F6,
+a cast over a string, number, bigint, boolean, null, undefined or `T[]` array
+no longer counts as hiding a callback; F7, binary tested with `"true"`. Round
+6's report:
 `int8-parser\critique\round6\critic\critic-round-6.md`. All five round-5
 findings CLOSED (each reproduction re-run). New, all in this round's code:
 F1 minor, `import P = pgx.Pool` (an ImportEqualsDeclaration, its `pgx.Pool` a
