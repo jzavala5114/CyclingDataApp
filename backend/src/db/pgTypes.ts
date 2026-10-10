@@ -42,15 +42,19 @@ import { bigintId } from "./pgNumbers.js";
 // write over it: a stray setTypeParser, or pg's own `pg.defaults.parseInt8`
 // switch, which installs int4's parseInt (rounds past 2^53) when set true and
 // pg's text parser when set false. And a client asks its own `types` first,
-// if it was given any, and reads no text parser at all when set to binary. So
-// pool.ts asks `driverReplaced` (the registry) and `clientReplaced` (the client
-// a checkout hands out) on every checkout, which every pool.query is, and
-// refuses the checkout with the reason. A replacement made while a client is
-// already checked out reaches that client's later queries until it is
-// released; the next checkout refuses. db/pool.test.ts holds all of that, and
-// fails if pool.ts stops importing this module, or if any other source file
-// reaches pg's Pool or Client, re-exports them, gives anything its own parsers
-// or binary results, registers a parser, or mentions `parseInt8`.
+// if it was given any, and when set to binary has every query pg prepares
+// (any with parameters) answered in binary, where pg's binary int8 parser
+// returns text. So pool.ts asks `driverReplaced` (the registry) and
+// `clientReplaced` (the client a checkout hands out) on every checkout, which
+// every pool.query is, and refuses the checkout with the reason. A replacement
+// made while a client is already checked out reaches that client's later
+// queries until it is released; the next checkout refuses. Parsers or binary
+// given to a single query never reach a checkout. db/pool.test.ts holds all of
+// that, fails if pool.ts stops importing this module, and scans every source
+// file, in the spellings its comment lists, for pg's Pool or Client reached
+// outside pool.ts or re-exported, a property `types` or `binary` given to
+// anything (one query's config included), a parser registered, or
+// `parseInt8`. A name assembled at runtime is beyond it.
 
 type TypeId = Parameters<typeof pg.types.getTypeParser>[0];
 
@@ -95,13 +99,16 @@ export function driverReplaced(): string | null {
 /**
  * The same question for one client, which is what a query really reads with:
  * pg asks the client's own `types` before the registry, and a client set to
- * binary reads none of the text parsers.
+ * binary has every query with parameters answered in binary, which pg parses
+ * with its own binary int8 parser (text) and never with the parsers above.
  */
 export function clientReplaced(client: pg.ClientBase): string | null {
-  if ((client as unknown as { binary?: boolean }).binary === true) {
+  // Truthy, as pg reads it (`c.binary || defaults.binary`, then `if (this.binary)`):
+  // a cold review's `binary ||= 1` passed a test for `=== true`.
+  if ((client as unknown as { binary?: unknown }).binary) {
     return (
-      "a checked-out client asks for binary results, which db/pgTypes.ts's parsers never see: " +
-      "pg.defaults.binary, or binary in the Pool's config"
+      "a checked-out client asks for binary results, so every query with parameters would read int8 " +
+      "through pg's binary parser, as text: pg.defaults.binary, or binary in the Pool's config"
     );
   }
   const replaced = replacedIn((oid) => client.getTypeParser(oid, "text"));

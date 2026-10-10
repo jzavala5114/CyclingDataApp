@@ -99,6 +99,25 @@ test("A HEALTHY QUERY goes through the checkout, both ways pg-pool asks for one"
   assert.equal(reached.mock.callCount(), 3);
 });
 
+test("A CONNECTION THAT FAILS reaches the caller as its own error, both ways pg-pool asks for one", { timeout: 2000 }, async (t) => {
+  // With the database down, pg-pool answers a checkout with (err, undefined,
+  // done). A cold review's round 5 made the checkout swallow that, so every
+  // query hung through an outage, or pass it on as no error, so pg-pool's
+  // query called `.once` on the missing client and crashed the process. Both
+  // passed every test, which only ever handed out a client.
+  const down = new Error("connect ECONNREFUSED 127.0.0.1:5432");
+  const reached = t.mock.method(pg.Pool.prototype, "connect", function (callback?: (err: Error, c: undefined, done: () => void) => void) {
+    if (callback === undefined) return Promise.reject(down);
+    process.nextTick(() => callback(down, undefined, () => undefined));
+    return undefined;
+  } as never);
+  await assert.rejects(pool.query("select 1"), (err) => err === down, "pool.query");
+  await assert.rejects(pool.connect(), (err) => err === down, "pool.connect()");
+  const viaCallback = await new Promise<unknown[]>((resolve) => pool.connect((err, c) => resolve([err, c])));
+  assert.deepEqual(viaCallback, [down, undefined], "pool.connect(callback)");
+  assert.equal(reached.mock.callCount(), 3);
+});
+
 test("THE TRIPWIRE: a parser replaced after pool.ts loaded fails every checkout and query, with the reason, before connecting", { timeout: 2000 }, async (t) => {
   // A cold review's round 3: `pg.defaults.parseInt8 = true` in src/index.ts
   // made the server round ids past 2^53, and `= false` made them text again,
@@ -125,11 +144,14 @@ test("A CLIENT WITH PARSERS OF ITS OWN, or set to binary, is refused at checkout
   // A cold review's round 4: `pool.options.types = { getTypeParser }` got past
   // a tripwire that read only the registry, because pg asks a client's own
   // `types` first, and the server rounded past 2^53 without a word. So the
-  // client a checkout hands out is checked too, through pg's own lookup.
+  // client a checkout hands out is checked too, through pg's own lookup. Its
+  // round 5: `binary ||= 1` got past a check for `=== true`, and pg, which
+  // tests truthiness, sent int8 back as text.
   const rounding = { getTypeParser: (oid: number, format?: string) => (oid === 20 ? Number : pg.types.getTypeParser(oid as TypeId, format as "text")) };
   for (const [what, config, reason] of [
     ["a Pool given its own types", { types: rounding }, /a checked-out client's int8 \(20\) parser is not the one db\/pgTypes\.ts installed/],
     ["a Pool set to binary", { binary: true }, /asks for binary results/],
+    ["a Pool set to binary by a truthy value", { binary: 1 as unknown as boolean }, /asks for binary results/],
   ] as [string, pg.ClientConfig, RegExp][]) {
     const client = handed(config);
     const reached = handOut(t, client);
@@ -146,87 +168,107 @@ test("A CLIENT WITH PARSERS OF ITS OWN, or set to binary, is refused at checkout
 
 // -- the scan: what the tripwire cannot see ------------------------------------
 
-// The tripwire guards the one Pool. A script that built a Pool of its own would
-// never pass through it, and in a process that never loads pool.ts, ids are
-// text again. The census cannot notice either: it judges every query with its
-// own process's driver. A cold review built a second Pool in findHoles.ts and
-// every test passed, and the next one reached pg's Pool through a re-export.
-// So this reads every source file, for each way of reaching or re-exporting
-// pg's constructors, of giving anything parsers of its own or binary results,
-// of registering a parser, and the parseInt8 switch. The tripwire would refuse
-// most of these in production; this refuses them at commit time.
+// The tripwire guards the one Pool, and reads only what a client gets from it.
+// A script that built a Pool of its own would never pass through it, and in a
+// process that never loads pool.ts, ids are text again; parsers or binary
+// given to a single query (`pool.query({ text, types })`) never reach a
+// checkout at all. The census cannot notice either: it judges every query with
+// its own process's driver. Cold reviews built a second Pool in findHoles.ts,
+// reached pg's Pool through a re-export, and gave findHoles' bucket query
+// rounding parsers under a computed key, and every test passed. So this reads
+// every source file, as written and without types, for:
+//   - outside db/pool.ts, pg's Pool or Client imported or reached as a
+//     property or a destructured name, and pg-pool imported; anywhere, any of
+//     those re-exported, or all of pg (`export *`, `export * as`, or its
+//     default);
+//   - a property called `types` or `binary` given to anything, as a member of
+//     an object or a class (property, shorthand, method or getter), or
+//     reached through `.binary`, or through `.types` other than to read on
+//     into it (`pg.types.builtins`), which is how every assignment to one is
+//     written. `types: [...]`, an array literal under a plain name, is a Parse
+//     message's parameter type ids. db/pgTypes.ts reads `binary`: it is the
+//     check;
+//   - `setTypeParser`, outside db/pgTypes.ts, and `parseInt8`, anywhere.
+// Each name counts written as an identifier in those places, and as a string
+// or template literal anywhere: `pg["Pool"]`, `{ ["types"]: t }`,
+// `Reflect.set(o, "binary", 1)`. A name assembled at runtime (`"Po" + "ol"`,
+// a variable) is beyond it, and so is an object built at runtime or spread in
+// from outside src/. The tripwire refuses the Pool-level ones in production
+// whatever their spelling; this refuses them at commit time, and nothing else
+// refuses the rest.
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONSTRUCTORS = new Set(["Pool", "Client"]);
 
 function driverEscapes(file: string, text: string): string[] {
   const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
   const at = (node: ts.Node): string => `${file}:${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1}`;
-  const nameOf = (node: ts.Node | undefined): string | undefined =>
-    node !== undefined && (ts.isIdentifier(node) || ts.isStringLiteralLike(node)) ? node.text : undefined;
-  // A property given a value, in an object literal or by assignment, whatever
-  // object it lands on: a config built beforehand reaches pg all the same.
-  const given = (node: ts.Node): { name: string | undefined; value: ts.Expression | undefined } | undefined => {
-    if (ts.isPropertyAssignment(node)) return { name: nameOf(node.name), value: node.initializer };
-    if (ts.isShorthandPropertyAssignment(node)) return { name: node.name.text, value: undefined };
-    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
-      const target = node.left;
-      if (ts.isPropertyAccessExpression(target)) return { name: target.name.text, value: node.right };
-      if (ts.isElementAccessExpression(target)) return { name: nameOf(target.argumentExpression), value: node.right };
-    }
-    return undefined;
-  };
+  // A name written as an identifier. One written as a string or template
+  // literal is read where that literal is visited, wherever it stands.
+  const identifier = (node: ts.Node | undefined): string | undefined => (node !== undefined && ts.isIdentifier(node) ? node.text : undefined);
   const found: string[] = [];
+  const flag = (name: string, node: ts.Node): void => {
+    if (CONSTRUCTORS.has(name) && file !== "db/pool.ts") found.push(`${at(node)} reaches for pg's ${name}`);
+    if (name === "types") found.push(`${at(node)} brings its own parsers`);
+    if (name === "binary" && file !== "db/pgTypes.ts") found.push(`${at(node)} asks for binary results`);
+    if (name === "setTypeParser" && file !== "db/pgTypes.ts") found.push(`${at(node)} replaces a parser`);
+    if (name === "parseInt8") found.push(`${at(node)} touches pg.defaults.parseInt8`);
+  };
   const visit = (node: ts.Node): void => {
-    // Re-exports hand pg's constructors to files that never name pg.
+    const specifier = ts.isImportDeclaration(node) || ts.isExportDeclaration(node) ? node.moduleSpecifier : undefined;
+    const from = specifier !== undefined && ts.isStringLiteral(specifier) ? specifier.text : undefined;
+    // Re-exports hand pg on to files that never name it.
     if (ts.isExportDeclaration(node) && !node.isTypeOnly) {
-      const from = nameOf(node.moduleSpecifier);
-      if (from === "pg-pool") found.push(`${at(node)} re-exports pg-pool`);
       const clause = node.exportClause;
-      if (from === "pg" && clause === undefined) found.push(`${at(node)} re-exports all of pg`);
+      if (from === "pg-pool") found.push(`${at(node)} re-exports pg-pool`);
+      if (from === "pg" && (clause === undefined || ts.isNamespaceExport(clause))) found.push(`${at(node)} re-exports all of pg`);
       if (from === "pg" && clause !== undefined && ts.isNamedExports(clause)) {
         for (const element of clause.elements) {
-          const exported = (element.propertyName ?? element.name).text;
-          if (!element.isTypeOnly && CONSTRUCTORS.has(exported)) found.push(`${at(element)} re-exports pg's ${exported}`);
+          const exported = identifier(element.propertyName ?? element.name);
+          if (element.isTypeOnly || exported === undefined) continue;
+          if (CONSTRUCTORS.has(exported)) found.push(`${at(element)} re-exports pg's ${exported}`);
+          if (exported === "default") found.push(`${at(element)} re-exports all of pg`);
         }
       }
     }
-    // Parsers of its own, or binary results, given to anything. A Parse
-    // message's `types` is an array of parameter type ids, a different thing.
-    const property = given(node);
-    if (property?.name === "types" && !(property.value !== undefined && ts.isArrayLiteralExpression(property.value))) {
-      found.push(`${at(node)} brings its own parsers`);
-    }
-    if (property?.name === "binary") found.push(`${at(node)} asks for binary results`);
-    if (file !== "db/pool.ts") {
-      // Any value reference to pg's constructors, however it is spelled. Type
-      // positions (`pg.Pool` in an annotation, `import type`) are not values.
-      if (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly !== true) {
-        const from = nameOf(node.moduleSpecifier);
-        if (from === "pg-pool") found.push(`${at(node)} imports pg-pool`);
-        const named = node.importClause?.namedBindings;
-        if (from === "pg" && named !== undefined && ts.isNamedImports(named)) {
-          for (const element of named.elements) {
-            const imported = (element.propertyName ?? element.name).text;
-            if (!element.isTypeOnly && CONSTRUCTORS.has(imported)) found.push(`${at(element)} imports pg's ${imported}`);
-          }
+    // Type positions (`pg.Pool` in an annotation, `import type`) are not values.
+    if (ts.isImportDeclaration(node) && node.importClause?.isTypeOnly !== true && file !== "db/pool.ts") {
+      if (from === "pg-pool") found.push(`${at(node)} imports pg-pool`);
+      const named = node.importClause?.namedBindings;
+      if (from === "pg" && named !== undefined && ts.isNamedImports(named)) {
+        for (const element of named.elements) {
+          const imported = identifier(element.propertyName ?? element.name);
+          if (!element.isTypeOnly && imported !== undefined && CONSTRUCTORS.has(imported)) found.push(`${at(element)} imports pg's ${imported}`);
         }
       }
-      const reached = ts.isPropertyAccessExpression(node)
-        ? node.name.text
-        : ts.isElementAccessExpression(node)
-          ? nameOf(node.argumentExpression)
-          : ts.isBindingElement(node)
-            ? nameOf(node.propertyName ?? node.name)
-            : undefined;
-      if (reached !== undefined && CONSTRUCTORS.has(reached)) found.push(`${at(node)} reaches for pg's ${reached}`);
     }
-    const word = ts.isIdentifier(node) || ts.isStringLiteralLike(node) ? node.text : undefined;
-    if (word === "setTypeParser" && file !== "db/pgTypes.ts") found.push(`${at(node)} replaces a parser`);
-    if (word === "parseInt8") found.push(`${at(node)} touches pg.defaults.parseInt8`);
+    if (
+      ts.isPropertyAssignment(node) ||
+      ts.isShorthandPropertyAssignment(node) ||
+      ts.isMethodDeclaration(node) ||
+      ts.isGetAccessorDeclaration(node) ||
+      ts.isPropertyDeclaration(node)
+    ) {
+      const name = identifier(node.name);
+      const typeIds = ts.isPropertyAssignment(node) && ts.isArrayLiteralExpression(node.initializer);
+      if ((name === "types" && !typeIds) || name === "binary") flag(name, node);
+    }
+    if (ts.isPropertyAccessExpression(node)) {
+      const name = node.name.text;
+      const readOn = (ts.isPropertyAccessExpression(node.parent) || ts.isElementAccessExpression(node.parent)) && node.parent.expression === node;
+      if (CONSTRUCTORS.has(name) || name === "binary" || (name === "types" && !readOn)) flag(name, node);
+    }
+    if (ts.isBindingElement(node)) {
+      const name = identifier(node.propertyName ?? node.name);
+      if (name !== undefined && CONSTRUCTORS.has(name)) flag(name, node);
+    }
+    if (ts.isStringLiteralLike(node)) flag(node.text, node);
+    if (ts.isIdentifier(node) && (node.text === "setTypeParser" || node.text === "parseInt8")) flag(node.text, node);
     ts.forEachChild(node, visit);
   };
   visit(source);
-  return found;
+  // One spelling can meet two rules: `({ binary: pg.defaults.binary } = o)` is
+  // a member and a property. Report it once.
+  return [...new Set(found)];
 }
 
 test("THE ONLY POOL: no other file reaches or re-exports pg's Pool or Client, brings its own parsers or binary results, registers a parser, or touches parseInt8", () => {
@@ -249,36 +291,57 @@ test("...and that check finds each escape when one is there", () => {
   assert.deepEqual(escapes(`import { Pool as DbPool } from "pg";\nnew DbPool();`), ["scripts/x.ts:1 imports pg's Pool"]);
   assert.deepEqual(escapes(`new (pg.Pool)({});`), ["scripts/x.ts:1 reaches for pg's Pool"]);
   assert.deepEqual(escapes(`new pg["Pool"]({});`), ["scripts/x.ts:1 reaches for pg's Pool"]);
+  assert.deepEqual(escapes(`new pg[("Client")]({});`), ["scripts/x.ts:1 reaches for pg's Client"]);
   assert.deepEqual(escapes(`const P = pg.Pool;`), ["scripts/x.ts:1 reaches for pg's Pool"]);
   assert.deepEqual(escapes(`const { Pool: P } = pg;`), ["scripts/x.ts:1 reaches for pg's Pool"]);
+  assert.deepEqual(escapes(`const { ["Pool"]: P } = pg;`), ["scripts/x.ts:1 reaches for pg's Pool"]);
+  assert.deepEqual(escapes(`const P = Reflect.get(pg, "Pool");`), ["scripts/x.ts:1 reaches for pg's Pool"]);
   assert.deepEqual(escapes(`import PgPool from "pg-pool";`), ["scripts/x.ts:1 imports pg-pool"]);
-  // ...or handed on under another module's name (a cold review's round 4).
+  // ...or handed on under another module's name (cold reviews' rounds 4 and 5).
   assert.deepEqual(escapes(`export { Pool } from "pg";`), ["scripts/x.ts:1 re-exports pg's Pool"]);
   assert.deepEqual(escapes(`export { Client as C } from "pg";`), ["scripts/x.ts:1 re-exports pg's Client"]);
   assert.deepEqual(escapes(`export * from "pg";`), ["scripts/x.ts:1 re-exports all of pg"]);
+  assert.deepEqual(escapes(`export * as pgx from "pg";`), ["scripts/x.ts:1 re-exports all of pg"]);
+  assert.deepEqual(escapes(`export { default as pgx } from "pg";`), ["scripts/x.ts:1 re-exports all of pg"]);
   assert.deepEqual(escapes(`export * from "pg-pool";`), ["scripts/x.ts:1 re-exports pg-pool"]);
-  // Parsers of its own, or binary results, given however.
+  // Parsers of its own, or binary results, given to anything: as a member of
+  // any kind, through a property by any assignment, or under a literal name.
   assert.deepEqual(escapes(`pool.query({ text: "select 1", types: { getTypeParser } });`), ["scripts/x.ts:1 brings its own parsers"]);
+  assert.deepEqual(escapes(`pool.query({ ["types"]: rounding, text: "select 1" });`), ["scripts/x.ts:1 brings its own parsers"]);
   assert.deepEqual(escapes(`const config = { text: "select 1", types };\npool.query(config);`), ["scripts/x.ts:1 brings its own parsers"]);
+  assert.deepEqual(escapes(`const config = { text: "select 1", get types() { return custom; } };`), ["scripts/x.ts:1 brings its own parsers"]);
+  assert.deepEqual(escapes(`class Config { text = "select 1"; binary = true; }`), ["scripts/x.ts:1 asks for binary results"]);
+  assert.deepEqual(escapes(`const config = { text: "select 1", binary() { return 1; } };`), ["scripts/x.ts:1 asks for binary results"]);
   assert.deepEqual(escapes(`export const pool = new Pool({ connectionString, types: custom });`, "db/pool.ts"), [
     "db/pool.ts:1 brings its own parsers",
   ]);
   assert.deepEqual(escapes(`pool.options.types = { getTypeParser };`), ["scripts/x.ts:1 brings its own parsers"]);
+  assert.deepEqual(escapes(`pool.options.types ??= custom;`), ["scripts/x.ts:1 brings its own parsers"]);
   assert.deepEqual(escapes(`Object.assign(pool.options, { types: custom });`), ["scripts/x.ts:1 brings its own parsers"]);
+  assert.deepEqual(escapes(`Object.defineProperty(pool.options, "types", { value: custom });`), ["scripts/x.ts:1 brings its own parsers"]);
   assert.deepEqual(escapes(`pool.query({ text: "select 1", binary: true });`), ["scripts/x.ts:1 asks for binary results"]);
   assert.deepEqual(escapes(`pg.defaults.binary = true;`), ["scripts/x.ts:1 asks for binary results"]);
-  // A parser replaced, or pg's switch, however spelled.
+  assert.deepEqual(escapes(`(pool.options as { binary?: unknown }).binary ||= 1;`), ["scripts/x.ts:1 asks for binary results"]);
+  assert.deepEqual(escapes(`[pg.defaults.binary] = [true];`), ["scripts/x.ts:1 asks for binary results"]);
+  assert.deepEqual(escapes(`({ binary: pg.defaults.binary } = { binary: true });`), ["scripts/x.ts:1 asks for binary results"]);
+  assert.deepEqual(escapes(`Reflect.set(pg.defaults, "binary", true);`), ["scripts/x.ts:1 asks for binary results"]);
+  // `.types` counts unless it is read on into, even when used as a key.
+  assert.deepEqual(escapes(`const parse = parsers[config.types];`), ["scripts/x.ts:1 brings its own parsers"]);
+  // A parser replaced, or pg's switch, as an identifier or a literal.
   assert.deepEqual(escapes(`pg.types.setTypeParser(20, (t) => parseInt(t, 10));`), ["scripts/x.ts:1 replaces a parser"]);
   assert.deepEqual(escapes(`pg.types["setTypeParser"](20, Number);`), ["scripts/x.ts:1 replaces a parser"]);
   assert.deepEqual(escapes(`pg.defaults.parseInt8 = true;`), ["scripts/x.ts:1 touches pg.defaults.parseInt8"]);
   assert.deepEqual(escapes(`pg.defaults["parseInt8"] = false;`), ["scripts/x.ts:1 touches pg.defaults.parseInt8"]);
   assert.deepEqual(escapes(`Object.assign(pg.defaults, { parseInt8: true });`), ["scripts/x.ts:1 touches pg.defaults.parseInt8"]);
-  // Not escapes: the two files whose job these are, types, and the census's
-  // Parse message, whose `types` lists parameter type ids rather than parsers.
+  // Not escapes: the two files whose job these are, types, reading on into
+  // pg's registry or a union's members, and the census's Parse message, whose
+  // `types` lists parameter type ids rather than parsers.
   assert.deepEqual(escapes(`import { Pool } from "pg";\nexport const pool = new Pool({});`, "db/pool.ts"), []);
-  assert.deepEqual(escapes(`pg.types.setTypeParser(20, parse);`, "db/pgTypes.ts"), []);
+  assert.deepEqual(escapes(`import pg from "pg";\nexport const pool = new pg.Pool({});`, "db/pool.ts"), []);
+  assert.deepEqual(escapes(`pg.types.setTypeParser(20, parse);\nif ((client as { binary?: unknown }).binary) refuse();`, "db/pgTypes.ts"), []);
   assert.deepEqual(escapes(`import type { Pool, PoolClient } from "pg";\nlet db: pg.Pool;\ntype C = typeof pg.Client;`), []);
   assert.deepEqual(escapes(`import { type Pool } from "pg";`), []);
   assert.deepEqual(escapes(`export type { Pool } from "pg";\nexport { type Client } from "pg";`), []);
+  assert.deepEqual(escapes(`const INT8 = pg.types.builtins.INT8;\nconst text = union.types.every(isText);\nconst named = pg.types[name];`), []);
   assert.deepEqual(escapes(`connection.parse({ name: "", text: "select 1", types: [] }, false);`), []);
 });

@@ -224,6 +224,17 @@ export function spreadArgs(args: readonly [string, (err: Error, r: QueryResult<{
 export function neverCallback(handler: (err: Error, r: QueryResult<{ id: string }>) => void) {
   pool.query("select 22 as w", handler as never);
 }
+export function disguised(handler: (err: Error, r: QueryResult<{ id: string }>) => void, hidden: object) {
+  pool.query("select 23 as id", handler as unknown as any[]);
+  pool.query("select 24 as id", (handler as unknown) as undefined);
+  pool.query("select 25 as id", <any[]>hidden);
+  client.query(cursor as unknown as string);
+  pool.query("select 26 as id", handler as unknown as (err: Error, r: QueryResult<{ id: number }>) => void);
+  pool.query("select 27 as id", <any[]><unknown>handler);
+  pool.query("select 28 as id", (hidden as any[])!);
+  pool.query("select 29 as id", (hidden as any[]) satisfies unknown[]);
+  return pool.query<{ z: number }>({ text: sqlVar as "select 30 as z" });
+}
 `;
 const FIXTURE_TEST = `import type { Pool } from "pg";
 declare const pool: Pool;
@@ -296,6 +307,7 @@ test("finds every database call however it is reached, and nothing else; test fi
       [62, "structural"], // a cast on a plain client's promise
       [65, "pg"], [68, "pg"], // an argument typed `any`: a callback, a Submittable
       [71, "pg"], [74, "pg"], // arguments spread, and a callback cast `as never`
+      [77, "pg"], [78, "pg"], [79, "pg"], [80, "pg"], [81, "pg"], [82, "pg"], [83, "pg"], [84, "pg"], [85, "pg"], // under casts
     ],
   );
   assert.ok(sites.every((s) => s.file === "src/__census_fixture__.ts"), "the .test.ts fixture was described");
@@ -504,21 +516,47 @@ test("AN ARGUMENT TYPED `any` MAY BE A CALLBACK OR A SUBMITTABLE, so it counts a
   assert.equal(at(65).declared.kind, "any");
   assert.equal(census(at(65), [idColumn]).pass, false, "untyped, and read through the handler");
   assert.deepEqual(at(68).statements, []);
-  assert.match(at(68).unresolved!, /^an argument the census cannot see into \(typed `any` or `never`, or spread\)/);
+  assert.match(at(68).unresolved!, /^an argument the census cannot see into \(typed `any` or `never`, spread, or cast\)/);
   assert.equal(at(68).resultUsed, true);
   assert.deepEqual(judgeCensus([at(68)], new Map(), types).unchecked, [at(68)]);
 });
 
-test("...AND SO ARE ARGUMENTS SPREAD, OR CAST `as never`: neither can be seen into", () => {
+test("...AND SO ARE ARGUMENTS SPREAD: they cannot be seen into", () => {
   // A cold review's round 4: a statement and a typed callback spread from a
-  // tuple were filed under "nothing to check", and a callback cast `as never`
-  // into the values slot as "not read". Both read rows at runtime.
+  // tuple were filed under "nothing to check". Both read rows at runtime.
   assert.deepEqual(at(71).statements, []);
   assert.match(at(71).unresolved!, /^an argument the census cannot see into/);
   assert.equal(at(71).resultUsed, true);
   assert.deepEqual(judgeCensus([at(71)], new Map(), types).unchecked, [at(71)]);
-  assert.equal(at(74).resultUsed, true);
-  assert.equal(census(at(74), [idColumn]).pass, false, "untyped, and read through the callback");
+});
+
+test("...AND A CAST HIDES NOTHING: a callback under one is read by its own types, and anything else counts as read", () => {
+  // Cold reviews' rounds 4 and 5: a typed callback cast `as never`, `as
+  // unknown as any[]` or `as unknown as undefined` into the values slot was
+  // filed as "not read", and pg, which tells a callback by `typeof`, calls it
+  // back with the rows. Under the casts it is still the handler, so its own
+  // row type is checked, and this one lies: through `as`, parentheses and
+  // `<T>`, even when the cast names a function type of its own (line 81).
+  for (const line of [74, 77, 78, 81, 82]) {
+    assert.equal(at(line).resultUsed, true, `line ${line}`);
+    assert.deepEqual(props(at(line)), { id: "string" }, `line ${line}: the handler's own row type`);
+    assert.equal(census(at(line), [idColumn]).findings.length, 1, `line ${line}: its lie is caught`);
+  }
+  // A cast over a value with no call signature may still hide a function,
+  // found under `!` (line 83) and `satisfies` (line 84) too...
+  for (const line of [79, 83, 84]) {
+    assert.equal(at(line).resultUsed, true, `line ${line}`);
+    assert.equal(at(line).declared.kind, "any", `line ${line}`);
+    assert.deepEqual(census(at(line), [idColumn]).untypedRead.map((read) => read.site), [at(line)], `line ${line}`);
+  }
+  // ...a cast statement may hide a Submittable, which reads its own rows...
+  assert.match(at(80).unresolved!, /^an argument the census cannot see into/);
+  assert.deepEqual(judgeCensus([at(80)], new Map(), types).unchecked, [at(80)]);
+  // ...and a config's text is read off the value under its cast, never off the
+  // cast: this sends whatever sqlVar holds, which is not "select 30 as z".
+  assert.deepEqual(at(85).statements, []);
+  assert.equal(at(85).unresolved, "sqlVar");
+  assert.deepEqual(judgeCensus([at(85)], new Map(), types).unchecked, [at(85)]);
 });
 
 test("a cast on `.rows` is not read as a declaration: untyped, so it fails rather than passing unread", () => {

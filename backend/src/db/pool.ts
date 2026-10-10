@@ -13,13 +13,16 @@ type Checkout = Parameters<Pool["connect"]>[0];
 // own `pg.defaults.parseInt8 = true` (int4's parseInt, which rounds past 2^53)
 // or `= false` (pg's text parser, ids as text again), the most copied line for
 // getting bigints as numbers. A client also asks its own `types` first, if the
-// Pool's options gave it any, and a client set to binary reads no text parser.
+// Pool's options gave it any, and a client set to binary has every query with
+// parameters answered in binary, which pg's binary int8 parser returns as text.
 // Cold reviews put each of these past every test. So every checkout, which
 // pool.query goes through too, checks the registry before connecting and the
-// client it hands out after, and refuses with the reason. A refused client is
-// released with the error, which removes it from the pool. A replacement made
-// while a client is already checked out reaches that client's later queries
-// until it is released; the next checkout refuses.
+// client it hands out after, and refuses with the reason; a connection that
+// failed is passed on as it came. A refused client is released with the error,
+// which removes it from the pool. A replacement made while a client is already
+// checked out reaches that client's later queries until it is released; the
+// next checkout refuses. Parsers or binary given to a single query never pass
+// through here: db/pool.test.ts's scan is what refuses those.
 class CheckedPool extends Pool {
   connect(): Promise<PoolClient>;
   connect(callback: Checkout): void;

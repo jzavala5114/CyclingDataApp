@@ -30,6 +30,13 @@ import { pool } from "../db/pool.js";
 // here, is code the census cannot read: it fails the census unless
 // ACCEPTED_OUTSIDE names it with the reason it is safe.
 //
+// It trusts the types it reads. A query's argument it cannot see into, typed
+// `any` or `never`, spread, or cast, counts as one that reads rows: as the
+// statement, a Submittable it cannot read; after it, a callback. Under casts
+// it reads the value: a config's text by the text's own type, and a callback
+// by its own parameter types. A value whose own declaration was cast is what
+// that cast says it is.
+//
 // Read-only.
 //
 //   npm run eval:query-types
@@ -196,13 +203,35 @@ function queryCall(call: ts.CallExpression, checker: ts.TypeChecker): QuerySite[
   return calleeIsQuery(call.expression) && carriesText(first, checker) ? "structural" : null;
 }
 
-// An argument the census cannot see into: typed `any`, or `never` (what a
-// cast `as never` leaves, assignable anywhere), or a spread of arguments. It
-// could be a callback or a Submittable, so it is assumed to be the kind that
-// reads the result. A cold review passed a typed callback through each of
-// these and the census filed it as unread.
+// An argument the census cannot see into: typed `any`, or `never` (assignable
+// anywhere), a spread of arguments, or cast, since a cast says what a value is
+// to be taken as rather than what it is. It could be a callback or a
+// Submittable, so it is assumed to be the kind that reads the result. Cold
+// reviews passed a typed callback through each of these, the last as `as
+// unknown as any[]` in the values slot, and the census filed it as unread.
 const opaque = (arg: ts.Expression, checker: ts.TypeChecker): boolean =>
-  ts.isSpreadElement(arg) || (checker.getTypeAtLocation(arg).flags & (ts.TypeFlags.Any | ts.TypeFlags.Never)) !== 0;
+  ts.isSpreadElement(arg) ||
+  (checker.getTypeAtLocation(arg).flags & (ts.TypeFlags.Any | ts.TypeFlags.Never)) !== 0 ||
+  layersOf(arg).some((layer) => ts.isAsExpression(layer) || ts.isTypeAssertionExpression(layer));
+
+// An argument, then what it holds under each of its parentheses, casts, `!`
+// and `satisfies` in turn: `handler as unknown as any[]` is still handler, and
+// pg, which tells a callback by `typeof`, calls it back with the rows.
+function layersOf(arg: ts.Expression): ts.Expression[] {
+  const layers = [arg];
+  let node = arg;
+  while (
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isTypeAssertionExpression(node) ||
+    ts.isSatisfiesExpression(node) ||
+    ts.isNonNullExpression(node)
+  ) {
+    node = node.expression;
+    layers.push(node);
+  }
+  return layers;
+}
 
 // A Submittable is an object pg hands the connection to: a `pg.Query`, a
 // cursor, a stream. It sends its own messages, so its statement cannot be read
@@ -215,7 +244,7 @@ const opaque = (arg: ts.Expression, checker: ts.TypeChecker): boolean =>
 function submittableOf(arg: ts.Expression, checker: ts.TypeChecker): { what: string; delivers: boolean } | null {
   if (opaque(arg, checker)) {
     return {
-      what: "an argument the census cannot see into (typed `any` or `never`, or spread): it may be a Submittable, whose statement and rows are not visible here",
+      what: "an argument the census cannot see into (typed `any` or `never`, spread, or cast): it may be a Submittable, whose statement and rows are not visible here",
       delivers: true,
     };
   }
@@ -273,14 +302,18 @@ function statementNode(arg: ts.Expression): ts.Expression {
 // them, and every branch is sent sometime, so every one is described. A first
 // version also rebuilt templates span by span; a mutation run showed that code
 // could never change an answer, because a span TypeScript cannot fold is a
-// span it could not read either.
+// span it could not read either. What is sent is the value under any casts:
+// `{ text: sql as "select 1" }` sends whatever sql holds, so the type read is
+// sql's, never the cast's.
 function statementsOf(node: ts.Expression, checker: ts.TypeChecker): { statements: string[] } | { unresolved: string } {
-  const type = checker.getTypeAtLocation(node);
+  const layers = layersOf(node);
+  const value = layers[layers.length - 1];
+  const type = checker.getTypeAtLocation(value);
   if (type.isStringLiteral()) return { statements: [type.value] };
   if (type.isUnion() && type.types.every((t) => t.isStringLiteral())) {
     return { statements: type.types.map((t) => (t as ts.StringLiteralType).value) };
   }
-  return { unresolved: whatIsUnknown(node, checker) };
+  return { unresolved: whatIsUnknown(value, checker) };
 }
 
 // Names the part only known at runtime, so the report says where to look.
@@ -316,11 +349,16 @@ function resultUsed(call: ts.CallExpression, checker: ts.TypeChecker): boolean {
   return !ts.isExpressionStatement(node.parent);
 }
 
-// pg's callback style: a function among the arguments after the statement.
+// pg's callback style: a function among the arguments after the statement,
+// found under any casts. Of an argument's layers, the one nearest the value
+// with a call signature is what reads the result: `handler as never` is read
+// with handler's own parameter types.
 function callbackOf(call: ts.CallExpression, checker: ts.TypeChecker): { arg: ts.Expression; signature: ts.Signature } | undefined {
   for (const arg of call.arguments.slice(1)) {
-    const [signature] = checker.getTypeAtLocation(arg).getCallSignatures();
-    if (signature !== undefined) return { arg, signature };
+    for (const layer of layersOf(arg).reverse()) {
+      const [signature] = checker.getTypeAtLocation(layer).getCallSignatures();
+      if (signature !== undefined) return { arg: layer, signature };
+    }
   }
   return undefined;
 }
