@@ -15,11 +15,17 @@ stale.
 ### 1. Make every bigint id a number at the driver: one global int8 parser
 
 **WHERE THIS STANDS (2026-10-09): R1-R5 below are FIXED in `3e348fb` and
-`dcec070` (427 backend tests, typecheck clean), round 6's evidence is DONE,
-and COLD CRITIC ROUND 6 WAS RUNNING on `dcec070`. NEXT: read
-`int8-parser\critique\round6\critic\critic-round-6.md`. If it is not there,
-relaunch the critic with the brief beside it (`round6\critic-brief.md`, ready
-to use). Nothing is pushed, merged or deployed.** Round 6's evidence, all
+`dcec070` (427 backend tests, typecheck clean), and round 6's evidence is
+DONE. COLD CRITIC ROUND 6 WAS STOPPED at Julian's request before its verdict:
+there is NO `critic-round-6.md`. NEXT: relaunch it, one sub-agent, with the
+prompt "Read and follow the brief at
+C:\Users\Julian\AppData\Local\Temp\int8-parser\critique\round6\critic-brief.md
+exactly" (the brief is ready, COMMIT filled in as `dcec070`). First clear its
+partial work: `round6\critic\` holds `probe-census-round6.txt` and `work\`
+from the stopped run; its node_modules junction was already removed link-only
+and the repo's `backend\node_modules` checked intact (119 entries). Delete
+`work\` only after confirming no link is left inside it (`Get-ChildItem -Recurse
+-Attributes ReparsePoint`). Nothing is pushed, merged or deployed.** Round 6's evidence, all
 read-only from the committed tree, in `round6\` with a README: the full
 mutation run on `dcec070`, 176 mutants, 0 not as expected (172 killed, the 4
 controls survive); the run on `3e348fb` found R33 (the `never` flag in
@@ -82,9 +88,10 @@ checkout behaves correctly at runtime. What failed, and the planned fix:
 
 **Then, in order:** (DONE 2026-10-09: mutants added, `3e348fb` and `dcec070`
 committed, both full runs, the census, the rehearsal, `round6\README.txt`, the
-brief, round 6's critic launched. Never edit `backend/src`, run the census or
-commit while a mutation run is going, since it rewrites files in place.) Read
-round 6's verdict. If it FAILS, fix, run the mutants, commit, redo the census
+brief. Round 6's critic was launched, then stopped at Julian's request before
+its verdict. Never edit `backend/src`, run the census or commit while a
+mutation run is going, since it rewrites files in place.) Relaunch round 6's
+critic (see the top of this item), then read its verdict. If it FAILS, fix, run the mutants, commit, redo the census
 and rehearsal, and brief round 7 the same way. Rounds 2 to 5 each found less;
 if round 6 finds only further contrived spellings, put the choice to Julian:
 stop the loop with the scan's limits stated exactly, or keep going. On a PASS:
