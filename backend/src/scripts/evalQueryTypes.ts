@@ -31,11 +31,13 @@ import { pool } from "../db/pool.js";
 // ACCEPTED_OUTSIDE names it with the reason it is safe.
 //
 // It trusts the types it reads. A query's argument it cannot see into, typed
-// `any`, spread, or cast, counts as one that reads rows: as the
-// statement, a Submittable it cannot read; after it, a callback. Under casts
-// it reads the value: a config's text by the text's own type, and a callback
-// by its own parameter types. A value whose own declaration was cast is what
-// that cast says it is.
+// `any`, spread, or itself cast over anything but a string, number, bigint,
+// boolean, null, undefined or `T[]` array, counts as one that reads rows: as
+// the statement, a Submittable it cannot read; after it, a callback. Under
+// the argument's own casts it reads the value: a config's text by the text's
+// own type, and a callback by its own parameter types. A cast inside a larger
+// expression (`flag ? (h as any) : []`) is beyond it, and a value whose own
+// declaration was cast is what that cast says it is.
 //
 // Read-only.
 //
@@ -204,18 +206,30 @@ function queryCall(call: ts.CallExpression, checker: ts.TypeChecker): QuerySite[
 }
 
 // An argument the census cannot see into: typed `any`, a spread of arguments,
-// or cast (`as never` among them), since a cast says what a value is to be
-// taken as rather than what it is. It could be a callback or a Submittable, so
-// it is assumed to be the kind that reads the result. Cold reviews passed a
-// typed callback through each of these, the last as `as unknown as any[]` in
-// the values slot, and the census filed it as unread. Without a cast, a value
-// is typed `never` only where none exists at runtime (a call that throws, a
-// branch that cannot run) or where `!` was put on null or undefined, which pg
-// takes as no values; a declaration typed `never` is what it says, like any.
-const opaque = (arg: ts.Expression, checker: ts.TypeChecker): boolean =>
-  ts.isSpreadElement(arg) ||
-  (checker.getTypeAtLocation(arg).flags & ts.TypeFlags.Any) !== 0 ||
-  layersOf(arg).some((layer) => ts.isAsExpression(layer) || ts.isTypeAssertionExpression(layer));
+// or itself cast (`as never` among them) over a value that might be a
+// callback or a Submittable, since a cast says what a value is to be taken as
+// rather than what it is. It is assumed to be the kind that reads the result.
+// Cold reviews passed a typed callback through each of these, the last as `as
+// unknown as any[]` in the values slot, and the census filed it as unread.
+// Without a cast, a value is typed `never` only where none exists at runtime
+// (a call that throws, a branch that cannot run) or where `!` was put on null
+// or undefined, which pg takes as no values; a declaration typed `never` is
+// what it says, like any.
+function opaque(arg: ts.Expression, checker: ts.TypeChecker): boolean {
+  if (ts.isSpreadElement(arg) || (checker.getTypeAtLocation(arg).flags & ts.TypeFlags.Any) !== 0) return true;
+  const layers = layersOf(arg);
+  const cast = layers.some((layer) => ts.isAsExpression(layer) || ts.isTypeAssertionExpression(layer));
+  return cast && !plainValue(checker.getTypeAtLocation(layers[layers.length - 1]), checker);
+}
+
+// A value that can be neither a callback nor a Submittable, whatever a cast
+// over it says: a string, number, bigint, boolean, null or undefined, or an
+// array typed `T[]`. Anything else, a tuple or a symbol included, counts as
+// one that might be. A cold review's round 6 showed the cast rule failing a
+// healthy `[1] as number[]` in the values slot.
+const plainValue = (type: ts.Type, checker: ts.TypeChecker): boolean =>
+  (type.flags & (ts.TypeFlags.StringLike | ts.TypeFlags.NumberLike | ts.TypeFlags.BigIntLike | ts.TypeFlags.BooleanLike | ts.TypeFlags.VoidLike | ts.TypeFlags.Null)) !== 0 ||
+  checker.isArrayType(type);
 
 // An argument, then what it holds under each of its parentheses, casts, `!`
 // and `satisfies` in turn: `handler as unknown as any[]` is still handler, and

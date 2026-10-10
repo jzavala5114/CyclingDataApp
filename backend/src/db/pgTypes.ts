@@ -50,11 +50,12 @@ import { bigintId } from "./pgNumbers.js";
 // made while a client is already checked out reaches that client's later
 // queries until it is released; the next checkout refuses. Parsers or binary
 // given to a single query never reach a checkout. db/pool.test.ts holds all of
-// that, fails if pool.ts stops importing this module, and scans every source
-// file, in the spellings its comment lists, for pg's Pool or Client reached
-// outside pool.ts or re-exported, a property `types` or `binary` given to
-// anything (one query's config included), a parser registered, or
-// `parseInt8`. A name assembled at runtime is beyond it.
+// that, fails if pool.ts stops importing this module or exports anything but
+// the pool, and scans every source file, in the spellings its comment lists,
+// for pg's Pool or Client reached outside pool.ts, pg re-exported or handed on
+// whole, a property `types` or `binary` given to anything (one query's config
+// included), a parser registered, or `parseInt8`. A spelling that comment does
+// not list, such as a name assembled at runtime, is beyond it.
 
 type TypeId = Parameters<typeof pg.types.getTypeParser>[0];
 

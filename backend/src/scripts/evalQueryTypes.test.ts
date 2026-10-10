@@ -235,6 +235,11 @@ export function disguised(handler: (err: Error, r: QueryResult<{ id: string }>) 
   pool.query("select 29 as id", (hidden as any[]) satisfies unknown[]);
   return pool.query<{ z: number }>({ text: sqlVar as "select 30 as z" });
 }
+export async function plainCasts(ids: number[]) {
+  await pool.query("select 31 as id", [1] as number[]);
+  await pool.query("select 32 as id", ids as unknown as number[]);
+  await pool.query("select 33 as id" as string);
+}
 `;
 const FIXTURE_TEST = `import type { Pool } from "pg";
 declare const pool: Pool;
@@ -308,6 +313,7 @@ test("finds every database call however it is reached, and nothing else; test fi
       [65, "pg"], [68, "pg"], // an argument typed `any`: a callback, a Submittable
       [71, "pg"], [74, "pg"], // arguments spread, and a callback cast `as never`
       [77, "pg"], [78, "pg"], [79, "pg"], [80, "pg"], [81, "pg"], [82, "pg"], [83, "pg"], [84, "pg"], [85, "pg"], // under casts
+      [88, "pg"], [89, "pg"], [90, "pg"], // casts over plain values
     ],
   );
   assert.ok(sites.every((s) => s.file === "src/__census_fixture__.ts"), "the .test.ts fixture was described");
@@ -530,7 +536,7 @@ test("...AND SO ARE ARGUMENTS SPREAD: they cannot be seen into", () => {
   assert.deepEqual(judgeCensus([at(71)], new Map(), types).unchecked, [at(71)]);
 });
 
-test("...AND A CAST HIDES NOTHING: a callback under one is read by its own types, and anything else counts as read", () => {
+test("...AND A CAST ON THE ARGUMENT HIDES NOTHING: a callback under one is read by its own types, and anything else that could be one counts as read", () => {
   // Cold reviews' rounds 4 and 5: a typed callback cast `as never`, `as
   // unknown as any[]` or `as unknown as undefined` into the values slot was
   // filed as "not read", and pg, which tells a callback by `typeof`, calls it
@@ -557,6 +563,15 @@ test("...AND A CAST HIDES NOTHING: a callback under one is read by its own types
   assert.deepEqual(at(85).statements, []);
   assert.equal(at(85).unresolved, "sqlVar");
   assert.deepEqual(judgeCensus([at(85)], new Map(), types).unchecked, [at(85)]);
+});
+
+test("...BUT A CAST OVER A PRIMITIVE OR AN ARRAY HIDES NOTHING EITHER: neither can be a callback or a Submittable", () => {
+  // A cold review's round 6: `[1] as number[]` as values failed a healthy
+  // query that nothing reads, as if the array might be a callback.
+  for (const line of [88, 89, 90]) assert.equal(at(line).resultUsed, false, `line ${line}`);
+  assert.equal(census(at(88), [idColumn]).pass, true, "unread, so nothing to check");
+  assert.equal(census(at(89), [idColumn]).pass, true, "unread, so nothing to check");
+  assert.deepEqual(at(90).statements, ["select 33 as id"], "a string under a cast is still that string");
 });
 
 test("a cast on `.rows` is not read as a declaration: untyped, so it fails rather than passing unread", () => {
