@@ -14,12 +14,57 @@ stale.
 
 ### 1. Make every bigint id a number at the driver: one global int8 parser
 
-**WHERE THIS STANDS (2026-10-09): cold critic round 5 is RUNNING, on `d321bd5`.
-Its verdict lands in `C:\Users\Julian\AppData\Local\Temp\int8-parser\critique\round5\critic\critic-round-5.md`.
-If that file exists, read it and act on it. If it does not, the run was cut
-off: launch it again with the same brief (`round5\critic-brief.md`, already
-naming `d321bd5`). Step 0 below (round 5's evidence) is DONE. Nothing is
-pushed, merged or deployed.**
+**WHERE THIS STANDS (2026-10-09): cold critic round 5 FAILED `d321bd5` on
+minor findings and nits only (R1-R5 below). NEXT: fix R1-R5. No code has
+changed since `738cc0d`; the fixes have not been started. Nothing is pushed,
+merged or deployed.** Report:
+`C:\Users\Julian\AppData\Local\Temp\int8-parser\critique\round5\critic\critic-round-5.md`
+(its mutants and probes are beside it, `work\critic-mutants-5.mjs` and
+`work\backend\probe5\`). All seven round-4 findings are CLOSED, and the
+checkout behaves correctly at runtime. What failed, and the planned fix:
+- **R1, minor (rubrics 5, 3).** `pool.ts:44`, `if (err || client === undefined)
+  return callback(err, client, done);`, the connection-error path every
+  `pool.query` takes, has no test. Mutant A1 (`return;`) hangs every query
+  while the database is down; A1b (`callback(undefined, client, done)`) throws
+  an uncaught TypeError that would crash the server. Both pass 425/425.
+  **Fix:** in `pool.test.ts`, a stubbed connection step that answers with an
+  error: `pool.query`, `pool.connect()` and `pool.connect(cb)` must each get
+  that error (the promise branch rejects through `super.connect()` already).
+- **R2, minor (rubrics 1, 8, 9).** Two spellings pass both the scan and the
+  checkout. P2f: per-query parsers under a computed key, `{ ["types"]:
+  rounding, text }`. P4b: `(pool.options as X).binary ||= 1`: the scan's
+  `given()` (`pool.test.ts:168-177`) reads only `=` and never computed keys,
+  and `clientReplaced` tests `binary === true` (`pgTypes.ts:101`) while pg
+  tests truthiness (`pg/lib/client.js:102`, `:739`). **Fix:** `given()` reads
+  every assignment operator (`=`, `||=`, `&&=`, `??=`) and computed keys that
+  are string literals, and every object member (property, shorthand, method,
+  get/set accessor); `clientReplaced` tests truthiness. Then make the
+  comments exact rather than "however": the scan reads names written as an
+  identifier, a string, or a computed string literal (`pgTypes.ts:50-53`,
+  `pool.test.ts:154-156` and `:260`).
+- **R3, nit (rubric 8).** "a client set to binary reads no text parser"
+  (`pool.ts:16`, `pgTypes.ts:45`, `:97-98`, `:103`) is false: pg asks for
+  binary only on parameterized queries, so others still read the text parser.
+  **Fix:** reword; refusing a binary client stays right (pg-int8's binary
+  parser returns int8 as text).
+- **R4, nit (rubric 7).** A callback cast `as unknown as any[]` or `as unknown
+  as undefined` passes the census silently. **Fix:** `callbackOf` and
+  `resultUsed` look through casts (`as`, `<T>`, parentheses, `!`, `satisfies`)
+  to the value; a function underneath is a callback. Add fixture lines and a
+  test.
+- **R5, nit.** `export * as pgx from "pg"` is not flagged where it is written
+  (harmless: any `pgx.Pool` is). **Fix:** flag it.
+
+**Then, in order:** add mutants A1, A1b, P2f, P4b, the disguised callback and
+R5 to `backend/tmp-mutate-int8.mjs`; `node tmp-mutate-int8.mjs --anchors`;
+run all of them into `int8-parser\critique\round6\` (about 12 minutes; never
+edit `backend/src` while it runs); commit; re-run the live census and the
+`/segments` rehearsal from the committed tree (step 0's commands below; the
+`binary` check is a runtime change); write `round6\README.txt` and
+`round6\critic-brief.md` (copy round 5's, scoped to R1-R5 and the new diff);
+launch round 6's critic, narrower still. Rounds 2 to 5 each found less; if
+round 6 finds only further contrived spellings, put the choice to Julian:
+stop the loop with the scan's limits stated exactly, or keep going.
 
 **IN PROGRESS on branch `global-int8-parser` (2026-10-05 to 10-09): BUILT, NOT
 MERGED OR DEPLOYED. The cold critic's round 2 FAILED it on 2026-10-06; every
@@ -289,7 +334,8 @@ read-only scripts are re-run for it: results in `int8-parser\critique\round4\`.
    `--apply`); the server with `PORT=3999 node --import tsx src/index.ts`,
    probed with `BASE=http://localhost:3999 node segments-probe.mjs`, then
    `taskkill //PID <pid> //F` (PID from `netstat -ano`).
-1. **Cold critic round 5, RUNNING since 2026-10-09**, in the background, scoped like rounds 3 and 4
+1. **Cold critic round 5: DONE 2026-10-09, FAIL on minor findings and nits
+   (R1-R5, at the top of this item). Fix them, then round 6.** Scoped like rounds 3 and 4
    (Julian asked on 2026-10-08 to keep sub-agent use down): re-check round 4's
    findings and attack only the new code. Brief and verdict in
    `int8-parser\critique\round5\`. Loop until it passes; a round that cannot
