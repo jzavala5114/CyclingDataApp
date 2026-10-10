@@ -14,14 +14,21 @@ stale.
 
 ### 1. Make every bigint id a number at the driver: one global int8 parser
 
-**WHERE THIS STANDS (2026-10-09): R1-R5 below are FIXED in `3e348fb`, plus
-the commit after it (427 backend tests, typecheck clean). The full mutation
-run on `3e348fb` (`round6\mutation-run-6a-3e348fb.txt`) found one survivor,
-R33: with casts opaque, the `never` flag in `opaque` was dead code, so the
-next commit drops it. A second full run on that commit was going into
-`int8-parser\critique\round6\mutation-run-6.txt`; check it says "0 not as
-expected", then do the "Then, in order" steps below from the live census on.
-Nothing is pushed, merged or deployed.** What `3e348fb` changed:
+**WHERE THIS STANDS (2026-10-09): R1-R5 below are FIXED in `3e348fb` and
+`dcec070` (427 backend tests, typecheck clean), round 6's evidence is DONE,
+and COLD CRITIC ROUND 6 WAS RUNNING on `dcec070`. NEXT: read
+`int8-parser\critique\round6\critic\critic-round-6.md`. If it is not there,
+relaunch the critic with the brief beside it (`round6\critic-brief.md`, ready
+to use). Nothing is pushed, merged or deployed.** Round 6's evidence, all
+read-only from the committed tree, in `round6\` with a README: the full
+mutation run on `dcec070`, 176 mutants, 0 not as expected (172 killed, the 4
+controls survive); the run on `3e348fb` found R33 (the `never` flag in
+`opaque`) dead once casts were opaque, which `dcec070` removed. The live
+census: 82 sites, 11 timestamp lies, 0 of every other kind, identical to round
+5's apart from line numbers. The `/segments` rehearsal: production, the
+branch's local server and production again all `ba5cd316e15be6e4` (746
+segments, 953 lines, 5,194 stops), ids numbers on the branch. What `3e348fb`
+changed:
 R1, a failed-connection test (A1, A1b killed). R2, `clientReplaced` tests
 binary by truthiness; the scan in `pool.test.ts` is rewritten: each name it
 looks for counts as an identifier in listed places and as a string or
@@ -73,16 +80,15 @@ checkout behaves correctly at runtime. What failed, and the planned fix:
 - **R5, nit.** `export * as pgx from "pg"` is not flagged where it is written
   (harmless: any `pgx.Pool` is). **Fix:** flag it.
 
-**Then, in order:** (DONE: mutants added, anchors checked, `3e348fb`
-committed, full run started; never edit `backend/src`, run the census or
-commit while a mutation run is going, since it rewrites files in place.)
-Re-run the live census and the `/segments` rehearsal from the committed tree
-(step 0's commands below; the `binary` check is a runtime change); write
-`round6\README.txt`; fill `__COMMIT__`/`__FULL__` in `round6\critic-brief.md`
-(already drafted, scoped to R1-R5 and `git diff d321bd5..3e348fb -- backend`);
-launch round 6's critic, narrower still. Rounds 2 to 5 each found less; if
-round 6 finds only further contrived spellings, put the choice to Julian:
-stop the loop with the scan's limits stated exactly, or keep going.
+**Then, in order:** (DONE 2026-10-09: mutants added, `3e348fb` and `dcec070`
+committed, both full runs, the census, the rehearsal, `round6\README.txt`, the
+brief, round 6's critic launched. Never edit `backend/src`, run the census or
+commit while a mutation run is going, since it rewrites files in place.) Read
+round 6's verdict. If it FAILS, fix, run the mutants, commit, redo the census
+and rehearsal, and brief round 7 the same way. Rounds 2 to 5 each found less;
+if round 6 finds only further contrived spellings, put the choice to Julian:
+stop the loop with the scan's limits stated exactly, or keep going. On a PASS:
+ship (step 2 below, after Julian's go-ahead), then notes, then cleanup.
 
 **IN PROGRESS on branch `global-int8-parser` (2026-10-05 to 10-09): BUILT, NOT
 MERGED OR DEPLOYED. The cold critic's round 2 FAILED it on 2026-10-06; every
