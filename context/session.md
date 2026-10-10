@@ -12,61 +12,27 @@ stale.
 
 ## NEXT, IN ORDER
 
-### 1. Timestamps arrive as `Date`, and `Date.parse()` throws away their milliseconds
-
-**Found 2026-10-05 by `npm run eval:query-types`. Not fixed. A live defect in
-the matcher, the spike filter and the ride processor, so it reaches every
-ride.** node-postgres parses `timestamptz` into a JS `Date`, while
-`SessionSample.recordedAt` is typed `string` (as are `endedAt` in
-`routes/sessions.ts` and two columns in `pruneEmptySessions.ts`: 11 lies at
-10 query sites). Every consumer calls `Date.parse(sample.recordedAt)`, and
-`Date.parse` of a `Date` goes through `String(date)`, which has no
-milliseconds, so **every fix time is truncated to the whole second** (measured:
-a `Date` at `:12.987Z` comes back 987 ms early). Measured 2026-10-05:
-**34,361 of 34,402 stored fixes (99.9%) carry a sub-second part, the median gap
-between consecutive fixes is 2 s, and 3,511 gaps are under 1 s**, so a 0.4 s
-gap can read as 0 s or 1 s. Production sites: `segmentMatcher.ts:744` and
-`:844-845` (stitch gaps, against `STITCH_WINDOW_S`), `positionSpikes.ts:101-103`
-and `:209` (the speeds the spike filter judges), `sessionProcessor.ts:231` and
-`:261-262`. Confirmed that nothing converts the rows between the query and the
-matcher. Every replay script inherits it, so **every matcher number in this
-file was measured with it.** The tests cannot see it: their fixtures use ISO
-strings, where `Date.parse` is exact.
-
-**Options, not yet measured:** (a) a global `timestamptz` parser returning the
-ISO string, the same shape as the int8 fix: every `string` declaration becomes
-true, JSON output stays byte-identical (`JSON.stringify` of a `Date` IS that
-ISO string), and every `Date.parse` becomes exact at once; (b) retype to
-`Date` and call `.getTime()`, which the compiler would then demand at about 30
-sites. **Unlike the int8 fix it changes matcher output**, so measure before
-choosing: `trace-passes`, `eval:spikes` and `eval:coverage` before and
-after on frozen data, the way 2026-10-05 did (frozen copies, a data fingerprint
-around each pair). Rides already in the model keep their truncated times until
-a `rebuild-model`, which writes production: **Julian's go-ahead before the
-rebuild.** When it lands, `npm run eval:query-types` should pass with 0 lies;
-then delete "It fails today, on purpose" from `backend/README.md`.
-
-### 2. Grade session 85
+### 1. Grade session 85
 
 `npm run verify-barometer` from `backend/`. Ride of 2026-10-04 19:03 UTC, 2,689
 fixes, never graded. Read-only. See "HOW TO REBUILD THE APK, AND HOW A RIDE IS
 GRADED".
 
-### 3. A fix from an ended ride is filed under the next one
+### 2. A fix from an ended ride is filed under the next one
 
 Session 83's last fix landed in session 84, timestamped 21 s before 84 began.
 **Not located yet.** Likeliest place: the phone's background location buffer
 (`mobile/src/services/backgroundLocationTask.ts`) being flushed after the active
 session changed. Find the mechanism before sizing it.
 
-### 4. The 9 m barometric outlier
+### 3. The 9 m barometric outlier
 
 Session 84, 19:35:04Z, one fix in 1367. The fix is NOT the spike filter: persist
 `readingCount` and `meanOffsetMs` from `altitudeAtFix` so the next one can be
 diagnosed after the ride. A migration, an app change and an APK rebuild.
 **The migration touches production: confirm with Julian before running it.**
 
-### 5. The matcher's two open levers, which both wait on one instrument
+### 4. The matcher's two open levers, which both wait on one instrument
 
 Build the instrument first: `findPasses` with `minPassM: 15` and `MIN_SPAN_M`
 left at 25, so the witness can see under 25 m and stays independent of what is
@@ -78,8 +44,29 @@ swept. A measurement, not a change. Then:
   settle it.
 See "What is left for the matcher".
 
-### 6. Smaller, in no order
+### 5. Smaller, in no order
 
+- **Timestamps arrive as `Date` and `Date.parse()` drops their milliseconds:
+  measured NEGLIGIBLE on 2026-10-10, left unfixed by Julian's decision.** pg
+  parses `timestamptz` into a `Date` while the code types `recordedAt`,
+  `endedAt` and two columns in `pruneEmptySessions.ts` as `string`, so
+  `Date.parse(date)` reads every fix time cut to the whole second (the
+  census's 11 lies). Replaying production's speed filter
+  (`rejectImpossibleSpeeds`, `sessionProcessor.ts:173`) over all 50 rides,
+  34,866 fixes, exact times against today's: **2 verdicts change**, one fix
+  each in sessions 15 and 42, both wrongly rejected today (control: 0). Of
+  34,816 gaps, 3,549 are under 1 s and 245 read as 0 s, which the filter
+  treats as no evidence; 7 cross the matcher's 15 s anchor limit and 1 its
+  45 s stitch window (consecutive fixes, a rough indicator). Small because
+  every limit sits far from a second: the filter rejects only above 20 m/s
+  both in and out. `measurePositionSpikes`, where a 0 s gap becomes an
+  infinite speed, runs only in diagnostic scripts: production passes no
+  `positionFilter`. Script: `backend/tmp-measure-timestamps.mjs` (gitignored,
+  local). If ever built: a global `timestamptz` parser returning the ISO
+  string, the int8 pattern with JSON byte-identical, about 80k tokens, no
+  rebuild needed. **Lesson:** it sat at NEXT 1 for five days on how alarming
+  the mechanism sounded; the 30-minute measurement CLAUDE.md now requires
+  would have ranked it here.
 - **The zero-run census**: how many ridden segments produce no run at all, and so
   appear in no ledger here. The most valuable unmeasured number.
 - **The same-way class**: 196 next-door passes / 11.3 km drawn mostly on another
@@ -118,9 +105,9 @@ See "What is left for the matcher".
 
 ## OPEN: genuinely undecided, do not treat as closed
 
-- **The traversal gate.** The instrument cannot judge it. Item 5.
-- **`TANGENT_WINDOW_M`.** Closed on 2026-10-04 and reopened the same day. Item 5.
-- **The same-way class.** Unexplained. Item 6.
+- **The traversal gate.** The instrument cannot judge it. Item 4.
+- **`TANGENT_WINDOW_M`.** Closed on 2026-10-04 and reopened the same day. Item 4.
+- **The same-way class.** Unexplained. Item 5.
 
 ## STATE, 2026-10-10
 
@@ -131,8 +118,8 @@ changed nothing in it: the whole `/segments` response hashes the same as
 before, ids now numbers. **429 backend tests, 56 app tests**; `mobile/`
 has a gate lane. **45 usable rides** counted on 2026-10-05; session 85 was the
 newest then and is ungraded, and rides 86 and 87 landed on 2026-10-08. `npm
-run eval:query-types` fails on 11 timestamp lies, by design, until NEXT 1
-lands. A deploy failed once on 2026-09-30, see note 29,
+run eval:query-types` fails on 11 timestamp lies, by design: measured
+negligible on 2026-10-10 (NEXT item 5). A deploy failed once on 2026-09-30, see note 29,
 before adding anything to `backend/` that imports outside it.
 
 **How every measurement here is run, each rule learned by breaking it:**
@@ -159,7 +146,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 31 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. Item 1 says what to measure before choosing, and where Julian's go-ahead is needed |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. Item 1 is grading session 85: read-only, about 10 minutes |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
@@ -567,7 +554,7 @@ Keep these in mind before "simplifying" anything.
     became true at once, join partners together. `npm run eval:query-types`
     now asks the database for every query's column types and checks them
     against the declared row types; it found two lies the hand search had
-    missed, and the timestamp one that is NEXT 1. **Rule: the row type on a
+    missed, and the timestamp one, measured negligible on 2026-10-10 (NEXT item 5). **Rule: the row type on a
     query is an assertion. Only the database can check it.**
 31. **A one-fix threshold decided a verdict, twice in one day.** The pass
     ledger in `traceOutAndBack.ts` tried `gate` before its next-door share
@@ -1978,7 +1965,7 @@ moved, and on that graph a transition term makes the map worse rather than bette
    explanation was wrong**: "the tangent window trades wrong-dir for gate at a
    net 38 m" came from a mislabelled `gate` column; with the classifier fixed,
    14 m is **286 m better** than the shipped 10 m. See "Lever 2, direction:
-   closed on 2026-10-04, then REOPENED the same day" below, and item 5 of
+   closed on 2026-10-04, then REOPENED the same day" below, and item 4 of
    "NEXT, IN ORDER".
 3. ~~**Sweep the traversal gate**, ~196 m.~~ **ATTEMPTED 2026-10-04 and it is a
    NON-RESULT.** The ~196 m was wrong twice over: the gate can only hand back a
@@ -2155,7 +2142,7 @@ the gate class, not matcher error.
 
 **One instrument, then two open levers that wait on it**, and a third that was
 swept and closed the same day. This was "the gate sweep, and then done" until
-the sweep was run. **It is item 5 of "NEXT, IN ORDER"**: the bug fixes come
+the sweep was run. **It is item 4 of "NEXT, IN ORDER"**: the bug fixes come
 first.
 
 **Build first: a witness that can see under 25 m.** `findPasses` at
@@ -2229,8 +2216,8 @@ stop at Julian's request), each saved by a commit.
    row type against what the configured driver delivers. **Run on `main`'s
    code and driver it reports 56 lies, 44 of them ids declared `number`
    arriving as text, plus 3 untyped sites**, so it can fail. On the branch: 82
-   sites, **0 numeric lies, 0 untyped reads**, and 11 timestamp lies that are
-   NEXT 1. A call counts as pg's by the declaration it RESOLVES to, however it
+   sites, **0 numeric lies, 0 untyped reads**, and 11 timestamp lies, measured
+   negligible (NEXT item 5). A call counts as pg's by the declaration it RESOLVES to, however it
    is spelled. It FAILS on a statement it cannot read when the code reads the
    result (a wrapper's parameter is named outright), on rows typed `any` that
    the code reads, on a Submittable other than its own, on an unquoted
@@ -2326,7 +2313,7 @@ stop at Julian's request), each saved by a commit.
   only in printing `'5'` as `5`. Includes `trace-passes`, the pinned replay the
   spec asked for, and every eval that keys a Map or a Set on an id.
   `eval-smoothing` exits 1 on BOTH sides: its own verdict on the smoother, not a
-  crash (it runs all 45 rides and every number matches); see NEXT item 6.
+  crash (it runs all 45 rides and every number matches); see NEXT item 5.
 - **Live `/segments`, rehearsed before the deploy** by running the branch's
   server locally against the same database: 745 segments, 951 lines, 5,181
   colour stops, the hash of the whole response `0a2be04de99909af` identical to
