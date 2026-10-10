@@ -16,16 +16,15 @@ stale.
 
 **WHERE THIS STANDS (2026-10-09): R1-R5 below are FIXED in `3e348fb` and
 `dcec070` (427 backend tests, typecheck clean), and round 6's evidence is
-DONE. COLD CRITIC ROUND 6 WAS STOPPED at Julian's request before its verdict:
-there is NO `critic-round-6.md`. NEXT: relaunch it, one sub-agent, with the
-prompt "Read and follow the brief at
+DONE. COLD CRITIC ROUND 6 was stopped once at Julian's request (its partial
+work, no links inside, moved to `critique\round6-stopped-critic\`) and
+RELAUNCHED 2026-10-10 on `dcec070`. NEXT: read
+`int8-parser\critique\round6\critic\critic-round-6.md`. If it is missing,
+relaunch with the prompt "Read and follow the brief at
 C:\Users\Julian\AppData\Local\Temp\int8-parser\critique\round6\critic-brief.md
-exactly" (the brief is ready, COMMIT filled in as `dcec070`). First clear its
-partial work: `round6\critic\` holds `probe-census-round6.txt` and `work\`
-from the stopped run; its node_modules junction was already removed link-only
-and the repo's `backend\node_modules` checked intact (119 entries). Delete
-`work\` only after confirming no link is left inside it (`Get-ChildItem -Recurse
--Attributes ReparsePoint`). Nothing is pushed, merged or deployed.** Round 6's evidence, all
+exactly", after moving any partial `round6\critic\` aside the same way (check
+`Get-ChildItem -Recurse -Attributes ReparsePoint` finds no link first). Nothing
+is pushed, merged or deployed.** Round 6's evidence, all
 read-only from the committed tree, in `round6\` with a README: the full
 mutation run on `dcec070`, 176 mutants, 0 not as expected (172 killed, the 4
 controls survive); the run on `3e348fb` found R33 (the `never` flag in
