@@ -196,11 +196,12 @@ See "What is left for the matcher".
 `main` is the base, and every task branch is merged into it:
 `global-int8-parser`, `int8-shipped-notes`, `demote-timestamps`,
 `session-notes`, `grade-new-rides`, `close-next-items`,
-`matcher-witness-floor` and `state-after-witness`, still on origin and
-locally, safe to delete. Last code change `254acd0`, measurement scripts only
-(the witness floor, NEXT item 4); the server's own code last changed in
-`9b68a1f`. Production serves `builtAt 2026-10-11T02:44:52.863Z`, the `254acd0`
-deploy, verified by the timestamp moving. **This PC's clock runs about 80 s
+`matcher-witness-floor`, `state-after-witness`, `gate-sweep` and
+`state-after-gate`, still on origin and locally, safe to delete. Last code
+change `7c3ff06`: the gate sweep (`eval:gate`), and the gate rule moved into
+`qualifiesAt`, which the server now calls with identical behaviour. Production
+serves `builtAt 2026-10-11T15:02:54.977Z`, the `7c3ff06` deploy, verified by
+the timestamp moving. **This PC's clock runs about 80 s
 ahead of Railway's** (measured 2026-10-11 against the HTTP `Date` header), so
 a fresh `builtAt` can read earlier than the local push time without being a
 stale build. Live model **746 segments / 953 lines** at the int8 deploy, which
