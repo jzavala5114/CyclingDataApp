@@ -12,11 +12,11 @@ stale.
 
 ## NEXT, IN ORDER
 
-### 1. Grade session 85
+### 1. ~~Grade session 85~~ DONE 2026-10-10: rides 85 to 88 all `alive`
 
-`npm run verify-barometer` from `backend/`. Ride of 2026-10-04 19:03 UTC, 2,689
-fixes, never graded. Read-only. See "HOW TO REBUILD THE APK, AND HOW A RIDE IS
-GRADED".
+Graded together with rides 86, 87 and 88, which landed after it. Results and a
+display defect found on the way are under "HOW TO REBUILD THE APK, AND HOW A
+RIDE IS GRADED". Start at item 2.
 
 ### 2. A fix from an ended ride is filed under the next one
 
@@ -24,6 +24,14 @@ Session 83's last fix landed in session 84, timestamped 21 s before 84 began.
 **Not located yet.** Likeliest place: the phone's background location buffer
 (`mobile/src/services/backgroundLocationTask.ts`) being flushed after the active
 session changed. Find the mechanism before sizing it.
+
+**Measure it knowing this (found 2026-10-10):** every ride since has its first
+fix stamped before its own `sessions.started_at` too, and that first fix is
+always the ride's only GPS fix: 85 by 2.9 s, 86 by 2.5 s, 87 by 0.5 s, 88 by
+4.1 s. 84's 21.0 s fix is likewise its first and only GPS fix. So a count of
+"fixes stamped before their ride began" flags every ride; it has to separate a
+few seconds of start-up from a fix that belongs to the ride before. Re-check
+that 84's fix is really 83's before building on it.
 
 ### 3. The 9 m barometric outlier
 
@@ -82,6 +90,10 @@ See "What is left for the matcher".
   error against terrain (-0.512 m) and cross-ride disagreement (-0.052 m).
   Unexamined: whether that measure already failed when the smoother shipped on
   2026-09-24, with fewer rides.
+- **`verify-barometer`'s per-minute strip prints a 95-99% barometric minute as
+  `10`**, two characters, so the rest of the strip shifts a column (rides 70,
+  71, 79, 88). Display only: cap the digit at 9 in `sourceStrip`, with a test.
+  See "HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED".
 - **Debt:** the linker's measuring tools have no tests, and
   `context/architecture.html` is over a month stale.
 
@@ -118,9 +130,10 @@ See "What is left for the matcher".
 serves `builtAt 2026-10-10T15:14:32.196Z`, verified by the timestamp moving. Live model **746 segments / 953 lines**, and the deploy
 changed nothing in it: the whole `/segments` response hashes the same as
 before, ids now numbers. **429 backend tests, 56 app tests**; `mobile/`
-has a gate lane. **45 usable rides** counted on 2026-10-05; session 85 was the
-newest then and is ungraded, and rides 86 and 87 landed on 2026-10-08; 50 sessions hold 34,866 fixes
-(counted 2026-10-10). `npm
+has a gate lane. **45 usable rides** counted on 2026-10-05. Rides 85 to 88 are
+graded `alive` (2026-10-10). 88 landed that afternoon, so 51 sessions hold
+34,965 fixes; the timestamp measurement earlier the same day saw 50 and
+34,866. `npm
 run eval:query-types` fails on 11 timestamp lies, by design: measured
 negligible on 2026-10-10 (NEXT item 5). A deploy failed once on 2026-09-30, see note 29,
 before adding anything to `backend/` that imports outside it.
@@ -164,7 +177,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 31 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. Item 1 is grading session 85: read-only, about 10 minutes |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. Item 1 is done; item 2, a fix filed under the wrong ride, starts with a read-only count |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
@@ -1729,6 +1742,28 @@ sessions 76 and 79 losing 17 minutes each.
 **Session 84 is now the post-change reference** and the better comparison for
 anything screen-off: 1367 fixes over 61.9 minutes, 1366 barometric, two
 deliberate locks. Session 62 remains the screen-on control.
+
+**Graded 2026-10-10: rides 85 to 88, all `alive`.** Each has exactly one GPS
+fix, its first, the same as 84, and none after it. Every ride was ended
+(`ended_at` set), and no session 89 existed.
+
+| ride | date (UTC) | fixes | barometric | minutes | unseen | verdict |
+|---|---|---|---|---|---|---|
+| 85 | 10-04 | 2689 | 2688 | 127.0 | 12.2 min (10%), longest gap 165 s | alive |
+| 86 | 10-08 | 252 | 251 | 11.1 | 0.7 min (6%), 39 s | alive |
+| 87 | 10-08 | 212 | 211 | 10.3 | none | alive |
+| 88 | 10-10 | 99 | 98 | 5.3 | 1.1 min (21%), 68 s | alive |
+
+**What this does not show:** nothing records whether the screen was locked
+(`session_samples` has no such column), so these clear the barometer wherever
+fixes arrived, and 84 is still the only ride graded with known deliberate locks.
+
+**The per-minute strip misprints a 95-99% minute as `10`, two characters.**
+`sourceStrip` in `backend/src/scripts/verifyBarometer.ts` prints
+`Math.round(share * 10)`, so 27 of 28 barometric becomes `10`, every later
+minute shifts one column, and ride 88's strip `10BBBBB` reads as "10%, then
+0%". Also in the strips of 70, 71 and 79. Verdicts never read the strip, so no
+verdict was wrong; the fix is capping the digit at 9, with a test. NEXT item 5.
 
 **Do not confuse this with the oversampling work**, which is separate and also
 done: oversampling cut sensor noise 2.5x but end-to-end slope error only
