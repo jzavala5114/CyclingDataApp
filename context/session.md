@@ -18,27 +18,48 @@ Graded together with rides 86, 87 and 88, which landed after it. Results and a
 display defect found on the way are under "HOW TO REBUILD THE APK, AND HOW A
 RIDE IS GRADED". Start at item 2.
 
-### 2. A fix from an ended ride is filed under the next one
+### 2. ~~A fix from an ended ride is filed under the next one~~ CLOSED 2026-10-10: measured, nothing to build
 
-Session 83's last fix landed in session 84, timestamped 21 s before 84 began.
-**Not located yet.** Likeliest place: the phone's background location buffer
-(`mobile/src/services/backgroundLocationTask.ts`) being flushed after the active
-session changed. Find the mechanism before sizing it.
+Counted over every stored ride (`backend/tmp-close-items.mjs`, gitignored,
+read-only). 34 of the 50 rides with an ordinary `started_at` hold exactly one fix
+stamped before it, their first, half of them 2.4 s early or less. 84's 21.0 s is the only one
+over 10 s and the only one that matches the ride before (1 m from 83's last fix,
+the control, reproduced). It is on the map, as the first fix of a stored run,
+but harmlessly: a place the rider passed 22 s before 84's own fixes began, 91 m
+back at 4.1 m/s, its height equal to the next barometric one. Eight other first
+fixes sat 30-175 m from where their ride's own fixes begin; none reached the
+map. "Recorded while the previous ride ran", judged by `ended_at` (10, 12, 14,
+84), is not evidence: `ended_at` is the server's `/end` time, which can lag the
+Stop. The mechanism behind 84's was never located, and one harmless fix in 50
+rides does not justify locating it. Two facts found on the way, neither claimed
+as a defect:
+- `rejectElevationSpikes` keeps a ride's first fix by construction
+  (`elevationSmoothing.ts:147`), and nothing in the pipeline reads
+  `elevation_source`, so a first fix's GPS height is merged like a barometric
+  one. In 68, 82, 84 and 87 it equals the next barometric height to 0.1 m; in
+  73 (2026-09-07) it sits 19.2 m above a barometric fix 114 s later, which could
+  be terrain or GPS error.
+- Session 29's `started_at` is 23.2 h after its first fix, so all 791 of its
+  fixes predate it: the row was created long after the ride. Cause unverified;
+  the recovery path (bug 22) would fit.
 
-**Measure it knowing this (found 2026-10-10):** every ride since has its first
-fix stamped before its own `sessions.started_at` too, and that first fix is
-always the ride's only GPS fix: 85 by 2.9 s, 86 by 2.5 s, 87 by 0.5 s, 88 by
-4.1 s. 84's 21.0 s fix is likewise its first and only GPS fix. So a count of
-"fixes stamped before their ride began" flags every ride; it has to separate a
-few seconds of start-up from a fix that belongs to the ride before. Re-check
-that 84's fix is really 83's before building on it.
+### 3. ~~The 9 m barometric outlier~~ CLOSED 2026-10-10: the filter already removes it
 
-### 3. The 9 m barometric outlier
-
-Session 84, 19:35:04Z, one fix in 1367. The fix is NOT the spike filter: persist
-`readingCount` and `meanOffsetMs` from `altitudeAtFix` so the next one can be
-diagnosed after the ride. A migration, an app change and an APK rebuild.
-**The migration touches production: confirm with Julian before running it.**
+**The premise was wrong.** `rejectElevationSpikes` DOES reject session 84's
+19:35:04Z fix, run on the stored ride through production's own filters
+(`backend/tmp-close-items-2.mjs`, `-3.mjs`): the rider was nearly stopped, 3.1 m
+in 25 s and 3.6 m in 11 s, so 9.21 m over the shorter leg is a 296% grade
+against the 100% limit. The notes below reasoned "at riding speed an 11 s leg is
+tens of metres" and never ran it; the filter has not changed since 2026-10-02.
+The fix never reached a bucket. Across every ride it is the only one 9 m or
+more off the line between its barometric neighbours, 1 in 24,157, so the
+migration, app change and APK rebuild that would diagnose it are not worth
+building.
+Smaller single-fix excursions are a different thing: 40 fixes sit 3 m or more
+off (13 of 4,605 since the 2026-10-03 APK, 27 of 19,552 before it, ride 62
+among them), often in twos and threes around one bad reading. 35 of the 40 pass
+the filter and all lie inside stored matches. Their effect after smoothing and
+averaging is unmeasured.
 
 ### 4. The matcher's two open levers, which both wait on one instrument
 
@@ -144,6 +165,10 @@ before adding anything to `backend/` that imports outside it.
 - **Count what a fix would change, not what it touches.** The timestamp defect
   touched 99.9% of fix times and changed 2 of 34,866 verdicts; it sat at NEXT 1
   for five days on the first number.
+- **Run the code on the case before writing down what it does.** NEXT item 3
+  sat for a week on "the spike filter lets it through", reasoned from an assumed
+  riding speed. Run on the stored ride, the filter rejected it: the rider was
+  nearly stopped.
 - **A witness with a floor cannot speak below it.** `findPasses` needs 25 m, so
   its silence about anything shorter is not evidence.
 - **Verify a deploy by `builtAt` moving, never by status**, and if a timestamp
@@ -177,7 +202,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 31 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. Item 1 is done; item 2, a fix filed under the wrong ride, starts with a read-only count |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. Items 1 to 3 are closed; item 4, the matcher's instrument, is next |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
@@ -2500,7 +2525,9 @@ sets the order. This section keeps the detail behind each item.
 What remains is small, and splits into three honest groups.
 
 **Real latent bugs, all concrete:**
-- **A 9 m barometric outlier survives spike rejection** (session 84,
+- **[WRONG, corrected 2026-10-10: the filter rejects it; the rider was nearly
+  stopped. See NEXT item 3.]**
+  **A 9 m barometric outlier survives spike rejection** (session 84,
   19:35:04Z). `rejectElevationSpikes` charges deviation against the shorter
   horizontal leg at a 100% grade limit, and at riding speed 9 m reads as an
   ordinary hill. One fix in 1367. **The fix worth doing is not the filter, it is
@@ -2508,6 +2535,7 @@ What remains is small, and splits into three honest groups.
   next one is diagnosable after the ride instead of needing eyes on the status
   line during it. Small migration, two doubles per sample.
 - **A buffered fix from an ended session is attributed to the next one.**
+  **[Measured 2026-10-10: harmless, one case in 50 rides. See NEXT item 2.]**
   Session 83's last fix landed in session 84, 21 s before session 84 began.
 - ~~**`SessionVerdict.id` is typed `number` and arrives as a string.**~~
   **FIXED 2026-10-04** (paid-for #30), with `bad_share` alongside it. The
@@ -2678,7 +2706,8 @@ trails, and every tangent window from 0 to 20 m.
   defects a cold review caught in it, what not to attempt, and the ride that
   closed it. Nothing on this item is outstanding.
 - **One barometric reading in session 84 is 9 m low, and spike rejection lets
-  it through.** At 19:35:04Z, on a steady climb: 2070.58 m, then −9.14 m over a
+  it through.** **[WRONG, corrected 2026-10-10: it does not. 9.21 m over a 3.1 m
+  leg is a 296% grade, rejected. See NEXT item 3.]** At 19:35:04Z, on a steady climb: 2070.58 m, then −9.14 m over a
   25 s gap, then +9.28 m over the next 11 s, then smooth again.
   `rejectElevationSpikes` (`elevationSmoothing.ts:174`) charges the deviation
   against the **shorter horizontal leg** at a 100% grade limit, and at riding
@@ -2698,6 +2727,7 @@ trails, and every tangent window from 0 to 20 m.
   makes this answerable after any ride instead of needing eyes on the status
   line during one.
 - **A buffered fix from an ended session is attributed to the next one.**
+  **[Measured 2026-10-10: harmless, one case in 50 rides. See NEXT item 2.]**
   Session 83, a 13-second false start, ran 18:42:55–18:43:13. Session 84's
   `started_at` is 18:43:35 yet its first sample is timestamped 18:43:14, one
   metre from session 83's last fix. Harmless here, one GPS fix at the right
