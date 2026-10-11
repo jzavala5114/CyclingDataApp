@@ -160,15 +160,21 @@ See "What is left for the matcher".
 - **`TANGENT_WINDOW_M`.** Closed on 2026-10-04 and reopened the same day. Item 4.
 - **The same-way class.** Unexplained. Item 5.
 
-## STATE, 2026-10-10
+## STATE, 2026-10-11
 
 `main` is the base, and every task branch is merged into it:
-`global-int8-parser`, `int8-shipped-notes`, `demote-timestamps` and
-`session-notes`, still on origin and locally, safe to delete. Last code change
-`9b68a1f`, merged to `main` as `6d6b174`; everything since is notes. Production
-serves `builtAt 2026-10-10T15:14:32.196Z`, verified by the timestamp moving. Live model **746 segments / 953 lines**, and the deploy
+`global-int8-parser`, `int8-shipped-notes`, `demote-timestamps`,
+`session-notes`, `grade-new-rides`, `close-next-items`,
+`matcher-witness-floor` and `state-after-witness`, still on origin and
+locally, safe to delete. Last code change `254acd0`, measurement scripts only
+(the witness floor, NEXT item 4); the server's own code last changed in
+`9b68a1f`. Production serves `builtAt 2026-10-11T02:44:52.863Z`, the `254acd0`
+deploy, verified by the timestamp moving. **This PC's clock runs about 80 s
+ahead of Railway's** (measured 2026-10-11 against the HTTP `Date` header), so
+a fresh `builtAt` can read earlier than the local push time without being a
+stale build. Live model **746 segments / 953 lines** at the int8 deploy, which
 changed nothing in it: the whole `/segments` response hashes the same as
-before, ids now numbers. **429 backend tests, 56 app tests**; `mobile/`
+before, ids now numbers. **434 backend tests, 56 app tests**; `mobile/`
 has a gate lane. **45 usable rides** counted on 2026-10-05. Rides 85 to 88 are
 graded `alive` (2026-10-10). 88 landed that afternoon, so 51 sessions hold
 34,965 fixes; the timestamp measurement earlier the same day saw 50 and
