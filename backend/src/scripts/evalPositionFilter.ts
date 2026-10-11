@@ -23,7 +23,8 @@ import type { MatchOptions } from "../services/segmentMatcher.js";
 //
 // The `off` arm is the shipped behaviour and is the control: it must reproduce
 // the numbers the other sweeps print, or the comparison is against a moving
-// baseline.
+// baseline. Every arm runs on the derived heading, the matcher's default since
+// 2026-10-01.
 //
 // Read-only. Every query is a select.
 //
@@ -82,14 +83,11 @@ const ARMS: Array<{ name: string; matcher: MatchOptions }> = [
   { name: "cross 10m, ratio 0.5", matcher: { positionFilter: { minCrossM: 10, crossToChord: 0.5 } } },
   { name: "cross 12m, ratio 0.5", matcher: { positionFilter: CAUTIOUS } },
   { name: "cross 15m, ratio 0.5", matcher: { positionFilter: { minCrossM: 15, crossToChord: 0.5 } } },
-  // The question the rows above cannot answer. The derived heading is the
-  // change actually queued to ship, and it attacks the same counter: wrong-dir
-  // 39 -> 23 on its own. If it already fixes the passes the position filter
-  // fixes, the filter buys nothing on top of it and the whole feature is
-  // redundant rather than merely small.
-  { name: "derived heading only", matcher: { headingSource: "derived" } },
-  { name: "derived + spikes 8/0.3", matcher: { headingSource: "derived", positionFilter: AGGRESSIVE } },
-  { name: "derived + spikes 12/0.5", matcher: { headingSource: "derived", positionFilter: CAUTIOUS } },
+  // There used to be three "derived heading" arms here, asking whether the
+  // heading change queued to ship already fixed what the filter fixes. It
+  // shipped on 2026-10-01 and is the matcher's default, so every row above
+  // runs on it and those three were exact copies of the shipped arm and two
+  // filter arms: removed rather than left to look like separate evidence.
 ];
 
 async function main(): Promise<void> {
@@ -142,9 +140,10 @@ async function main(): Promise<void> {
   }
 
   console.log(
-    `\nThe control is the \`off\` row: 39 wrong-dir, 24 gate, 215/419 both drawn, 2228 merged,\n` +
-      `18.4% discard, 14710 buckets, 225.10 km, 966 lines. Anything else there and this\n` +
-      `comparison is against a baseline that moved.\n` +
+    `\nThe control is the \`off\` row: it must equal the shipped row of eval:tangent and\n` +
+      `eval:gate run on the same rides. Rides keep arriving, so the numbers are not written\n` +
+      `here; context/session.md records each run with its date. Anything else in that row\n` +
+      `and this comparison is against a baseline that moved.\n` +
       `Blind spot: the pass detector is the same under every arm, so this is a fair\n` +
       `comparison but inherits its generosity on braided trails. next-door is not a defect\n` +
       `and is deliberately not counted here.`,

@@ -21,6 +21,12 @@ import type { SessionSample } from "../types/index.js";
 //   2. The full trace under each, which says whether it MATTERS -- and what a
 //      switch would cost in coverage, discards and drawn lines.
 //
+// The derived heading SHIPPED on 2026-10-01 on this measurement, so it is the
+// shipped arm here and the device row is now the counterfactual. Its shipped
+// row must equal the shipped row of `eval:tangent` and `eval:gate` run on the
+// same rides; the rides keep arriving, so the numbers live in
+// context/session.md with their date, not in this file.
+//
 // Read-only. Every query is a select.
 //
 //   npm run eval:heading
@@ -72,8 +78,8 @@ async function main(): Promise<void> {
   console.log(`comparing heading sources over ${usable.length} sessions\n`);
 
   const arms = new Map([
-    ["device (shipped)", blank("device (shipped)")],
-    ["derived", blank("derived")],
+    ["device", blank("device")],
+    ["derived (shipped)", blank("derived (shipped)")],
   ]);
 
   // Part 1: do the two headings even disagree?
@@ -104,10 +110,10 @@ async function main(): Promise<void> {
       if (gap > 90) reversed++;
     }
 
-    add(arms.get("device (shipped)")!, traceSession(sessionId, samples, segments, {
+    add(arms.get("device")!, traceSession(sessionId, samples, segments, {
       matcher: { headingSource: "device" },
     }));
-    add(arms.get("derived")!, traceSession(sessionId, samples, segments, {
+    add(arms.get("derived (shipped)")!, traceSession(sessionId, samples, segments, {
       matcher: { headingSource: "derived" },
     }));
 
@@ -145,11 +151,14 @@ async function main(): Promise<void> {
     })),
   );
 
-  const device = arms.get("device (shipped)")!;
-  const derivedArm = arms.get("derived")!;
-  const gained = [...derivedArm.drawn].filter((d) => !device.drawn.has(d)).length;
-  const lost = [...device.drawn].filter((d) => !derivedArm.drawn.has(d)).length;
-  console.log(`\nlines against the shipped device heading: +${gained} / -${lost} (net ${gained - lost >= 0 ? "+" : ""}${gained - lost})`);
+  const device = arms.get("device")!;
+  const derivedArm = arms.get("derived (shipped)")!;
+  const gained = [...device.drawn].filter((d) => !derivedArm.drawn.has(d)).length;
+  const lost = [...derivedArm.drawn].filter((d) => !device.drawn.has(d)).length;
+  console.log(
+    `\nlines the device heading would draw against the shipped derived one: ` +
+      `+${gained} / -${lost} (net ${gained - lost >= 0 ? "+" : ""}${gained - lost})`,
+  );
 
   console.log(
     `\nBlind spot: the pass detector is identical under both arms, so this is a fair ` +

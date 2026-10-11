@@ -65,6 +65,10 @@ const SWITCH_MARGIN_M = 8;
 //   5     187/2093 ( 8.9%)   23 (1073m)    12 (722m)   14678    224.81      2062   20
 //   10    138/2090 ( 6.6%)   24 (1116m)    12 (722m)   14692    224.88      2059   20
 //
+// The gate column predates the classifier fix of 2026-10-04 (`9c13174`), which
+// moved most gate losses to next-door. Every arm used the same classifier, so
+// the comparison between arms stands; the absolute gate numbers do not.
+//
 // Read the middle columns, not the first. Unconnected transitions fall by 35%
 // at 10m, and **the ground the map draws does not move**: wrong-dir and gate are
 // identical at 2m and 5m, lines are identical, phantom lines are identical at
@@ -274,14 +278,19 @@ export interface MatchOptions {
    * MEASURED AND REJECTED 2026-10-01, `npm run eval:spikes`. Do not switch this
    * on without re-reading those numbers. On its own it helps -- wrong-dir
    * 39 -> 31 at cross 8m / ratio 0.3 -- but it is REDUNDANT with the derived
-   * heading, which attacks the same counter harder (39 -> 23) and is the change
-   * actually queued. Stacked on top of the derived heading the aggressive
+   * heading, which attacks the same counter harder (39 -> 23) and shipped on
+   * 2026-10-01. Stacked on top of the derived heading the aggressive
    * setting buys nothing at all (23 -> 23, and the metres go UP 1073 -> 1096)
    * while costing 98 buckets, 0.43 km of coverage and three out-and-backs
    * (224/418 -> 221/417 both drawn). The cautious setting, cross 12m /
    * ratio 0.5, is the only one that gains anything on top: wrong-dir 23 -> 21,
    * 62 m, for one lost out-and-back -- inside the noise band the tangent sweep
    * already established at this sample size.
+   *
+   * RE-MEASURED 2026-10-11 on the shipped derived heading, 48 rides: the best
+   * arm, cross 10m / ratio 0.5, recovers 3 wrong-dir passes, 94 m (0.04% of
+   * 260 km), for 30 buckets and 0.05 km; cross 8m / 0.3 is now 23 m WORSE and
+   * costs 0.51 km. Gate is 4 under every arm. Still not worth switching on.
    *
    * The defect it was built for is real and stays unaddressed: 171 fixes claim
    * a ground speed over 16 m/s and pass the 30 m accuracy filter. If that is

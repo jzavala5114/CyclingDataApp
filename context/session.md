@@ -150,9 +150,11 @@ See "What is left for the matcher".
 - **The same-way class**: 196 next-door passes / 11.3 km drawn mostly on another
   piece of the same OSM way, almost all on switchback trails. Two explanations
   tried and both wrong. Flagged in `trace-passes` output, not claimed as a defect.
-- **`eval:heading` and `eval:spikes`** still report `gate` columns from the
-  classifier before `9c13174`. Their conclusions rest on wrong-dir and discard
-  rate, which that fix does not touch, so they stand; the gate columns do not.
+- ~~**`eval:heading` and `eval:spikes`** still report `gate` columns from the
+  classifier before `9c13174`.~~ **DONE 2026-10-11:** both re-run on 48 rides,
+  fresh tables under the old ones, both conclusions stand. `eval:heading` now
+  calls derived the shipped arm, and `eval:spikes` lost three arms that had
+  become copies once derived shipped, plus its device-era control numbers.
 - **`npm run eval:smoothing` exits 1, and did on `main` before this change.**
   Seen 2026-10-06 in the int8 before/after run (byte-identical output both
   sides, so not caused by it). The zero-phase smoother loses on its isolated
@@ -3188,6 +3190,21 @@ trails, and every tangent window from 0 to 20 m.
   | **device, shipped** | 39 (1756 m) | 24 (1462 m) | 215/419 | 2228 | 18.4% | 14710 | 225.10 | 966 |
   | derived | **23 (1073 m)** | **12 (722 m)** | 224/418 | 2208 | **12.8%** | 14676 | 224.74 | 956 |
 
+  **[Re-run 2026-10-11, 48 rides, the current classifier: the `gate` column above
+  predates `9c13174` and is superseded.** The derived row is now the shipped one
+  and reproduces `eval:gate`'s shipped row exactly.
+
+  | heading | wrong-dir | gate | both drawn | merged | discard | buckets | covered km | lines |
+  |---|---|---|---|---|---|---|---|---|
+  | device | 43 (1941 m) | 4 (141 m) | 251/479 | 2553 | 18.0% | 17034 | 260.49 | 973 |
+  | **derived, shipped** | **26 (1240 m)** | 4 (179 m) | 259/478 | 2535 | **12.1%** | 17014 | 260.27 | 962 |
+
+  The conclusion stands and all of the gap is now wrong-dir: lost passes
+  47 / 2,082 m -> 30 / 1,419 m (36% / 32%, against 44% / 44% before), discard
+  18.0% -> 12.1%. "It also halves `gate`" was the old classifier's; gate is 4
+  under both. Over 34,220 fixes the headings still split 1.32% of the time by
+  more than 90 degrees. **]**
+
   **The real defect falls 63 passes / 3,218 m → 35 / 1,795 m, a 44% cut**, and
   the discard rate falls 18.4% → 12.8%, which is the biggest single move any
   change has made to that number. Buckets are flat (−0.23%) and covered distance
@@ -3242,6 +3259,24 @@ trails, and every tangent window from 0 to 20 m.
   | **derived heading** | **23 (1073 m)** | **12 (722 m)** | 224/418 | **12.8%** | 14,676 | 224.74 | 956 |
   | derived + spikes 8 / 0.3 | 23 (1096 m) | 12 | 221/417 | 12.1% | 14,578 | 224.31 | 954 |
   | derived + spikes 12 / 0.5 | 21 (1011 m) | 12 | 223/418 | 12.7% | 14,669 | 224.69 | 956 |
+
+  **[Re-run 2026-10-11, 48 rides, the current classifier, every arm on the shipped
+  derived heading. The `gate` column above predates `9c13174`, and the three
+  "derived" rows were dropped from the script: once derived shipped they were
+  copies of the shipped arm and two filter arms.** The `off` row reproduces
+  `eval:gate`'s shipped row exactly.
+
+  | rule | wrong-dir | gate | both drawn | discard | buckets | covered km | lines |
+  |---|---|---|---|---|---|---|---|
+  | off (shipped) | 26 (1240 m) | 4 | 259/478 | 12.1% | 17,014 | 260.27 | 962 |
+  | spikes 8 m / 0.3 | 26 (1263 m) | 4 | 256/477 | 11.4% | 16,891 | 259.75 | 960 |
+  | spikes 10 m / 0.5 | 23 (1146 m) | 4 | 258/478 | 11.8% | 16,984 | 260.21 | 962 |
+  | spikes 12 m / 0.5 | 24 (1178 m) | 4 | 258/478 | 12.0% | 17,005 | 260.21 | 962 |
+  | spikes 15 m / 0.5 | 23 (1150 m) | 4 | 259/478 | 12.0% | 17,011 | 260.26 | 962 |
+
+  The verdict stands: the best arm recovers 3 passes / 94 m (0.04% of 260 km)
+  and no line, and the aggressive one now LOSES 23 m and 0.51 km. Gate is 4
+  under every arm, so the filter still touches only direction. **]**
 
   **It is redundant, which is a different verdict from "too small".** On its own
   it works: 8 wrong-direction passes recovered. But the derived heading attacks
