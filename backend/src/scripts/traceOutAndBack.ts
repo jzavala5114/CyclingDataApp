@@ -11,7 +11,14 @@ import {
   type MatchOptions,
 } from "../services/segmentMatcher.js";
 import { assessRun } from "../services/elevationAggregator.js";
-import { findPasses, CORRIDOR_M, type ProjectedFix, type Pass } from "../services/segmentPasses.js";
+import {
+  findPasses,
+  CORRIDOR_M,
+  MIN_PASS_M,
+  RETRACE_M,
+  type ProjectedFix,
+  type Pass,
+} from "../services/segmentPasses.js";
 import type { Direction, Segment, SessionSample } from "../types/index.js";
 
 // Why does riding a segment both ways draw only one direction?
@@ -316,11 +323,33 @@ export async function loadRideContext(
 }
 
 /**
+ * `--witness m` from a command line: the floor a trace's witness runs at,
+ * MIN_PASS_M when the flag is absent. Shared by every script that takes it, so
+ * they cannot disagree about the rule. `findPasses` cannot see a leg shorter
+ * than the RETRACE_M that sets its direction, so a lower floor would be printed
+ * in the report and never applied; it is refused instead.
+ */
+export function witnessFloorFrom(argv: readonly string[]): number {
+  const at = argv.indexOf("--witness");
+  if (at === -1) return MIN_PASS_M;
+  const raw = argv[at + 1];
+  const floorM = Number(raw);
+  if (raw === undefined || !Number.isFinite(floorM) || floorM < RETRACE_M) {
+    throw new Error(`--witness needs metres, no fewer than RETRACE_M (${RETRACE_M}); got ${raw}`);
+  }
+  return floorM;
+}
+
+/**
  * One ride, replayed and attributed.
  *
  * Exported so a sweep over a matcher setting runs through exactly this, rather
  * than through a second copy of the classification that could disagree with it.
- * `matcher` is forwarded straight to `matchSamplesToSegments`.
+ * `matcher` is forwarded straight to `matchSamplesToSegments`, and `minPassM`
+ * to `findPasses` as the witness's reporting floor. That floor defaults to the
+ * gate's own span, so the witness cannot see a pass shorter than the gate would
+ * draw from span alone; lowering it towards RETRACE_M lets it judge the short
+ * lines the gate's coverage door admits, while the gate itself stays where it is.
  */
 export function traceSession(
   sessionId: number,
@@ -329,7 +358,8 @@ export function traceSession(
   {
     keepOneWay = false,
     matcher,
-  }: { keepOneWay?: boolean; matcher?: MatchOptions } = {},
+    minPassM = MIN_PASS_M,
+  }: { keepOneWay?: boolean; matcher?: MatchOptions; minPassM?: number } = {},
 ): SessionTrace {
   const losses: Loss[] = [];
   let bothWays = 0;
@@ -426,7 +456,7 @@ export function traceSession(
     for (const segmentId of touched) {
       const segment = byId.get(segmentId);
       if (!segment) continue;
-      const passes = findPasses(projectAll(samples, segment));
+      const passes = findPasses(projectAll(samples, segment), { minPassM });
       // Recorded before the one-way and empty cases return, so the witness is
       // the same list whatever this run of the trace was asked to report.
       for (const p of passes) {

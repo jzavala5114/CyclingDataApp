@@ -4,10 +4,12 @@ import assert from "node:assert/strict";
 import {
   classifyLoss,
   traceSession,
+  witnessFloorFrom,
   NEXT_DOOR_SHARE,
   type LossEvidence,
 } from "./traceOutAndBack.js";
 import { MAX_ACCURACY_M } from "../services/segmentMatcher.js";
+import { MIN_PASS_M, RETRACE_M } from "../services/segmentPasses.js";
 import type { Segment, SessionSample } from "../types/index.js";
 
 // The pass ledger decides which matcher defect is worth fixing, so a wrong
@@ -302,6 +304,31 @@ test("a clean one-way traversal is drawn and produces no loss at all", () => {
   assert.equal(t.bothWays, 0);
   assert.equal(t.passes.length, 1);
   assert.equal(t.passes[0]!.direction, "forward");
+});
+
+test("the witness floor reaches findPasses: a 20m pass is silent at the default and found at 15m", () => {
+  // The instrument NEXT item 4 waits on. The gate's coverage door draws lines
+  // shorter than MIN_PASS_M, which the default witness can never see. The floor
+  // has to reach the witness, and the default has to stay put, or every number
+  // published at the default moves under it.
+  const samples = ride(3); // 0, 10 and 20m along: a 20m pass
+  const atDefault = traceSession(1, samples, [eastSegment()], { keepOneWay: true });
+  assert.equal(atDefault.passes.length, 0, `20m is under the default ${MIN_PASS_M}m floor`);
+  const lowered = traceSession(1, samples, [eastSegment()], { keepOneWay: true, minPassM: RETRACE_M });
+  assert.equal(lowered.passes.length, 1);
+  assert.equal(lowered.passes[0]!.direction, "forward");
+  // The matcher's side is untouched by the witness: same runs, same lines.
+  assert.deepEqual([...lowered.drawn], [...atDefault.drawn]);
+  assert.equal(lowered.merged + lowered.discarded, atDefault.merged + atDefault.discarded);
+});
+
+test("--witness: absent is the default floor, below RETRACE_M or unreadable is refused", () => {
+  assert.equal(witnessFloorFrom([]), MIN_PASS_M);
+  assert.equal(witnessFloorFrom(["10,14", "--witness", "15"]), 15);
+  assert.equal(witnessFloorFrom(["--witness", String(RETRACE_M)]), RETRACE_M, "RETRACE_M itself is the lowest that runs");
+  for (const bad of [["--witness", "14.9"], ["--witness"], ["--witness", "abc"], ["--witness", "--all"]]) {
+    assert.throws(() => witnessFloorFrom(bad), /RETRACE_M/, bad.join(" "));
+  }
 });
 
 test("a ride reporting no device heading is still matched: headings are derived from movement", () => {

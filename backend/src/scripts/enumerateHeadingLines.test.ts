@@ -9,6 +9,7 @@ import {
   byVerdict,
   siblingKey,
   sensitivity,
+  parseArms,
   type LineEvidence,
   type PassFate,
   type SessionBuf,
@@ -91,6 +92,39 @@ test("BOUNDARY: the cutoff is MIN_PASS_M exactly", () => {
   assert.equal(MIN_PASS_M, 25);
   assert.equal(verdictFor(evidence([], { lengthM: MIN_PASS_M })), "phantom", "25m can witness");
   assert.equal(verdictFor(evidence([], { lengthM: MIN_PASS_M - 0.01 })), "no-witness");
+});
+
+test("a lowered witness floor moves the cutoff with it, and only for evidence gathered at it", () => {
+  // At a 15m floor a 20m segment CAN show a pass, so its silence is a phantom.
+  // Evidence that does not say what floor it ran at is held to the default:
+  // a lowered cutoff applied to passes found at 25m would call 15-25m lines
+  // phantoms that nothing could have witnessed.
+  assert.equal(verdictFor(evidence([], { lengthM: 20 })), "no-witness");
+  assert.equal(verdictFor(evidence([], { lengthM: 20, witnessFloorM: 15 })), "phantom");
+  assert.equal(verdictFor(evidence([], { lengthM: 15, witnessFloorM: 15 })), "phantom", "15m can witness at 15");
+  assert.equal(verdictFor(evidence([], { lengthM: 14.99, witnessFloorM: 15 })), "no-witness");
+});
+
+test("--tangent compares two tangent windows; without it, the heading comparison prints as it always did", () => {
+  const heading = parseArms([]);
+  assert.deepEqual(heading.labels, ["device", "derived"]);
+  assert.deepEqual(heading.options, [{ headingSource: "device" }, { headingSource: "derived" }]);
+  assert.equal(heading.title, "THE DERIVED HEADING");
+  assert.equal(heading.scope, "both headings");
+  assert.equal(heading.witnessM, MIN_PASS_M);
+
+  const tangent = parseArms(["--tangent", "10,14", "--witness", "15"]);
+  assert.deepEqual(tangent.labels, ["tangent 10m", "tangent 14m"]);
+  assert.deepEqual(tangent.options, [{ tangentWindowM: 10 }, { tangentWindowM: 14 }]);
+  assert.equal(tangent.witnessM, 15);
+
+  for (const bad of [
+    ["--tangent", "10"], ["--tangent", "10,14,20"], ["--tangent", "10,-1"], ["--tangent", "a,b"],
+    ["--tangent"], ["--tangent", "10,"], ["--tangent", ",14"], ["--tangent", "--witness", "15"],
+  ]) {
+    assert.throws(() => parseArms(bad), /--tangent/, bad.join(" "));
+  }
+  assert.throws(() => parseArms(["--witness", "10"]), /RETRACE_M/);
 });
 
 test("an unknown length reads as unjudged, never as a phantom", () => {
@@ -247,6 +281,14 @@ test("only lines one arm draws and the other does not are reported", () => {
   });
   assert.deepEqual([...evidenceFor([b], "device").keys()], ["100|backward"]);
   assert.deepEqual([...evidenceFor([b], "derived").keys()], ["200|forward"]);
+});
+
+test("evidence records the floor its witness ran at", () => {
+  const b = buf({
+    device: { drawn: new Set(["100|forward"]), runs: [], passes: [], drawnFix: new Map() },
+  });
+  assert.equal(evidenceFor([b], "device").get("100|forward")!.witnessFloorM, MIN_PASS_M);
+  assert.equal(evidenceFor([b], "device", new Map(), 15).get("100|forward")!.witnessFloorM, 15);
 });
 
 test("DIRECTION is part of the identity: the same segment can lose one way", () => {

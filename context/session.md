@@ -61,16 +61,34 @@ among them), often in twos and threes around one bad reading. 35 of the 40 pass
 the filter and all lie inside stored matches. Their effect after smoothing and
 averaging is unmeasured.
 
-### 4. The matcher's two open levers, which both wait on one instrument
+### 4. The matcher's two open levers: the instrument is BUILT (2026-10-10)
 
-Build the instrument first: `findPasses` with `minPassM: 15` and `MIN_SPAN_M`
-left at 25, so the witness can see under 25 m and stays independent of what is
-swept. A measurement, not a change. Then:
-- **`TANGENT_WINDOW_M`**, the strongest open lever: 14 m is 286 m better than
-  the shipped 10 m. Its +4 / -4 lines need the `eval:heading-lines` treatment,
-  and moving it needs a `rebuild-model`.
-- **The traversal gate**: the corrected sweep leans toward loosening and cannot
-  settle it.
+**The instrument:** `traceSession` takes `minPassM`, the witness's floor, and
+`npm run eval:heading-lines -- --tangent A,B --witness 15` and
+`npm run eval:tangent -- A,B --witness 15` run at it, `MIN_SPAN_M` untouched.
+With no flags both print what they always printed (control: `eval:heading-lines`
+byte-identical to `main` over 48 rides). A floor below `RETRACE_M` is refused,
+because `findPasses` cannot see a shorter leg and the report would claim a
+witness that never ran. 7 new tests; 5 mutants, all killed.
+
+- **`TANGENT_WINDOW_M`: measured, and the case for moving it got WEAKER.
+  Recommendation: leave it at 10; Julian's call.** 48 rides. Lost ground (wrong-dir + gate),
+  10 m against 14 m: 1419 -> 1012 m at the default floor, 2212 -> 1914 m at
+  15 m, so 14 m still wins by 298-407 m (0.11% of 260 km covered), all of it
+  wrong-dir; gate is 22 m worse at 15 m. Covered +0.47 km summed over rides,
+  buckets +20, discard 12.1% -> 13.4%. **But the lines:** 14 m draws 3 and
+  drops 4, and at the 15 m floor 3 of the 4 dropped are real ground, 80 m drawn
+  nowhere: `#7560` Red Rock Rim 39 m, `#50577` Palmer Point 28 m, and `#60243`,
+  a 17 m Palmer Point footway whose street goes blank. At the 25 m floor that
+  was 28 m: `#60243` was `no-witness`, and `#7560` gains a second, short pass
+  whose fixes go nowhere. The 3 it draws are 2 consolidations and a 9 m stub:
+  **no new ground, no phantom removed.** So 14 m's win is ride-level, passes
+  feeding the right direction of lines drawn anyway (harmless to the gradient,
+  since buckets hold heights at physical positions), and its cost is lines
+  that disappear. Outputs: `lines-t10-14-w15.txt` and siblings, scratchpad of
+  session e24d4bb5.
+- **The traversal gate**: still open. The instrument now exists; the sweep has
+  not been re-run with it. See "The gate sweep: ATTEMPTED".
 See "What is left for the matcher".
 
 ### 5. Smaller, in no order
@@ -2165,6 +2183,9 @@ classifier, 44 rides:
 | 14 m | 21 (894 m) | 3 (118 m) | **1012 m** | 14.0% | 15329 | 235.00 | 956 |
 | 20 m | 22 (911 m) | 2 (81 m) | **992 m** | 15.2% | 15323 | 235.36 | 962 |
 
+**[Re-measured 2026-10-10 with a 15 m witness: still ahead on lost ground, but
+it drops 80 m of real lines and draws no new ground. Left at 10. See NEXT
+item 4.]**
 **14 m is 286 m better than shipped, not 38 m**, with MORE covered ground
 (234.57 → 235.00 km), MORE buckets, and the same line count (+4 / −4). 20 m is
 306 m better again. The only thing that gets worse is the discard rate
@@ -2229,7 +2250,8 @@ whatever is being swept. `findPasses` already takes the threshold as an option,
 so this is a measurement, not a change. Everything below is unjudgeable without
 it:
 1. **The traversal gate.** Open, see above. Needs a `rebuild-model` if moved.
-2. **`TANGENT_WINDOW_M`.** Reopened: 14 m is 286 m better than the shipped 10 m
+2. **`TANGENT_WINDOW_M`.** [Measured 2026-10-10 with the 15 m witness: leave at
+   10, see NEXT item 4.] Reopened: 14 m is 286 m better than the shipped 10 m
    once the `gate` column is correct. Needs a `rebuild-model` if moved.
 3. ~~**`STITCH_WINDOW_S`.**~~ **SWEPT AND CLOSED 2026-10-04** — the one of the
    three that did not need the new witness, because its cost shows up as

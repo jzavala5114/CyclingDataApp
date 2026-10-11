@@ -5,11 +5,13 @@ import { loadSessionVerdicts, isUsable } from "../services/usableSessions.js";
 import {
   loadRideContext,
   traceSession,
+  witnessFloorFrom,
   NEXT_DOOR_SHARE,
   type DrawnRun,
   type PassRecord,
 } from "./traceOutAndBack.js";
 import { MIN_PASS_M } from "../services/segmentPasses.js";
+import type { MatchOptions } from "../services/segmentMatcher.js";
 import type { Segment, SessionSample } from "../types/index.js";
 
 // Name every line the derived heading would cost, and say which losses are real.
@@ -48,10 +50,16 @@ import type { Segment, SessionSample } from "../types/index.js";
 // The gained lines get the same treatment in reverse, because 26 new phantoms
 // would be a bad trade however good the lost 36 look.
 //
+// The same question fits any two matcher settings, so `--tangent` compares two
+// tangent windows instead of the two heading sources, and `--witness` lowers the
+// witness's reporting floor (MIN_PASS_M, the gate's own span, by default) to as
+// little as RETRACE_M, so lines of 15-25m stop being `no-witness`.
+//
 // Read-only. Every query is a select.
 //
 //   npm run eval:heading-lines
 //   npm run eval:heading-lines -- --all        # list every line, not the top 25
+//   npm run eval:heading-lines -- --tangent 10,14 --witness 15
 
 export type Verdict = "no-witness" | "phantom" | "next-door" | "real-loss";
 
@@ -87,14 +95,19 @@ export interface LineEvidence {
    * lines too short to witness, where the alternative is no evidence at all.
    */
   runFates: PassFate[];
+  /** The floor `findPasses` ran at when `fates` were gathered. A segment
+   * shorter than it can never show a pass, so its silence proves nothing.
+   * MIN_PASS_M when absent. */
+  witnessFloorM?: number;
 }
 
 /**
  * One line's verdict.
  *
  * Silence from the witness only means something when the witness could have
- * spoken: `findPasses` needs MIN_PASS_M of travel along the geometry, and a
- * segment shorter than that caps every possible span below the threshold. The
+ * spoken: `findPasses` needs its floor (MIN_PASS_M unless the witness ran lower)
+ * of travel along the geometry, and a segment shorter than that caps every
+ * possible span below the threshold. The
  * traversal gate has no such floor (it also accepts a high coverage fraction),
  * so short lines get drawn and can never be witnessed. Calling those phantoms
  * would credit the heading change with removing lines nothing has judged.
@@ -107,7 +120,7 @@ export interface LineEvidence {
  */
 export function verdictFor(ev: LineEvidence, nextDoorShare = NEXT_DOOR_SHARE): Verdict {
   if (ev.fates.length === 0) {
-    return ev.lengthM < MIN_PASS_M ? "no-witness" : "phantom";
+    return ev.lengthM < (ev.witnessFloorM ?? MIN_PASS_M) ? "no-witness" : "phantom";
   }
   return ev.fates.every((f) => f.share >= nextDoorShare) ? "next-door" : "real-loss";
 }
@@ -182,6 +195,9 @@ export function fateOf(
  * session draws it under the other arm, which is not knowable until every ride
  * has been replayed.
  */
+// Named for the first comparison this script ran: `device` holds the arm being
+// moved away from and `derived` the arm being moved to. `--tangent` fills the
+// same two slots with two tangent windows.
 export interface SessionBuf {
   sessionId: number;
   fixTimes: Array<{ id: number; atMs: number }>;
@@ -203,6 +219,7 @@ export function evidenceFor(
   bufs: readonly SessionBuf[],
   from: "device" | "derived",
   lengths: ReadonlyMap<number, number> = new Map(),
+  witnessFloorM: number = MIN_PASS_M,
 ): Map<string, LineEvidence> {
   const to = from === "device" ? "derived" : "device";
   const mine = new Set<string>();
@@ -221,6 +238,7 @@ export function evidenceFor(
       lengthM: lengths.get(Number(key.split("|")[0])) ?? 0,
       fates: [],
       runFates: [],
+      witnessFloorM,
     };
     for (const b of bufs) {
       if (!b[from].drawn.has(key)) continue; // only where this arm actually drew it
@@ -341,12 +359,69 @@ function report(
   }
 }
 
+/** The two settings a run compares, and the floor its witness runs at. */
+export interface Arms {
+  /** Short names for the arm moved away from and the arm moved to. */
+  labels: [string, string];
+  options: [MatchOptions, MatchOptions];
+  /** What changes between them, for prose: "heading", "tangent window". */
+  subject: string;
+  /** The arm moved to, as the cost report's title names it. */
+  title: string;
+  /** How the replay line describes the pair. */
+  scope: string;
+  witnessM: number;
+}
+
+/**
+ * Reads `--tangent from,to` and `--witness m`. With neither, it is the
+ * comparison this script was written for, device heading against derived, at
+ * the default floor, and prints exactly what it always printed.
+ */
+export function parseArms(argv: readonly string[]): Arms {
+  const witnessM = witnessFloorFrom(argv);
+  const tangentAt = argv.indexOf("--tangent");
+  if (tangentAt === -1) {
+    return {
+      labels: ["device", "derived"],
+      options: [{ headingSource: "device" }, { headingSource: "derived" }],
+      subject: "heading",
+      title: "THE DERIVED HEADING",
+      scope: "both headings",
+      witnessM,
+    };
+  }
+  // A flag with its value missing, or a stray comma, must not quietly become a
+  // different comparison: Number("") is 0, a real window.
+  const tangentArg = argv[tangentAt + 1];
+  const parts = (tangentArg ?? "").split(",");
+  if (parts.length !== 2 || parts.some((p) => p.trim() === "" || !(Number(p) >= 0))) {
+    throw new Error(`--tangent needs two windows in metres, the one moved from first; got ${tangentArg}`);
+  }
+  const [from, to] = parts.map(Number) as [number, number];
+  return {
+    labels: [`tangent ${from}m`, `tangent ${to}m`],
+    options: [{ tangentWindowM: from }, { tangentWindowM: to }],
+    subject: "tangent window",
+    title: `THE ${to}M TANGENT WINDOW`,
+    scope: `tangent windows ${from}m and ${to}m`,
+    witnessM,
+  };
+}
+
 async function main(): Promise<void> {
   const limit = process.argv.includes("--all") ? 10000 : 25;
+  const arms = parseArms(process.argv.slice(2));
+  const [labelA, labelB] = arms.labels;
+  const floor = arms.witnessM;
   const client = await pool.connect();
   await client.query("set statement_timeout = '15min'");
   const usable = (await loadSessionVerdicts(client)).filter(isUsable);
-  console.log(`replaying ${usable.length} sessions under both headings\n`);
+  console.log(
+    `replaying ${usable.length} sessions under ${arms.scope}` +
+      (floor === MIN_PASS_M ? "" : `, witness floor ${floor}m (default ${MIN_PASS_M}m)`) +
+      `\n`,
+  );
 
   const bufs: SessionBuf[] = [];
   const meta = new Map<number, Meta>();
@@ -360,10 +435,12 @@ async function main(): Promise<void> {
     if (!samples.length) continue;
 
     const device = traceSession(sessionId, samples, segments, {
-      matcher: { headingSource: "device" },
+      matcher: arms.options[0],
+      minPassM: floor,
     });
     const derived = traceSession(sessionId, samples, segments, {
-      matcher: { headingSource: "derived" },
+      matcher: arms.options[1],
+      minPassM: floor,
     });
 
     const w = witnessDisagreements(device.passes, derived.passes);
@@ -410,8 +487,8 @@ async function main(): Promise<void> {
     for (const k of b.derived.drawn) derivedLines.add(k);
   }
   const lengths = new Map([...meta].map(([id, m]) => [id, m.lengthM]));
-  const lost = evidenceFor(bufs, "device", lengths);
-  const gained = evidenceFor(bufs, "derived", lengths);
+  const lost = evidenceFor(bufs, "device", lengths, floor);
+  const gained = evidenceFor(bufs, "derived", lengths, floor);
 
   console.log(`\nCONTROL -- the witness does not depend on the arm`);
   console.log(
@@ -420,27 +497,29 @@ async function main(): Promise<void> {
   );
 
   console.log(`\nTHE LEDGER`);
-  console.log(`  device draws  ${pad(deviceLines.size, 5)} lines`);
-  console.log(`  derived draws ${pad(derivedLines.size, 5)} lines`);
+  // 14 wide is what the default labels always printed at.
+  const col = Math.max(14, `${labelB} draws`.length + 1, `${labelA} draws`.length + 1);
+  console.log(`  ${`${labelA} draws`.padEnd(col)}${pad(deviceLines.size, 5)} lines`);
+  console.log(`  ${`${labelB} draws`.padEnd(col)}${pad(derivedLines.size, 5)} lines`);
   console.log(
-    `  lost          ${pad(lost.size, 5)} lines  ` +
-      `${pad(metresOf([...lost.values()]).toFixed(0), 7)}m the device drew`,
+    `  ${"lost".padEnd(col)}${pad(lost.size, 5)} lines  ` +
+      `${pad(metresOf([...lost.values()]).toFixed(0), 7)}m the ${labelA} drew`,
   );
   console.log(
-    `  gained        ${pad(gained.size, 5)} lines  ` +
-      `${pad(metresOf([...gained.values()]).toFixed(0), 7)}m the derived draws`,
+    `  ${"gained".padEnd(col)}${pad(gained.size, 5)} lines  ` +
+      `${pad(metresOf([...gained.values()]).toFixed(0), 7)}m the ${labelB} draws`,
   );
 
   report(
-    `THE LINES THE DERIVED HEADING WOULD COST (${lost.size})`,
+    `THE LINES ${arms.title} WOULD COST (${lost.size})`,
     lost,
     meta,
     ["real-loss", "next-door", "phantom", "no-witness"],
     {
-      "real-loss": "ground drawn nowhere under derived. THE COST.",
+      "real-loss": `ground drawn nowhere under ${labelB}. THE COST.`,
       "next-door": "still drawn, on the neighbour. consolidation.",
       phantom: "no pass witness: a direction never ridden. a fix.",
-      "no-witness": `shorter than ${MIN_PASS_M}m: unjudgeable. run window only.`,
+      "no-witness": `shorter than ${floor}m: unjudgeable. run window only.`,
     },
     limit,
     derivedLines,
@@ -453,9 +532,9 @@ async function main(): Promise<void> {
     ["phantom", "next-door", "real-loss", "no-witness"],
     {
       phantom: "no pass witness: a NEW phantom. a cost, not a gain.",
-      "next-door": "the device drew this ground on the neighbour. consolidation.",
-      "real-loss": "ground the device drew nowhere. THE GAIN.",
-      "no-witness": `shorter than ${MIN_PASS_M}m: unjudgeable. run window only.`,
+      "next-door": `the ${labelA} drew this ground on the neighbour. consolidation.`,
+      "real-loss": `ground the ${labelA} drew nowhere. THE GAIN.`,
+      "no-witness": `shorter than ${floor}m: unjudgeable. run window only.`,
     },
     limit,
     deviceLines,
@@ -472,15 +551,15 @@ async function main(): Promise<void> {
     { "": "phantoms created", ...tally(pick(gained, "phantom")) },
     { "": "consolidated away", ...tally(pick(lost, "next-door")) },
     { "": "consolidated in", ...tally(pick(gained, "next-door")) },
-    { "": `under ${MIN_PASS_M}m, lost, drawn elsewhere`, ...tally(short(lost, "drawn-elsewhere")) },
-    { "": `under ${MIN_PASS_M}m, lost, drawn nowhere`, ...tally(short(lost, "drawn-nowhere")) },
-    { "": `under ${MIN_PASS_M}m, gained`, ...tally(pick(gained, "no-witness")) },
+    { "": `under ${floor}m, lost, drawn elsewhere`, ...tally(short(lost, "drawn-elsewhere")) },
+    { "": `under ${floor}m, lost, drawn nowhere`, ...tally(short(lost, "drawn-nowhere")) },
+    { "": `under ${floor}m, gained`, ...tally(pick(gained, "no-witness")) },
   ]);
 
   console.log(
     `\nSENSITIVITY -- the lost lines as the next-door share moves. Two verdicts sit within\n` +
       `10 points of the shipped ${NEXT_DOOR_SHARE}, so this says whether the conclusion is about the\n` +
-      `heading or about the threshold.`,
+      `${arms.subject} or about the threshold.`,
   );
   console.table(sensitivity(lost, [0.3, 0.4, NEXT_DOOR_SHARE, 0.6, 0.7]));
 
@@ -489,7 +568,7 @@ async function main(): Promise<void> {
       `outside this segment's corridor; the next-door share is computed the same way in\n` +
       `trace-passes, so the two agree, but neither is a per-fix corridor test. A line is\n` +
       `judged over the sessions the arm drew it in, so a line drawn in one ride and missed in\n` +
-      `another is judged on the ride where it was drawn. And a segment under ${MIN_PASS_M}m cannot be\n` +
+      `another is judged on the ride where it was drawn. And a segment under ${floor}m cannot be\n` +
       `witnessed at all: those lines are reported on their run window, which is the matcher's\n` +
       `own opinion of where the rider was, so treat them as unjudged rather than as either\n` +
       `a phantom or a loss.`,

@@ -3,7 +3,13 @@ import { pathToFileURL } from "node:url";
 import { pool } from "../db/pool.js";
 import { loadSessionVerdicts, isUsable } from "../services/usableSessions.js";
 import { TANGENT_WINDOW_M } from "../services/segmentMatcher.js";
-import { loadRideContext, traceSession, type SessionTrace } from "./traceOutAndBack.js";
+import { MIN_PASS_M } from "../services/segmentPasses.js";
+import {
+  loadRideContext,
+  traceSession,
+  witnessFloorFrom,
+  type SessionTrace,
+} from "./traceOutAndBack.js";
 
 // Does widening or narrowing the tangent window fix the backwards directions?
 //
@@ -24,6 +30,7 @@ import { loadRideContext, traceSession, type SessionTrace } from "./traceOutAndB
 //
 //   npm run eval:tangent
 //   npm run eval:tangent -- 0,5,10,20
+//   npm run eval:tangent -- 10,14 --witness 15   # witness sees passes down to 15m
 
 const DEFAULT_WINDOWS = [0, 3, 5, 7, 10, 14, 20];
 
@@ -72,7 +79,10 @@ function add(t: ArmTotals, trace: SessionTrace): void {
 }
 
 async function main(): Promise<void> {
-  const arg = process.argv.slice(2).find((a) => !a.startsWith("--"));
+  const args = process.argv.slice(2);
+  const minPassM = witnessFloorFrom(args);
+  const witnessAt = args.indexOf("--witness");
+  const arg = args.find((a, i) => !a.startsWith("--") && (witnessAt === -1 || i !== witnessAt + 1));
   const windows = arg ? arg.split(",").map(Number) : DEFAULT_WINDOWS;
   if (windows.some((w) => !Number.isFinite(w) || w < 0)) {
     throw new Error(`windows must be finite and non-negative, got ${arg}`);
@@ -83,7 +93,9 @@ async function main(): Promise<void> {
   const usable = (await loadSessionVerdicts(client)).filter(isUsable);
   console.log(
     `sweeping tangent window ${windows.join(", ")}m over ${usable.length} sessions ` +
-      `(shipped: ${TANGENT_WINDOW_M}m, 0 means the straight-line chord)\n`,
+      `(shipped: ${TANGENT_WINDOW_M}m, 0 means the straight-line chord)` +
+      (minPassM === MIN_PASS_M ? "" : `, witness floor ${minPassM}m (default ${MIN_PASS_M}m)`) +
+      `\n`,
   );
 
   const totals = new Map(windows.map((w) => [w, blank(w)]));
@@ -97,6 +109,7 @@ async function main(): Promise<void> {
     for (const windowM of windows) {
       add(totals.get(windowM)!, traceSession(sessionId, samples, segments, {
         matcher: { tangentWindowM: windowM },
+        minPassM,
       }));
     }
     done++;
