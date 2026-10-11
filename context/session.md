@@ -3,7 +3,7 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-10-10.
+Last updated 2026-10-11.
 
 **Read the four blocks below before anything else.** They are the authoritative
 queue and state. Everything after them is evidence and history: where a section
@@ -12,13 +12,199 @@ stale.
 
 ## NEXT, IN ORDER
 
-### 1. ~~Grade session 85~~ DONE 2026-10-10: rides 85 to 88 all `alive`
+Rewritten 2026-10-11 for what is left. The old items 1 to 4 are closed, with
+their evidence, in "CLOSED 2026-10-10 and -11" below the STATE block.
+
+### 1. The zero-run census
+
+How many segments a rider rode produce no run at all, and so appear in no
+ledger. Every loss measured so far (wrong-dir, gate, both matcher levers) is
+counted over segments where the matcher made a run, because `traceSession`
+projects only onto the segments its runs touched. The most valuable unmeasured
+number; read-only, about 40k tokens. The witness is ready: `traceSession`'s
+`minPassM` at 15 (`RETRACE_M`). Two traps to design around: projecting every
+fix onto every segment in a ride's bbox is the whole cost of `trace-passes`, so
+filter by the 25 m corridor first; and a parallel street inside that corridor
+shows a pass too, so count a pass as lost only when its fixes are drawn on no
+line at all, the next-door rule. See "What is left for the matcher".
+
+### 2. The barometer strip prints a 95-99% minute as `10`
+
+`sourceStrip` in `verifyBarometer.ts`, seen in rides 70, 71, 79 and 88. Display
+only: no verdict reads the strip. Cap the digit at 9, with a test; about 10k.
+See "HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED".
+
+### 3. `npm run eval:smoothing` exits 1
+
+It did on `main` before the int8 change too: seen 2026-10-06 in the int8
+before/after run, byte-identical output both sides. The zero-phase smoother
+loses on its isolated within-ride measure, **1.461 m -> 1.579 m (+0.118 m)**,
+while winning on shape error against terrain (-0.512 m) and cross-ride
+disagreement (-0.052 m). Unexamined: whether that measure already failed when
+the smoother shipped on 2026-09-24, with fewer rides. If it did, the smoother
+shipped against a failing measure and the notes should say why; if not, more
+rides moved it.
+
+### 4. The same-way class
+
+196 next-door passes / 11.3 km drawn mostly on another piece of the same OSM
+way, almost all on switchback trails. Two explanations tried, both wrong.
+Flagged in `trace-passes` output, not claimed as a defect. Open-ended: worth
+starting only when a line on the map points at it.
+
+### 5. Debt
+
+The linker's measuring tools have no tests, and `context/architecture.html` is
+over a month stale.
+
+### Parked: measured, decided, and what would reopen each
+
+- **Timestamps arrive as `Date` and `Date.parse()` drops their milliseconds:
+  measured NEGLIGIBLE on 2026-10-10, left unfixed by Julian's decision.** pg
+  parses `timestamptz` into a `Date` while the code types `recordedAt`,
+  `endedAt` and two columns in `pruneEmptySessions.ts` as `string`, so
+  `Date.parse(date)` reads every fix time cut to the whole second (the
+  census's 11 lies). Replaying production's speed filter
+  (`rejectImpossibleSpeeds`, `sessionProcessor.ts:173`) over all 50 rides,
+  34,866 fixes, exact times against today's: **2 verdicts change**, one fix
+  each in sessions 15 and 42, both wrongly rejected today (control: 0). Of
+  34,816 gaps, 3,549 are under 1 s and 245 read as 0 s, which the filter
+  treats as no evidence; 7 cross the matcher's 15 s anchor limit and 1 its
+  45 s stitch window (consecutive fixes, a rough indicator). Small because
+  every limit sits far from a second: the filter rejects only above 20 m/s
+  both in and out. `measurePositionSpikes`, where a 0 s gap becomes an
+  infinite speed, runs only in diagnostic scripts: production passes no
+  `positionFilter`. Script: `backend/tmp-measure-timestamps.mjs` (gitignored,
+  local). If ever built: a global `timestamptz` parser returning the ISO
+  string, the int8 pattern with JSON byte-identical, about 80k tokens, no
+  rebuild needed. **Lesson:** it sat at NEXT 1 for five days on how alarming
+  the mechanism sounded; the 30-minute measurement CLAUDE.md now requires
+  would have ranked it here.
+- **`TANGENT_WINDOW_M` stays 10 and the traversal gate stays 25 / 0.7** (old
+  item 4, Julian's call). Reopen the tangent only with the extent-level effect
+  of 14 m, +0.47 km summed over rides, from a dry-run model diff; the gate only
+  with a per-line look at 18 / 0.7's 8 next-door lines.
+- **40 barometric excursions of 3-6 m** (old item 3): 35 pass the spike filter
+  and lie inside stored matches. Their effect after smoothing and averaging is
+  unmeasured.
+- **A ride's first fix keeps its GPS height** (old item 2). The elevation
+  filter keeps a first fix by construction and nothing in the pipeline reads
+  `elevation_source`; it matches the barometer to 0.1 m on rides 68, 82, 84 and
+  87, and sits 19.2 m high on ride 73.
+- **Session 29's `started_at`** is 23.2 h after its fixes (old item 2); the
+  recovery path (bug 22) would fit.
+- **Two code debts left on purpose:** `endpointSnapM`'s table carries gate
+  numbers from before `9c13174`, annotated rather than re-measured; and
+  `enumerateHeadingLines`' `device` / `derived` slots also hold tangent arms,
+  explained in a comment rather than renamed.
+
+## SETTLED: do not re-examine
+
+| question | answer | evidence |
+|---|---|---|
+| Viterbi matching | **No.** 28 m of genuine fork, and the graph has no edge at 45 of the 47 places the rider turned | "Does the matcher need Viterbi?" |
+| joining segment ends that meet but share no node (`endpointSnapM`) | **Built, left at 0.** Cuts impossible transitions 35% and moves the map 70 m in 225 km | "Lever 1 was BUILT and MEASURED" |
+| `MAX_BEARING_DELTA_DEG` | **Swept, left at 45.** Strictly worse at every width | its doc comment in `segmentMatcher.ts` |
+| hairpins causing wrong-dir | **No.** 1 of 23 passes | "Lever 2" |
+| tunnels missing from the map | **A misread label.** The real defect is 55 m of Gold Camp Road | struck entry in "Open items" |
+| `STITCH_WINDOW_S` | **Swept, keep 45.** 90 s adds 249 m, 214 m of it unwitnessed, and no new line | note 26 |
+| "the gate losses were unstitched fragments" | **No.** Each is one pre-stitch run (close to a base rate). The traversals fragment across SEGMENTS, which the stitcher cannot join | "The gate sweep: ATTEMPTED" |
+| the pass ledger's cause order | **Fixed** in `9c13174`. `gate` is 4 passes / 179 m over 44 rides | paid-for #31 |
+| `SessionVerdict.id` and `bad_share` arriving as text | **Fixed** in `af653f8`, converted at the boundary | paid-for #30 |
+| every bigint (ids, uncast `count(*)`) arriving as text | **Fixed at the driver** in `6d6b174`: `db/pgTypes.ts`, one parser for every process. Live `/segments` byte-identical apart from the id's type | "What landed on 2026-10-10" |
+| checking the code's row types against the database | **`npm run eval:query-types`**: Parse + Describe, executes nothing. 82 sites, 0 numeric lies, 0 untyped reads | `backend/README.md` |
+| whether a docs-only push deploys | **No.** Railway watches `backend/**`; tested 2026-10-04 | commit `4b028c8` |
+| the barometer | **Finished.** Session 84 graded `alive`, 1366 of 1367 fixes barometric | "The barometer: shipped, installed, verified" |
+| the traversal gate | **Swept with a 15 m witness 2026-10-11, keep 25 / 0.7.** Most runs a lower span admits are ridden, but the new lines are worth 72-306 m and turn on next-door duplicate paint | old NEXT item 4, `npm run eval:gate` |
+| `TANGENT_WINDOW_M` | **Keep 10.** 14 m wins 298-407 m at ride level but drops 80 m of real lines and draws no new ground | old NEXT item 4 |
+
+## OPEN: genuinely undecided, do not treat as closed
+
+- **The same-way class.** Unexplained. NEXT item 4.
+
+## STATE, 2026-10-11
+
+`main` is the base, and every task branch is merged into it. The ten from
+2026-10-10/11 were deleted on 2026-10-11, locally and on origin;
+`stale-eval-columns`, `state-after-stale` and `next-whats-left` are merged and
+safe to delete.
+Last code change `cde98c2`: comments and eval-script text only (stale gate
+columns and labels in `eval:heading` / `eval:spikes`). The server's behaviour
+last changed in `9b68a1f`; `7c3ff06` moved the gate rule into `qualifiesAt`
+with identical behaviour. Production serves `builtAt 2026-10-11T17:46:24.697Z`,
+the `cde98c2` deploy, verified by the timestamp moving. **This PC's clock runs about 80 s
+ahead of Railway's** (measured 2026-10-11 against the HTTP `Date` header), so
+a fresh `builtAt` can read earlier than the local push time without being a
+stale build. Live model **746 segments / 953 lines** at the int8 deploy, which
+changed nothing in it: the whole `/segments` response hashes the same as
+before, ids now numbers. **444 backend tests, 56 app tests**; `mobile/`
+has a gate lane. **45 usable rides** counted on 2026-10-05. Rides 85 to 88 are
+graded `alive` (2026-10-10). 88 landed that afternoon, so 51 sessions hold
+34,965 fixes; the timestamp measurement earlier the same day saw 50 and
+34,866. `npm
+run eval:query-types` fails on 11 timestamp lies, by design: measured
+negligible on 2026-10-10 (NEXT, "Parked"). A deploy failed once on 2026-09-30, see note 29,
+before adding anything to `backend/` that imports outside it.
+
+**How every measurement here is run, each rule learned by breaking it:**
+- **Pin the control to a fixed ride list.** New rides arrive mid-task.
+- **Before trusting a check, run the input that should make it say no.**
+- **Count what a fix would change, not what it touches.** The timestamp defect
+  touched 99.9% of fix times and changed 2 of 34,866 verdicts; it sat at NEXT 1
+  for five days on the first number.
+- **Run the code on the case before writing down what it does.** old NEXT item 3
+  sat for a week on "the spike filter lets it through", reasoned from an assumed
+  riding speed. Run on the stored ride, the filter rejected it: the rider was
+  nearly stopped.
+- **A witness with a floor cannot speak below it.** `findPasses` needs 25 m, so
+  its silence about anything shorter is not evidence.
+- **Verify a deploy by `builtAt` moving, never by status**, and if a timestamp
+  looks unexplained, suspect the recorded baseline before the deploy trigger.
+- **Compare before and after from FROZEN copies** (`git archive` of `main`, a copy
+  of the branch), back to back, with a data fingerprint around each pair.
+  Running from the working tree lets a later edit leak into an earlier run.
+- **A Windows junction in a scratch copy points INTO the repo.** Delete the link
+  itself (`[System.IO.Directory]::Delete(path, $false)`); never recurse into it.
+
+**The house defect**, shared by six of the nine errors made on 2026-10-04: **a
+check that cannot fail, reported as a check that passed.**
+
+**How work is sized since 2026-10-10.** CLAUDE.md is untracked by design, so
+this is the record of what changed in it and why. Every triage block carries a
+token Budget line, so Julian can veto an expensive run before it starts.
+Critic rounds are capped, medium one and large two, and stop early after two
+rounds of only nits; more rounds run only on Julian's say. A finding blocks
+shipping only with a plausible path to it, and only once the builder has
+re-run its reproduction. A fix whose payoff is unknown gets a 30-minute
+read-only measurement first. Why: the int8 review ran six rounds, rounds 4 to
+6 found only code nobody here would write at about 200k tokens a round, and
+the timestamp item measured negligible after five days at the top of the
+queue.
+
+Where to start depends on what you came for:
+
+| you want to | read |
+|---|---|
+| know what the app is and how a ride becomes a coloured line | "What it is", "Layout", "Data flow" |
+| change anything in the backend | "Bugs already paid for" — 31 failure modes, each one paid for once already |
+| run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
+| touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. Item 1 is the zero-run census: read-only, about 40k tokens |
+| understand why there is no drift correction | "What the drift anchor taught us" |
+| see the branch and deploy state | "Where things stand", immediately below |
+
+## CLOSED 2026-10-10 and -11: the old NEXT items 1 to 4
+
+Kept for the record and for the references into it ("old NEXT item 3" and the
+like). Nothing here is queued.
+
+### Old item 1. ~~Grade session 85~~ DONE 2026-10-10: rides 85 to 88 all `alive`
 
 Graded together with rides 86, 87 and 88, which landed after it. Results and a
 display defect found on the way are under "HOW TO REBUILD THE APK, AND HOW A
-RIDE IS GRADED". Start at item 2.
+RIDE IS GRADED".
 
-### 2. ~~A fix from an ended ride is filed under the next one~~ CLOSED 2026-10-10: measured, nothing to build
+### Old item 2. ~~A fix from an ended ride is filed under the next one~~ CLOSED 2026-10-10: measured, nothing to build
 
 Counted over every stored ride (`backend/tmp-close-items.mjs`, gitignored,
 read-only). 34 of the 50 rides with an ordinary `started_at` hold exactly one fix
@@ -43,7 +229,7 @@ as a defect:
   fixes predate it: the row was created long after the ride. Cause unverified;
   the recovery path (bug 22) would fit.
 
-### 3. ~~The 9 m barometric outlier~~ CLOSED 2026-10-10: the filter already removes it
+### Old item 3. ~~The 9 m barometric outlier~~ CLOSED 2026-10-10: the filter already removes it
 
 **The premise was wrong.** `rejectElevationSpikes` DOES reject session 84's
 19:35:04Z fix, run on the stored ride through production's own filters
@@ -61,7 +247,7 @@ among them), often in twos and threes around one bad reading. 35 of the 40 pass
 the filter and all lie inside stored matches. Their effect after smoothing and
 averaging is unmeasured.
 
-### 4. ~~The matcher's two open levers~~ MEASURED 2026-10-10 and -11: keep both as shipped
+### Old item 4. ~~The matcher's two open levers~~ MEASURED 2026-10-10 and -11: keep both as shipped
 
 **The instrument:** `traceSession` takes `minPassM`, the witness's floor, and
 `npm run eval:heading-lines -- --tangent A,B --witness 15` and
@@ -121,147 +307,6 @@ witness that never ran. 7 new tests; 5 mutants, all killed.
   lines, to sort duplicate paint from short connectors the neighbour only
   brushes. Outputs: `gate-sweep-w15.txt`, scratchpad of session e24d4bb5.
 See "What is left for the matcher".
-
-### 5. Smaller, in no order
-
-- **Timestamps arrive as `Date` and `Date.parse()` drops their milliseconds:
-  measured NEGLIGIBLE on 2026-10-10, left unfixed by Julian's decision.** pg
-  parses `timestamptz` into a `Date` while the code types `recordedAt`,
-  `endedAt` and two columns in `pruneEmptySessions.ts` as `string`, so
-  `Date.parse(date)` reads every fix time cut to the whole second (the
-  census's 11 lies). Replaying production's speed filter
-  (`rejectImpossibleSpeeds`, `sessionProcessor.ts:173`) over all 50 rides,
-  34,866 fixes, exact times against today's: **2 verdicts change**, one fix
-  each in sessions 15 and 42, both wrongly rejected today (control: 0). Of
-  34,816 gaps, 3,549 are under 1 s and 245 read as 0 s, which the filter
-  treats as no evidence; 7 cross the matcher's 15 s anchor limit and 1 its
-  45 s stitch window (consecutive fixes, a rough indicator). Small because
-  every limit sits far from a second: the filter rejects only above 20 m/s
-  both in and out. `measurePositionSpikes`, where a 0 s gap becomes an
-  infinite speed, runs only in diagnostic scripts: production passes no
-  `positionFilter`. Script: `backend/tmp-measure-timestamps.mjs` (gitignored,
-  local). If ever built: a global `timestamptz` parser returning the ISO
-  string, the int8 pattern with JSON byte-identical, about 80k tokens, no
-  rebuild needed. **Lesson:** it sat at NEXT 1 for five days on how alarming
-  the mechanism sounded; the 30-minute measurement CLAUDE.md now requires
-  would have ranked it here.
-- **The zero-run census**: how many ridden segments produce no run at all, and so
-  appear in no ledger here. The most valuable unmeasured number.
-- **The same-way class**: 196 next-door passes / 11.3 km drawn mostly on another
-  piece of the same OSM way, almost all on switchback trails. Two explanations
-  tried and both wrong. Flagged in `trace-passes` output, not claimed as a defect.
-- ~~**`eval:heading` and `eval:spikes`** still report `gate` columns from the
-  classifier before `9c13174`.~~ **DONE 2026-10-11:** both re-run on 48 rides,
-  fresh tables under the old ones, both conclusions stand. `eval:heading` now
-  calls derived the shipped arm, and `eval:spikes` lost three arms that had
-  become copies once derived shipped, plus its device-era control numbers.
-- **`npm run eval:smoothing` exits 1, and did on `main` before this change.**
-  Seen 2026-10-06 in the int8 before/after run (byte-identical output both
-  sides, so not caused by it). The zero-phase smoother loses on its isolated
-  within-ride measure, **1.461 m -> 1.579 m (+0.118 m)**, while winning on shape
-  error against terrain (-0.512 m) and cross-ride disagreement (-0.052 m).
-  Unexamined: whether that measure already failed when the smoother shipped on
-  2026-09-24, with fewer rides.
-- **`verify-barometer`'s per-minute strip prints a 95-99% barometric minute as
-  `10`**, two characters, so the rest of the strip shifts a column (rides 70,
-  71, 79, 88). Display only: cap the digit at 9 in `sourceStrip`, with a test.
-  See "HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED".
-- **Debt:** the linker's measuring tools have no tests, and
-  `context/architecture.html` is over a month stale.
-
-## SETTLED: do not re-examine
-
-| question | answer | evidence |
-|---|---|---|
-| Viterbi matching | **No.** 28 m of genuine fork, and the graph has no edge at 45 of the 47 places the rider turned | "Does the matcher need Viterbi?" |
-| joining segment ends that meet but share no node (`endpointSnapM`) | **Built, left at 0.** Cuts impossible transitions 35% and moves the map 70 m in 225 km | "Lever 1 was BUILT and MEASURED" |
-| `MAX_BEARING_DELTA_DEG` | **Swept, left at 45.** Strictly worse at every width | its doc comment in `segmentMatcher.ts` |
-| hairpins causing wrong-dir | **No.** 1 of 23 passes | "Lever 2" |
-| tunnels missing from the map | **A misread label.** The real defect is 55 m of Gold Camp Road | struck entry in "Open items" |
-| `STITCH_WINDOW_S` | **Swept, keep 45.** 90 s adds 249 m, 214 m of it unwitnessed, and no new line | note 26 |
-| "the gate losses were unstitched fragments" | **No.** Each is one pre-stitch run (close to a base rate). The traversals fragment across SEGMENTS, which the stitcher cannot join | "The gate sweep: ATTEMPTED" |
-| the pass ledger's cause order | **Fixed** in `9c13174`. `gate` is 4 passes / 179 m over 44 rides | paid-for #31 |
-| `SessionVerdict.id` and `bad_share` arriving as text | **Fixed** in `af653f8`, converted at the boundary | paid-for #30 |
-| every bigint (ids, uncast `count(*)`) arriving as text | **Fixed at the driver** in `6d6b174`: `db/pgTypes.ts`, one parser for every process. Live `/segments` byte-identical apart from the id's type | "What landed on 2026-10-10" |
-| checking the code's row types against the database | **`npm run eval:query-types`**: Parse + Describe, executes nothing. 82 sites, 0 numeric lies, 0 untyped reads | `backend/README.md` |
-| whether a docs-only push deploys | **No.** Railway watches `backend/**`; tested 2026-10-04 | commit `4b028c8` |
-| the barometer | **Finished.** Session 84 graded `alive`, 1366 of 1367 fixes barometric | "The barometer: shipped, installed, verified" |
-
-## OPEN: genuinely undecided, do not treat as closed
-
-- **The traversal gate.** The instrument cannot judge it. Item 4.
-- **`TANGENT_WINDOW_M`.** Closed on 2026-10-04 and reopened the same day. Item 4.
-- **The same-way class.** Unexplained. Item 5.
-
-## STATE, 2026-10-11
-
-`main` is the base, and every task branch is merged into it. The ten from
-2026-10-10/11 were deleted on 2026-10-11, locally and on origin;
-`stale-eval-columns` and `state-after-stale` are merged and safe to delete.
-Last code change `cde98c2`: comments and eval-script text only (stale gate
-columns and labels in `eval:heading` / `eval:spikes`). The server's behaviour
-last changed in `9b68a1f`; `7c3ff06` moved the gate rule into `qualifiesAt`
-with identical behaviour. Production serves `builtAt 2026-10-11T17:46:24.697Z`,
-the `cde98c2` deploy, verified by the timestamp moving. **This PC's clock runs about 80 s
-ahead of Railway's** (measured 2026-10-11 against the HTTP `Date` header), so
-a fresh `builtAt` can read earlier than the local push time without being a
-stale build. Live model **746 segments / 953 lines** at the int8 deploy, which
-changed nothing in it: the whole `/segments` response hashes the same as
-before, ids now numbers. **444 backend tests, 56 app tests**; `mobile/`
-has a gate lane. **45 usable rides** counted on 2026-10-05. Rides 85 to 88 are
-graded `alive` (2026-10-10). 88 landed that afternoon, so 51 sessions hold
-34,965 fixes; the timestamp measurement earlier the same day saw 50 and
-34,866. `npm
-run eval:query-types` fails on 11 timestamp lies, by design: measured
-negligible on 2026-10-10 (NEXT item 5). A deploy failed once on 2026-09-30, see note 29,
-before adding anything to `backend/` that imports outside it.
-
-**How every measurement here is run, each rule learned by breaking it:**
-- **Pin the control to a fixed ride list.** New rides arrive mid-task.
-- **Before trusting a check, run the input that should make it say no.**
-- **Count what a fix would change, not what it touches.** The timestamp defect
-  touched 99.9% of fix times and changed 2 of 34,866 verdicts; it sat at NEXT 1
-  for five days on the first number.
-- **Run the code on the case before writing down what it does.** NEXT item 3
-  sat for a week on "the spike filter lets it through", reasoned from an assumed
-  riding speed. Run on the stored ride, the filter rejected it: the rider was
-  nearly stopped.
-- **A witness with a floor cannot speak below it.** `findPasses` needs 25 m, so
-  its silence about anything shorter is not evidence.
-- **Verify a deploy by `builtAt` moving, never by status**, and if a timestamp
-  looks unexplained, suspect the recorded baseline before the deploy trigger.
-- **Compare before and after from FROZEN copies** (`git archive` of `main`, a copy
-  of the branch), back to back, with a data fingerprint around each pair.
-  Running from the working tree lets a later edit leak into an earlier run.
-- **A Windows junction in a scratch copy points INTO the repo.** Delete the link
-  itself (`[System.IO.Directory]::Delete(path, $false)`); never recurse into it.
-
-**The house defect**, shared by six of the nine errors made on 2026-10-04: **a
-check that cannot fail, reported as a check that passed.**
-
-**How work is sized since 2026-10-10.** CLAUDE.md is untracked by design, so
-this is the record of what changed in it and why. Every triage block carries a
-token Budget line, so Julian can veto an expensive run before it starts.
-Critic rounds are capped, medium one and large two, and stop early after two
-rounds of only nits; more rounds run only on Julian's say. A finding blocks
-shipping only with a plausible path to it, and only once the builder has
-re-run its reproduction. A fix whose payoff is unknown gets a 30-minute
-read-only measurement first. Why: the int8 review ran six rounds, rounds 4 to
-6 found only code nobody here would write at about 200k tokens a round, and
-the timestamp item measured negligible after five days at the top of the
-queue.
-
-Where to start depends on what you came for:
-
-| you want to | read |
-|---|---|
-| know what the app is and how a ride becomes a coloured line | "What it is", "Layout", "Data flow" |
-| change anything in the backend | "Bugs already paid for" — 31 failure modes, each one paid for once already |
-| run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
-| touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. Items 1 to 3 are closed; item 4, the matcher's instrument, is next |
-| understand why there is no drift correction | "What the drift anchor taught us" |
-| see the branch and deploy state | "Where things stand", immediately below |
 
 ## Where things stand
 
@@ -667,7 +712,7 @@ Keep these in mind before "simplifying" anything.
     became true at once, join partners together. `npm run eval:query-types`
     now asks the database for every query's column types and checks them
     against the declared row types; it found two lies the hand search had
-    missed, and the timestamp one, measured negligible on 2026-10-10 (NEXT item 5). **Rule: the row type on a
+    missed, and the timestamp one, measured negligible on 2026-10-10 (NEXT, "Parked"). **Rule: the row type on a
     query is an assertion. Only the database can check it.**
 31. **A one-fix threshold decided a verdict, twice in one day.** The pass
     ledger in `traceOutAndBack.ts` tried `gate` before its next-door share
@@ -1845,7 +1890,7 @@ fixes arrived, and 84 is still the only ride graded with known deliberate locks.
 `Math.round(share * 10)`, so 27 of 28 barometric becomes `10`, every later
 minute shifts one column, and ride 88's strip `10BBBBB` reads as "10%, then
 0%". Also in the strips of 70, 71 and 79. Verdicts never read the strip, so no
-verdict was wrong; the fix is capping the digit at 9, with a test. NEXT item 5.
+verdict was wrong; the fix is capping the digit at 9, with a test. NEXT item 2.
 
 **Do not confuse this with the oversampling work**, which is separate and also
 done: oversampling cut sensor noise 2.5x but end-to-end slope error only
@@ -1973,7 +2018,7 @@ ways, 140 m" was wrong on facts already in this document.
 
 **[Re-run 2026-10-11 with the 15 m witness this section asks for: `npm run
 eval:gate`. Run level reversed (most admitted runs are ridden ground); line
-level too small to act on. Kept at 25 / 0.7. See NEXT item 4.]**
+level too small to act on. Kept at 25 / 0.7. See old NEXT item 4.]**
 
 **NOT a wash and NOT a win. A non-result, for a structural reason worth
 remembering.** Nothing was shipped and no constant moved.
@@ -2284,8 +2329,8 @@ the gate class, not matcher error.
 
 **One instrument, then two open levers that wait on it**, and a third that was
 swept and closed the same day. This was "the gate sweep, and then done" until
-the sweep was run. **It is item 4 of "NEXT, IN ORDER"**: the bug fixes come
-first.
+the sweep was run. **It was old NEXT item 4, measured 2026-10-10 and -11: both levers kept as
+shipped.**
 
 **Build first: a witness that can see under 25 m.** `findPasses` at
 `minPassM = 15`, `MIN_SPAN_M` left at 25, so the witness is independent of
@@ -2293,9 +2338,9 @@ whatever is being swept. `findPasses` already takes the threshold as an option,
 so this is a measurement, not a change. Everything below is unjudgeable without
 it:
 1. **The traversal gate.** [Swept 2026-10-11 with the 15 m witness: keep
-   25 / 0.7, see NEXT item 4.] Open, see above. Needs a `rebuild-model` if moved.
+   25 / 0.7, see old NEXT item 4.] Open, see above. Needs a `rebuild-model` if moved.
 2. **`TANGENT_WINDOW_M`.** [Measured 2026-10-10 with the 15 m witness: leave at
-   10, see NEXT item 4.] Reopened: 14 m is 286 m better than the shipped 10 m
+   10, see old NEXT item 4.] Reopened: 14 m is 286 m better than the shipped 10 m
    once the `gate` column is correct. Needs a `rebuild-model` if moved.
 3. ~~**`STITCH_WINDOW_S`.**~~ **SWEPT AND CLOSED 2026-10-04** — the one of the
    three that did not need the new witness, because its cost shows up as
@@ -2361,7 +2406,7 @@ stop at Julian's request), each saved by a commit.
    code and driver it reports 56 lies, 44 of them ids declared `number`
    arriving as text, plus 3 untyped sites**, so it can fail. On the branch: 82
    sites, **0 numeric lies, 0 untyped reads**, and 11 timestamp lies, measured
-   negligible (NEXT item 5). A call counts as pg's by the declaration it RESOLVES to, however it
+   negligible (NEXT, "Parked"). A call counts as pg's by the declaration it RESOLVES to, however it
    is spelled. It FAILS on a statement it cannot read when the code reads the
    result (a wrapper's parameter is named outright), on rows typed `any` that
    the code reads, on a Submittable other than its own, on an unquoted
@@ -2457,7 +2502,7 @@ stop at Julian's request), each saved by a commit.
   only in printing `'5'` as `5`. Includes `trace-passes`, the pinned replay the
   spec asked for, and every eval that keys a Map or a Set on an id.
   `eval-smoothing` exits 1 on BOTH sides: its own verdict on the smoother, not a
-  crash (it runs all 45 rides and every number matches); see NEXT item 5.
+  crash (it runs all 45 rides and every number matches); see NEXT item 3.
 - **Live `/segments`, rehearsed before the deploy** by running the branch's
   server locally against the same database: 745 segments, 951 lines, 5,181
   colour stops, the hash of the whole response `0a2be04de99909af` identical to
@@ -2592,7 +2637,7 @@ What remains is small, and splits into three honest groups.
 
 **Real latent bugs, all concrete:**
 - **[WRONG, corrected 2026-10-10: the filter rejects it; the rider was nearly
-  stopped. See NEXT item 3.]**
+  stopped. See old NEXT item 3.]**
   **A 9 m barometric outlier survives spike rejection** (session 84,
   19:35:04Z). `rejectElevationSpikes` charges deviation against the shorter
   horizontal leg at a 100% grade limit, and at riding speed 9 m reads as an
@@ -2601,7 +2646,7 @@ What remains is small, and splits into three honest groups.
   next one is diagnosable after the ride instead of needing eyes on the status
   line during it. Small migration, two doubles per sample.
 - **A buffered fix from an ended session is attributed to the next one.**
-  **[Measured 2026-10-10: harmless, one case in 50 rides. See NEXT item 2.]**
+  **[Measured 2026-10-10: harmless, one case in 50 rides. See old NEXT item 2.]**
   Session 83's last fix landed in session 84, 21 s before session 84 began.
 - ~~**`SessionVerdict.id` is typed `number` and arrives as a string.**~~
   **FIXED 2026-10-04** (paid-for #30), with `bad_share` alongside it. The
@@ -2773,7 +2818,7 @@ trails, and every tangent window from 0 to 20 m.
   closed it. Nothing on this item is outstanding.
 - **One barometric reading in session 84 is 9 m low, and spike rejection lets
   it through.** **[WRONG, corrected 2026-10-10: it does not. 9.21 m over a 3.1 m
-  leg is a 296% grade, rejected. See NEXT item 3.]** At 19:35:04Z, on a steady climb: 2070.58 m, then −9.14 m over a
+  leg is a 296% grade, rejected. See old NEXT item 3.]** At 19:35:04Z, on a steady climb: 2070.58 m, then −9.14 m over a
   25 s gap, then +9.28 m over the next 11 s, then smooth again.
   `rejectElevationSpikes` (`elevationSmoothing.ts:174`) charges the deviation
   against the **shorter horizontal leg** at a 100% grade limit, and at riding
@@ -2793,7 +2838,7 @@ trails, and every tangent window from 0 to 20 m.
   makes this answerable after any ride instead of needing eyes on the status
   line during one.
 - **A buffered fix from an ended session is attributed to the next one.**
-  **[Measured 2026-10-10: harmless, one case in 50 rides. See NEXT item 2.]**
+  **[Measured 2026-10-10: harmless, one case in 50 rides. See old NEXT item 2.]**
   Session 83, a 13-second false start, ran 18:42:55–18:43:13. Session 84's
   `started_at` is 18:43:35 yet its first sample is timestamped 18:43:14, one
   metre from session 83's last fix. Harmless here, one GPS fix at the right
