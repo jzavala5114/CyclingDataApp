@@ -195,15 +195,14 @@ See "What is left for the matcher".
 
 ## STATE, 2026-10-11
 
-`main` is the base, and every task branch is merged into it:
-`global-int8-parser`, `int8-shipped-notes`, `demote-timestamps`,
-`session-notes`, `grade-new-rides`, `close-next-items`,
-`matcher-witness-floor`, `state-after-witness`, `gate-sweep` and
-`state-after-gate`, still on origin and locally, safe to delete. Last code
-change `7c3ff06`: the gate sweep (`eval:gate`), and the gate rule moved into
-`qualifiesAt`, which the server now calls with identical behaviour. Production
-serves `builtAt 2026-10-11T15:02:54.977Z`, the `7c3ff06` deploy, verified by
-the timestamp moving. **This PC's clock runs about 80 s
+`main` is the base, and every task branch is merged into it. The ten from
+2026-10-10/11 were deleted on 2026-10-11, locally and on origin;
+`stale-eval-columns` and `state-after-stale` are merged and safe to delete.
+Last code change `cde98c2`: comments and eval-script text only (stale gate
+columns and labels in `eval:heading` / `eval:spikes`). The server's behaviour
+last changed in `9b68a1f`; `7c3ff06` moved the gate rule into `qualifiesAt`
+with identical behaviour. Production serves `builtAt 2026-10-11T17:46:24.697Z`,
+the `cde98c2` deploy, verified by the timestamp moving. **This PC's clock runs about 80 s
 ahead of Railway's** (measured 2026-10-11 against the HTTP `Date` header), so
 a fresh `builtAt` can read earlier than the local push time without being a
 stale build. Live model **746 segments / 953 lines** at the int8 deploy, which
