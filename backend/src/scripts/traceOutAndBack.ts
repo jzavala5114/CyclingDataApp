@@ -10,7 +10,12 @@ import {
   MAX_ACCURACY_M,
   type MatchOptions,
 } from "../services/segmentMatcher.js";
-import { assessRun } from "../services/elevationAggregator.js";
+import {
+  assessRun,
+  qualifiesAt,
+  SHIPPED_GATE,
+  type GateThresholds,
+} from "../services/elevationAggregator.js";
 import {
   findPasses,
   CORRIDOR_M,
@@ -350,6 +355,8 @@ export function witnessFloorFrom(argv: readonly string[]): number {
  * gate's own span, so the witness cannot see a pass shorter than the gate would
  * draw from span alone; lowering it towards RETRACE_M lets it judge the short
  * lines the gate's coverage door admits, while the gate itself stays where it is.
+ * `gate` replays the traversal gate at other thresholds, the shipped ones by
+ * default. The matcher and the witness never see it, so only what is drawn moves.
  */
 export function traceSession(
   sessionId: number,
@@ -359,7 +366,13 @@ export function traceSession(
     keepOneWay = false,
     matcher,
     minPassM = MIN_PASS_M,
-  }: { keepOneWay?: boolean; matcher?: MatchOptions; minPassM?: number } = {},
+    gate = SHIPPED_GATE,
+  }: {
+    keepOneWay?: boolean;
+    matcher?: MatchOptions;
+    minPassM?: number;
+    gate?: GateThresholds;
+  } = {},
 ): SessionTrace {
   const losses: Loss[] = [];
   let bothWays = 0;
@@ -414,18 +427,19 @@ export function traceSession(
         before: first > 0 ? smoothed[first - 1] : undefined,
         after: last < smoothed.length - 1 ? smoothed[last + 1] : undefined,
       });
+      const qualified = qualifiesAt(a.spanM, a.coverageFraction, gate);
       records.push({
         segmentId: run.segmentId,
         direction: run.direction,
         startedMs: Date.parse(run.samples[0]!.recordedAt as unknown as string),
         endedMs: Date.parse(run.samples[run.samples.length - 1]!.recordedAt as unknown as string),
-        qualified: a.qualified,
+        qualified,
         spanM: a.spanM,
         coverage: a.coverageFraction,
       });
       // The same health counters evalLinkerFold reports, so a sweep can see a
       // direction fix paid for with lost coverage.
-      if (a.qualified) {
+      if (qualified) {
         merged++;
         buckets += a.profile.buckets.length;
         const runCoveredM = Math.max(0, a.profile.coveredToM - a.profile.coveredFromM);

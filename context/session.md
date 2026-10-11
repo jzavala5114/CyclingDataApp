@@ -61,7 +61,7 @@ among them), often in twos and threes around one bad reading. 35 of the 40 pass
 the filter and all lie inside stored matches. Their effect after smoothing and
 averaging is unmeasured.
 
-### 4. The matcher's two open levers: the instrument is BUILT (2026-10-10)
+### 4. ~~The matcher's two open levers~~ MEASURED 2026-10-10 and -11: keep both as shipped
 
 **The instrument:** `traceSession` takes `minPassM`, the witness's floor, and
 `npm run eval:heading-lines -- --tangent A,B --witness 15` and
@@ -87,8 +87,39 @@ witness that never ran. 7 new tests; 5 mutants, all killed.
   since buckets hold heights at physical positions), and its cost is lines
   that disappear. Outputs: `lines-t10-14-w15.txt` and siblings, scratchpad of
   session e24d4bb5.
-- **The traversal gate**: still open. The instrument now exists; the sweep has
-  not been re-run with it. See "The gate sweep: ATTEMPTED".
+- **The traversal gate: swept with the 15 m witness (`npm run eval:gate`,
+  2026-10-11). The old conclusion is reversed at run level and the trade is
+  too small to act on at line level. Recommendation: keep 25 / 0.7.** The rule
+  is now one function, `qualifiesAt` (`elevationAggregator.ts`), which
+  production and the sweep both call, with its first direct tests. Controls:
+  the witness never moves with the gate (22,806 pass comparisons, 0
+  disagreements), no looser arm draws less, and the shipped arm reproduces
+  `eval:tangent`'s 10 m row exactly (962 lines, 260.27 km, 12.1%). 48 rides:
+
+  | gate | runs admitted | witnessed | denied (near floor) | new lines: real | next door | phantom |
+  |---|---|---|---|---|---|---|
+  | 22 / 0.7 | 19 | 12 (284 m) | 7 (0) | 3 (72 m) | 2 (47 m) | 1 (23 m) |
+  | 20 / 0.7 | 29 | 20 (453 m) | 9 (0) | 3 (114 m) | 5 (110 m) | 1 (23 m) |
+  | 18 / 0.7 | 45 | 32 (681 m) | 13 (4) | 6 (171 m) | 8 (206 m) | 2 (41 m) |
+  | 15 / 0.7 | 71 | 54 (1043 m) | 17 (8) | 14 (306 m) | 14 (320 m) | 3 (59 m) |
+  | 25 / 0.5 | 55 | 37 (563 m) | 0, 18 unjudgeable | 4 (113 m) | 12 (159 m) | 3 (55 m) |
+  | 22 / 0.5 | 72 | 47 (797 m) | 7, 18 unjudgeable | 6 (161 m) | 14 (206 m) | 4 (78 m) |
+
+  **Runs:** most of what a lower span admits is ridden ground, 0.31-0.58
+  denied per witnessed, against the 2.75 phantoms per real the 25 m witness
+  reported. The known cases come back as real: `#25830` Chamberlain (the 0.692
+  near-miss), `#18849` South Wahsatch (once a phantom by 1.1 m), `#37523`
+  Brenner Place. **Lines:** the gain is 72-306 m of new ground (0.03-0.12% of
+  260 km), and the sign depends on "next door": here it is ground the shipped
+  gate already draws, painted on a SECOND line, which is duplicate paint, not
+  the wash it is in `eval:heading-lines`. Ride 88's corner turn onto Vermijo
+  (`#17778` backward, 20 m) is one. Counting it neutral, 18 / 0.7 nets
+  +130 m; counting it as cost, -76 m. The coverage door (0.5) is worse on
+  every line measure (0.67-0.75 phantoms per real, 6 lines unjudgeable).
+  Moving the gate needs a `rebuild-model`; at these stakes it is not worth one.
+  What would change the answer: a per-line look at 18 / 0.7's 8 next-door
+  lines, to sort duplicate paint from short connectors the neighbour only
+  brushes. Outputs: `gate-sweep-w15.txt`, scratchpad of session e24d4bb5.
 See "What is left for the matcher".
 
 ### 5. Smaller, in no order
@@ -174,7 +205,7 @@ ahead of Railway's** (measured 2026-10-11 against the HTTP `Date` header), so
 a fresh `builtAt` can read earlier than the local push time without being a
 stale build. Live model **746 segments / 953 lines** at the int8 deploy, which
 changed nothing in it: the whole `/segments` response hashes the same as
-before, ids now numbers. **434 backend tests, 56 app tests**; `mobile/`
+before, ids now numbers. **444 backend tests, 56 app tests**; `mobile/`
 has a gate lane. **45 usable rides** counted on 2026-10-05. Rides 85 to 88 are
 graded `alive` (2026-10-10). 88 landed that afternoon, so 51 sessions hold
 34,965 fixes; the timestamp measurement earlier the same day saw 50 and
@@ -1938,6 +1969,10 @@ ways, 140 m" was wrong on facts already in this document.
 
 #### The gate sweep: ATTEMPTED 2026-10-04, and the instrument cannot settle it
 
+**[Re-run 2026-10-11 with the 15 m witness this section asks for: `npm run
+eval:gate`. Run level reversed (most admitted runs are ridden ground); line
+level too small to act on. Kept at 25 / 0.7. See NEXT item 4.]**
+
 **NOT a wash and NOT a win. A non-result, for a structural reason worth
 remembering.** Nothing was shipped and no constant moved.
 
@@ -2255,7 +2290,8 @@ first.
 whatever is being swept. `findPasses` already takes the threshold as an option,
 so this is a measurement, not a change. Everything below is unjudgeable without
 it:
-1. **The traversal gate.** Open, see above. Needs a `rebuild-model` if moved.
+1. **The traversal gate.** [Swept 2026-10-11 with the 15 m witness: keep
+   25 / 0.7, see NEXT item 4.] Open, see above. Needs a `rebuild-model` if moved.
 2. **`TANGENT_WINDOW_M`.** [Measured 2026-10-10 with the 15 m witness: leave at
    10, see NEXT item 4.] Reopened: 14 m is 286 m better than the shipped 10 m
    once the `gate` column is correct. Needs a `rebuild-model` if moved.

@@ -12,8 +12,7 @@ import {
   mergeBuckets,
   mergeCoverage,
   passageFor,
-  MIN_COVERAGE,
-  MIN_SPAN_M,
+  qualifiesAt,
   type BucketSample,
 } from "./elevationAggregator.js";
 import { rejectElevationSpikes, smoothElevations } from "./elevationSmoothing.js";
@@ -299,7 +298,7 @@ export async function processSession(
       sampleCount: run.samples.length,
       runsOnSameSegment: reach.runs,
       stitchedSpanM,
-      stitchedWouldQualify: stitchedSpanM >= MIN_SPAN_M || stitchedFraction >= MIN_COVERAGE,
+      stitchedWouldQualify: qualifiesAt(stitchedSpanM, stitchedFraction),
       gapToPreviousRunS: gapByRun.get(run) ?? null,
     };
   });

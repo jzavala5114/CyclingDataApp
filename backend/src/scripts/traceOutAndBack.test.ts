@@ -322,6 +322,25 @@ test("the witness floor reaches findPasses: a 20m pass is silent at the default 
   assert.equal(lowered.merged + lowered.discarded, atDefault.merged + atDefault.discarded);
 });
 
+test("the gate option moves only what is drawn: a 20m run is rejected as shipped and drawn at 18m", () => {
+  // eval:gate replays the traversal gate at other thresholds through this. If
+  // the option reached the matcher or the witness, every arm would be judged
+  // by a different witness and the sweep would be circular.
+  const samples = ride(3);
+  const shipped = traceSession(1, samples, [eastSegment()], { keepOneWay: true, minPassM: RETRACE_M });
+  const loose = traceSession(1, samples, [eastSegment()], {
+    keepOneWay: true,
+    minPassM: RETRACE_M,
+    gate: { minSpanM: 18, minCoverage: 0.7 },
+  });
+  assert.equal(shipped.merged, 0);
+  assert.equal(shipped.discarded, 1);
+  assert.equal(loose.merged, 1);
+  assert.equal(loose.discarded, 0);
+  assert.ok(loose.drawn.has("500|forward"));
+  assert.deepEqual(loose.passes, shipped.passes, "the witness is the same under both gates");
+});
+
 test("--witness: absent is the default floor, below RETRACE_M or unreadable is refused", () => {
   assert.equal(witnessFloorFrom([]), MIN_PASS_M);
   assert.equal(witnessFloorFrom(["10,14", "--witness", "15"]), 15);

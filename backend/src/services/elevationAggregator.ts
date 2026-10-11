@@ -42,6 +42,26 @@ export const BUCKET_SIZE_M = 15;
 export const MIN_SPAN_M = 25;
 export const MIN_COVERAGE = 0.7;
 
+/** The traversal gate's two doors: enough ground, or enough of a short segment. */
+export interface GateThresholds {
+  minSpanM: number;
+  minCoverage: number;
+}
+export const SHIPPED_GATE: GateThresholds = { minSpanM: MIN_SPAN_M, minCoverage: MIN_COVERAGE };
+
+/**
+ * Did a run ride the segment rather than clip it. The one copy of the rule:
+ * `assessRun` applies it at the shipped thresholds, and a sweep asks the same
+ * function about others, so the two cannot drift apart.
+ */
+export function qualifiesAt(
+  spanM: number,
+  coverageFraction: number,
+  gate: GateThresholds = SHIPPED_GATE,
+): boolean {
+  return spanM >= gate.minSpanM || coverageFraction >= gate.minCoverage;
+}
+
 export interface BucketSample {
   distanceM: number;
   elevationM: number;
@@ -257,7 +277,7 @@ export function assessRun(
   const coverageFraction = segment.lengthM > 0 ? spanM / segment.lengthM : 0;
   return {
     profile,
-    qualified: spanM >= MIN_SPAN_M || coverageFraction >= MIN_COVERAGE,
+    qualified: qualifiesAt(spanM, coverageFraction),
     spanM,
     coverageFraction,
   };
