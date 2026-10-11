@@ -54,8 +54,8 @@ starting only when a line on the map points at it.
 
 ### 5. Debt
 
-The linker's measuring tools have no tests, and `context/architecture.html` is
-over a month stale.
+The linker's measuring tools have no tests. (`context/architecture.html` is
+current: rewritten as its 3rd edition on 2026-10-11, see STATE.)
 
 ### Parked: measured, decided, and what would reopen each
 
@@ -126,8 +126,8 @@ over a month stale.
 
 `main` is the base, and every task branch is merged into it. The ten from
 2026-10-10/11 were deleted on 2026-10-11, locally and on origin;
-`stale-eval-columns`, `state-after-stale` and `next-whats-left` are merged and
-safe to delete.
+`stale-eval-columns`, `state-after-stale`, `next-whats-left` and
+`refresh-architecture-doc` are merged and safe to delete.
 Last code change `cde98c2`: comments and eval-script text only (stale gate
 columns and labels in `eval:heading` / `eval:spikes`). The server's behaviour
 last changed in `9b68a1f`; `7c3ff06` moved the gate rule into `qualifiesAt`
@@ -141,10 +141,21 @@ before, ids now numbers. **444 backend tests, 56 app tests**; `mobile/`
 has a gate lane. **45 usable rides** counted on 2026-10-05. Rides 85 to 88 are
 graded `alive` (2026-10-10). 88 landed that afternoon, so 51 sessions hold
 34,965 fixes; the timestamp measurement earlier the same day saw 50 and
-34,866. `npm
+34,866. **Ride 89 landed on 2026-10-11**, during the doc rewrite: 52 sessions,
+36,266 fixes, 49 usable, model 6,114 buckets / 751 segments / 958 lines. Not
+yet graded with `verify-barometer`. `npm
 run eval:query-types` fails on 11 timestamp lies, by design: measured
 negligible on 2026-10-10 (NEXT, "Parked"). A deploy failed once on 2026-09-30, see note 29,
 before adding anything to `backend/` that imports outside it.
+
+**`context/architecture.html` is the 3rd edition (2026-10-11)**, rewritten for
+feature designers as well as coders and republished to its artifact ("Gradient
+Field Manual", version 9). Its live numbers are pinned through ride 89. Every
+number in it was checked by a throwaway read-only script against the code and the
+data: 105 checks, kept as `backend/tmp-doc-check.ts` (gitignored) for the next
+revision. One cold critic round (FAIL, 3 blocking and 15 minor, all reproduced
+and fixed); no second round, on Julian's call. The task ran at about 2.7 times its
+token budget, mostly the critic reading a 250 KB page.
 
 **How every measurement here is run, each rule learned by breaking it:**
 - **Pin the control to a fixed ride list.** New rides arrive mid-task.
@@ -2656,7 +2667,8 @@ What remains is small, and splits into three honest groups.
 **Test and doc debt:**
 - **The linker's own measuring tools have no tests**, flagged by the third cold
   review and still true.
-- **`context/architecture.html` is over a month stale.**
+- ~~**`context/architecture.html` is over a month stale.**~~ Rewritten
+  2026-10-11 (3rd edition).
 
 **Feature ideas, none of them measured, and today says measure first:**
 weight buckets by source and accuracy; two directions on one path; a named path
@@ -2904,7 +2916,9 @@ trails, and every tangent window from 0 to 20 m.
   smoother shipped 2026-09-24 removes it. If opposite-direction comparisons are
   ever wanted for something else, the remaining work is only realigning the
   bucket grid (forward `d` against backward `lengthM - d`).
-- **`context/architecture.html` is a month stale.** Last touched `61e48fa` on
+- ~~**`context/architecture.html` is a month stale.**~~ **Rewritten 2026-10-11
+  as the 3rd edition**, a full pass rather than the targeted one suggested
+  here, because its audience widened to feature designers. Last touched `61e48fa` on
   2026-08-28, so it predates the zero-phase smoother, the removal of the sliding
   anchor, Stage 1 connectivity and the sidewalk fold — four of the five things
   that changed how a ride becomes a line. 3,138 lines. A targeted correction
@@ -3523,13 +3537,14 @@ device rather than by `adb` printing Success. It carries: barometer keyed to
 `/segments` request-storm fix. **Anything in Open items that touches `mobile/`
 needs another APK cycle**; backend-only work does not.
 
-Docs, both published as Artifacts, and **both now behind the code**:
-- `context/architecture.html` — full system walkthrough. Its "Picking the right
-  street" section describes the *chord* bearing test, and its switchback diagram
-  illustrates a bug that has since been fixed; line ~2368's claim about what the
-  matcher compares against is no longer true. It also predates spike rejection,
-  oversampling and the trail import. The largest piece of documentation drift.
-- `context/backlog.html` — six open questions on recording mountain trails. Its
+Docs, both published as Artifacts:
+- `context/architecture.html`: the full system walkthrough, **rewritten
+  2026-10-11 as the 3rd edition** for feature designers as well as coders and
+  republished to the "Gradient Field Manual" artifact. Every number in it was
+  checked against the code and the live data that day. It goes stale the way
+  the 2nd edition did: when a threshold, a stage of the save path, or the
+  worked example's data (segment 12555) changes.
+- `context/backlog.html`, **still behind the code**: six open questions on recording mountain trails. Its
   slope-window figures hold; its framing of GPS altitude as the weak source is
   **superseded**.
 
