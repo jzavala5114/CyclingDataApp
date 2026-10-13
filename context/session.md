@@ -3,7 +3,7 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-10-11.
+Last updated 2026-10-12.
 
 **Read the four blocks below before anything else.** They are the authoritative
 queue and state. Everything after them is evidence and history: where a section
@@ -14,6 +14,12 @@ stale.
 
 Rewritten 2026-10-11 for what is left. The old items 1 to 4 are closed, with
 their evidence, in "CLOSED 2026-10-10 and -11" below the STATE block.
+
+**Before item 1, cheap: grade ride 89.** It landed on 2026-10-11, mid-task, and
+is ungraded: `npm run verify-barometer` in `backend/`, read-only, about 20k.
+A pass is `alive`; "HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED" says how
+to read the rest. **Re-estimate item 1 before starting it**: the last two large
+read-only tasks ran 2 to 3 times over budget (STATE, "How work is sized").
 
 ### 1. The zero-run census
 
@@ -54,8 +60,13 @@ starting only when a line on the map points at it.
 
 ### 5. Debt
 
-The linker's measuring tools have no tests. (`context/architecture.html` is
-current: rewritten as its 3rd edition on 2026-10-11, see STATE.)
+The linker's measuring tools have no tests. `context/backlog.html` (artifact
+"Trail Fidelity Backlog") is still behind the code: its framing of GPS altitude
+as the weak source is superseded. The comment above `RING_CAPACITY` in
+`RideBarometerModule.kt` says 4,096 readings is "about 2.7 minutes of history at
+the 5Hz"; it is 13.7 minutes (4096 / 5 = 819 s). Comment only: fix it with the
+next `mobile/` change, which needs an APK cycle anyway.
+(`context/architecture.html` is current: the 3rd edition, 2026-10-11, see STATE.)
 
 ### Parked: measured, decided, and what would reopen each
 
@@ -122,12 +133,14 @@ current: rewritten as its 3rd edition on 2026-10-11, see STATE.)
 
 - **The same-way class.** Unexplained. NEXT item 4.
 
-## STATE, 2026-10-11
+## STATE, 2026-10-12
 
 `main` is the base, and every task branch is merged into it. The ten from
 2026-10-10/11 were deleted on 2026-10-11, locally and on origin;
-`stale-eval-columns`, `state-after-stale`, `next-whats-left` and
-`refresh-architecture-doc` are merged and safe to delete.
+`stale-eval-columns`, `state-after-stale`, `next-whats-left`,
+`refresh-architecture-doc` and `session-notes-compact` are merged and safe to
+delete. Nothing is in flight: no open branch, no uncommitted work, no running
+job.
 Last code change `cde98c2`: comments and eval-script text only (stale gate
 columns and labels in `eval:heading` / `eval:spikes`). The server's behaviour
 last changed in `9b68a1f`; `7c3ff06` moved the gate rule into `qualifiesAt`
@@ -190,13 +203,20 @@ re-run its reproduction. A fix whose payoff is unknown gets a 30-minute
 read-only measurement first. Why: the int8 review ran six rounds, rounds 4 to
 6 found only code nobody here would write at about 200k tokens a round, and
 the timestamp item measured negligible after five days at the top of the
-queue.
+queue. **Calibrated 2026-10-11:** the architecture-doc rewrite was budgeted at
+250k and cost about 600k, plus 246k for one cold critic, and the 1.5x stop was
+missed. A cold critic reads the whole artifact (about 1k tokens per KB, plus its
+own exploring); republishing an artifact in place means Reading every line of
+the live page first, in chunks under 25k (about 70k for 200 KB); and live counts
+move mid-task, so pin them to a named ride. Check the running total at every
+phase boundary against 1.5 times the estimate.
 
 Where to start depends on what you came for:
 
 | you want to | read |
 |---|---|
-| know what the app is and how a ride becomes a coloured line | "What it is", "Layout", "Data flow" |
+| know what the app is and how a ride becomes a coloured line | `context/architecture.html` (3rd edition, the full walkthrough, written for feature designers too), then "What it is", "Layout", "Data flow" here |
+| design a feature | `context/architecture.html` Part 6: what each kind of change costs, the limits every feature inherits, ideas already tried, open problems |
 | change anything in the backend | "Bugs already paid for" — 31 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
@@ -321,7 +341,7 @@ See "What is left for the matcher".
 
 ## Where things stand
 
-**Current state is in "STATE, 2026-10-10" at the top.** This section keeps the
+**Current state is in "STATE" at the top.** This section keeps the
 older history of what was cleared and when.
 
 Cleared on 2026-10-01: the measurement tooling merged, the derived heading and
@@ -376,19 +396,26 @@ context/        This file
    durable record of a ride.
 3. `POST /sessions/:id/end` → `processSession()`, all in one transaction:
    - load candidate `segments` in a bbox around the samples (+500m), canonical only
-   - `rejectElevationSpikes()` — drop fixes that cannot be reconciled with the
-     fixes either side, BEFORE smoothing, since smoothing an impossible reading
-     smears it across its neighbours instead of deleting it
-   - `smoothElevations()` — zero-phase (forward then backward) filter over the
+   - `rejectImpossibleSpeeds()`: drop a fix only when reaching it AND leaving it
+     would both need more than 20 m/s, which is a signal off a building
+   - `rejectElevationSpikes()`: drop fixes whose height implies a grade over
+     100% against their neighbours, BEFORE smoothing, since smoothing an
+     impossible reading smears it across its neighbours instead of deleting it
+   - `smoothElevations()`: zero-phase (forward then backward) filter over the
      elevation series, so it damps noise without the lag a one-pass EMA has
-   - `matchSamplesToSegments()` — nearest segment + bearing + hysteresis → runs
-   - `profileRun()` — **discard runs that only clipped the segment**, then
-     project onto the line and bucket by 15m of distance-along-segment
+   - `matchSamplesToSegments()`: heading derived from the fixes either side,
+     against the segment's local tangent (10 m either side), with hysteresis and
+     a 6 m disconnect penalty → runs; `stitchFragmentedRuns()` rejoins runs on
+     one segment+direction under 45 s apart
+   - `assessRun()`: **discard runs that only clipped the segment** (the gate,
+     `qualifiesAt`), then project onto the line and bucket by 15 m of
+     distance-along-segment; `clampCoverageToPassage()` extends a kept run's
+     drawn extent to a join the rider came through
    - `ensureDemElevations()` + `fitAnchor()` — **anchor the whole ride to
      the terrain model with one median offset**
    - `mergeBuckets()` — **upsert a running mean**
    - write `session_segment_matches` for the runs that were merged
-4. `GET /segments?bbox` → `buildDirectionalGradientLines()` (windowed-regression
+4. `GET /segments?minLon&minLat&maxLon&maxLat` → `buildDirectionalGradientLines()` (windowed-regression
    slope → colour stops, ±4m offset per direction) → app slices into short
    coloured pieces → MapLibre draws them.
 
