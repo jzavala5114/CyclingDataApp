@@ -11,17 +11,29 @@ const HALF_BUCKET_M = BUCKET_SIZE_M / 2;
 
 // Slope (%) -> color stops. Descending goes purple (steepest) -> blue ->
 // green, climbing goes green -> yellow -> orange -> red, matching the
-// reference photo.
+// reference photo. Each band includes its upper edge.
+//
+// Climbs get darker reds past 9% and 12% (2026-10-14), so a 7% street and a
+// 15% trail pitch no longer draw alike. The climb edges, 0/3/6/9/12, are Garmin
+// ClimbPro's; the scale stops at 12% because above 15% was 220m on 7 trail
+// lines through ride 89, where readings are noisiest. Bands stay separate
+// rather than blended: slope carries about 0.8 points of error, so a blend
+// would show it as shade flicker on every piece, the speckle the slope window
+// below exists to stop. Both new shades are Tailwind steps, checked against
+// each neighbour for colour blindness and for normal vision. The measurements:
+// "the colour bands" row of SETTLED in context/session.md.
 const SLOPE_STOPS: Array<{ maxSlopePct: number; color: string }> = [
   { maxSlopePct: -8, color: "#7c3aed" }, // very steep descent: purple
   { maxSlopePct: -3, color: "#2563eb" }, // steep descent: blue
   { maxSlopePct: 0, color: "#22c55e" }, // gentle descent: blue-green
   { maxSlopePct: 3, color: "#eab308" }, // gentle climb: green-yellow
   { maxSlopePct: 6, color: "#f97316" }, // moderate climb: yellow-orange
-  { maxSlopePct: Infinity, color: "#dc2626" }, // steep climb: red
+  { maxSlopePct: 9, color: "#dc2626" }, // steep climb: red
+  { maxSlopePct: 12, color: "#881337" }, // very steep climb: dark red (rose-900)
+  { maxSlopePct: Infinity, color: "#450a0a" }, // steepest climb: near-black red (red-950)
 ];
 
-function colorForSlope(slopePct: number): string {
+export function colorForSlope(slopePct: number): string {
   return SLOPE_STOPS.find((stop) => slopePct <= stop.maxSlopePct)!.color;
 }
 

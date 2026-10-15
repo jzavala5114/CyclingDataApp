@@ -3,7 +3,7 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-10-12.
+Last updated 2026-10-14.
 
 **Read the four blocks below before anything else.** They are the authoritative
 queue and state. Everything after them is evidence and history: where a section
@@ -65,8 +65,27 @@ The linker's measuring tools have no tests. `context/backlog.html` (artifact
 as the weak source is superseded. The comment above `RING_CAPACITY` in
 `RideBarometerModule.kt` says 4,096 readings is "about 2.7 minutes of history at
 the 5Hz"; it is 13.7 minutes (4096 / 5 = 819 s). Comment only: fix it with the
-next `mobile/` change, which needs an APK cycle anyway.
-(`context/architecture.html` is current: the 3rd edition, 2026-10-11, see STATE.)
+next `mobile/` change, which needs an APK cycle anyway. The slope palette has
+two weak spots that predate the darker reds, found by the dataviz validator on
+2026-10-14 and left alone: yellow `#eab308` (0 to 3% climbs) has 1.75:1
+contrast on the basemap's cream `#f8f4f0`, under the 2:1 a light end needs, and
+orange `#f97316` against red `#dc2626` is ΔE 14.9 for normal vision, just under
+the floor of 15. The app has no colour key for its eight colours (an app change).
+(`context/architecture.html` is current: the 3rd edition of 2026-10-11 plus the
+colour bands of 2026-10-14; STATE says whether its artifact page is.)
+
+### Planned, not started: press and hold on a segment
+
+Julian, 2026-10-14: a long press on a drawn line will do something later. What
+it does is not decided and nothing is built. Notes so nothing in between blocks
+it: the phone draws each line as short solid pieces (`gradientRendering.ts`),
+each already tagged with its street name, so a press can find the piece under
+the finger. Everything a label would show is decided on the server: the band
+edges live only in `SLOPE_STOPS`, and each of `/segments`' `colorStops`
+carries a colour and a position, not the slope or the pass count behind it.
+Adding those as new fields on each stop is an additive change that an older APK
+ignores; copying the band table into the app instead makes two copies to keep
+in step.
 
 ### Parked: measured, decided, and what would reopen each
 
@@ -128,19 +147,20 @@ next `mobile/` change, which needs an APK cycle anyway.
 | the barometer | **Finished.** Session 84 graded `alive`, 1366 of 1367 fixes barometric | "The barometer: shipped, installed, verified" |
 | the traversal gate | **Swept with a 15 m witness 2026-10-11, keep 25 / 0.7.** Most runs a lower span admits are ridden, but the new lines are worth 72-306 m and turn on next-door duplicate paint | old NEXT item 4, `npm run eval:gate` |
 | `TANGENT_WINDOW_M` | **Keep 10.** 14 m wins 298-407 m at ride level but drops 80 m of real lines and draws no new ground | old NEXT item 4 |
+| the colour bands | **Climbs step at 0, 3, 6, 9 and 12%, the darkest open-ended, separate and not blended** (2026-10-14). A 15% step would colour 220 m on 7 trail lines, mostly noise; a blend would show the 0.8-point slope error as flicker | STATE, "The colour bands" |
 
 ## OPEN: genuinely undecided, do not treat as closed
 
 - **The same-way class.** Unexplained. NEXT item 4.
 
-## STATE, 2026-10-12
+## STATE, 2026-10-14
 
 `main` is the base, and every task branch is merged into it. The ten from
 2026-10-10/11 were deleted on 2026-10-11, locally and on origin;
 `stale-eval-columns`, `state-after-stale`, `next-whats-left`,
 `refresh-architecture-doc` and `session-notes-compact` are merged and safe to
-delete. Nothing is in flight: no open branch, no uncommitted work, no running
-job.
+delete. In flight: `darker-red-bands` (2026-10-14), pushed and waiting for
+Julian's go-ahead to merge, because merging deploys the server. No running job.
 Last code change `cde98c2`: comments and eval-script text only (stale gate
 columns and labels in `eval:heading` / `eval:spikes`). The server's behaviour
 last changed in `9b68a1f`; `7c3ff06` moved the gate rule into `qualifiesAt`
@@ -169,6 +189,22 @@ data: 105 checks, kept as `backend/tmp-doc-check.ts` (gitignored) for the next
 revision. One cold critic round (FAIL, 3 blocking and 15 minor, all reproduced
 and fixed); no second round, on Julian's call. The task ran at about 2.7 times its
 token budget, mostly the critic reading a 250 KB page.
+
+**The colour bands (2026-10-14, branch `darker-red-bands`).** Climbs above 9%
+draw dark red `#881337` and above 12% near-black red `#450a0a`; red `#dc2626`
+now covers 6 to 9%. Drawing only: colours are computed on every request, so no
+rebuild. Recounted through ride 89 with the server's own code, read-only: 126 of
+5,218 colour stops change, 1.53 km red to dark red and 0.63 km red to near-black,
+and nothing else moves. Above 12% is 17 lines, all trail; no road passes 10.2%
+(Gold Camp Road). Why these edges: Garmin ClimbPro steps at 3, 6, 9 and 12%, and
+every bike computer checked (Garmin, Hammerhead Karoo, Wahoo) uses separate
+steps, not a blend; above 15% is 220 m on 7 trail lines; slope error is about
+0.8 points against 3-point bands. Shades come from the dataviz validator against
+the basemap's cream `#f8f4f0` and park `#d8e8c8`: Tailwind red-800 and red-900
+each failed the normal-vision floor beside red or red-950 (14.4, 14.5); rose-900
+and red-950 clear it (18.7 and 16.8; colour-blind 14.9 and 12.6, floor 8).
+`gradientBuilder.test.ts` pins every band edge from both sides; it failed on the
+old table at 9.01% before the change.
 
 **How every measurement here is run, each rule learned by breaking it:**
 - **Pin the control to a fixed ride list.** New rides arrive mid-task.
@@ -374,7 +410,7 @@ side of the centreline. Repeat passes refine a shared model via a running mean
 rather than overwriting it.
 
 Colour scale by slope: purple (steep descent) → blue → green → yellow →
-orange → red (steep climb).
+orange → red → dark red → near-black red (steepest climb).
 
 ## Layout
 

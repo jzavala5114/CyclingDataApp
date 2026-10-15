@@ -27,6 +27,8 @@
     --slope-4: #eab308;
     --slope-5: #f97316;
     --slope-6: #dc2626;
+    --slope-7: #881337;
+    --slope-8: #450a0a;
 
     --measure: 68ch;
     --rail: 240px;
@@ -1709,7 +1711,7 @@
       </figure>
 
       <p>
-        Finally the result is capped at &plusmn;25%: no street or trail here averages anything steeper over the 75 m a window reads, so anything beyond that is a bad reading, not terrain. Then the slope picks one of six bands:
+        Finally the result is capped at &plusmn;25%: no street or trail here averages anything steeper over the 75 m a window reads, so anything beyond that is a bad reading, not terrain. Then the slope picks one of eight bands:
       </p>
 
       <div class="ramp">
@@ -1718,9 +1720,11 @@
         <div class="dark" style="background:#22c55e">&minus;3 to 0<span>easy down</span></div>
         <div class="dark" style="background:#eab308">0 to +3<span>easy up</span></div>
         <div class="dark" style="background:#f97316">+3 to +6<span>climb</span></div>
-        <div style="background:#dc2626">&gt; +6%<span>wall</span></div>
+        <div style="background:#dc2626">+6 to +9<span>steep</span></div>
+        <div style="background:#881337">+9 to +12<span>very steep</span></div>
+        <div style="background:#450a0a">&gt; +12%<span>wall</span></div>
       </div>
-      <p class="note">Each band includes its upper edge: exactly 0% is green, exactly +3% is yellow.</p>
+      <p class="note">Each band includes its upper edge: exactly 0% is green, exactly +3% is yellow, exactly +12% is dark red.</p>
 
       <h4>What these percentages feel like</h4>
 
@@ -1756,15 +1760,21 @@
       </div>
 
       <div class="callout design">
-        <span class="tag">For feature design · the red band is open-ended</span>
+        <span class="tag">For feature design · why the climb end has five steps</span>
         <p>
-          Sustained 6% is a real climb on a bicycle, so painting it red is defensible. But
-          everything above 6% is the same red, so a 7% street and a 20% trail pitch are drawn
-          identically, right up to the &plusmn;25% cap. That was a fine simplification for a city
-          grid where almost nothing passes 8%; on mountain trails it throws away most of the
-          interesting range. Splitting red into two or three bands is probably the cheapest visible
-          improvement available: colours are computed fresh on every map request, so it needs a
-          server change and no rebuild.
+          Until 14 October everything above 6% was one red, so a 7% street and a 20% trail pitch
+          were drawn alike. Red now stops at 9%, with a dark red to 12% and a near-black red above
+          that. The climb edges (0, 3, 6, 9 and 12%) are the ones Garmin's ClimbPro uses on its
+          bike computers. Through ride 89 the two new shades cover 2.2 km of the 94.6 km drawn, and
+          almost all of it is trail: the steepest road is Gold Camp Road at 10.2%.
+        </p>
+        <p>
+          Two limits to know before adding more. A step above 15% would show on only 7 trail lines
+          (about 220 m), where the readings are noisiest, so it would mostly colour noise. And the
+          bands stay separate rather than blended: slope carries about 0.8 percentage points of
+          error, and a blend would show that error as a flicker of shade on every piece. Colours are
+          computed fresh on every map request, so moving a band is a server change and no rebuild.
+          The app has no colour key yet; adding one is an app change.
         </p>
       </div>
     </section>
@@ -3060,8 +3070,8 @@
           <thead><tr><th>You want to change</th><th>What it takes</th><th>Cost and risk</th></tr></thead>
           <tbody>
             <tr>
-              <td>Colour bands, the slope window, how far lines sit from the centreline, splitting
-              the red band</td>
+              <td>Colour bands and where their edges sit, the slope window, how far lines sit from
+              the centreline</td>
               <td>Edit the server's drawing code and push. Colours are computed fresh on every map
               request.</td>
               <td>Minutes. No rebuild. Undone by reverting the change.</td>
@@ -3143,8 +3153,10 @@
                 <td>Slope typically agrees with 1-metre terrain data to within 0.8 percentage
                 points. Absolute height is good to a few metres. A feature showing "you are at
                 1,823 m" should round.</td></tr>
-            <tr><td><strong>Six colour bands, red open-ended</strong></td>
-                <td>Everything above 6% is one red. Cheap to change (see above).</td></tr>
+            <tr><td><strong>Eight colour bands, the steepest open-ended</strong></td>
+                <td>Climbs go yellow, orange, red, dark red, near-black red, changing at 3, 6, 9 and
+                12%; everything above 12% is one colour, and everything steeper than &minus;8% is
+                one purple. The app has no colour key yet. Cheap to change (see above).</td></tr>
             <tr><td><strong>A merged ride is all or nothing</strong></td>
                 <td>It cannot be partly removed or edited, and the app cannot delete it.</td></tr>
             <tr><td><strong>Rides save offline first</strong></td>
@@ -3294,7 +3306,7 @@
       <div class="callout design">
         <span class="tag">For feature design · gaps a feature could fill</span>
         <p>
-          The red band is open-ended (cheap). There is no rider identity (expensive: accounts).
+          There is no colour key on the map (an app change). There is no rider identity (expensive: accounts).
           The barometer works only on Android. Nothing is live during a ride. The map shows slope
           but not how sure it is: a line built from one pass looks the same as one built from
           five, although the database knows the count for every bucket.
@@ -3857,6 +3869,7 @@ curl https://cyclingdataapp-backend-production.up.railway.app/health   # builtAt
       <p class="sec-note">For readers of the 2nd edition, 22 August 2026</p>
 
       <ul>
+        <li><strong>Two darker reds for steep climbs</strong>: dark red above 9% and near-black red above 12% (14 October, after this edition).</li>
         <li><strong>The barometer survives a locked screen</strong> (native module, verified 3 October), and every fix records which sensor its height came from.</li>
         <li><strong>Smoothing runs forwards and backwards</strong>, so hills are no longer reported late (24 September).</li>
         <li><strong>The drift correction ("tilt") was built and removed</strong> (23 September); one offset per ride remains.</li>
