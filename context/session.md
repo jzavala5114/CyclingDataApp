@@ -158,14 +158,16 @@ in step.
 `main` is the base, and every task branch is merged into it. The ten from
 2026-10-10/11 were deleted on 2026-10-11, locally and on origin;
 `stale-eval-columns`, `state-after-stale`, `next-whats-left`,
-`refresh-architecture-doc` and `session-notes-compact` are merged and safe to
-delete. In flight: `darker-red-bands` (2026-10-14), pushed and waiting for
-Julian's go-ahead to merge, because merging deploys the server. No running job.
-Last code change `cde98c2`: comments and eval-script text only (stale gate
-columns and labels in `eval:heading` / `eval:spikes`). The server's behaviour
-last changed in `9b68a1f`; `7c3ff06` moved the gate rule into `qualifiesAt`
-with identical behaviour. Production serves `builtAt 2026-10-11T17:46:24.697Z`,
-the `cde98c2` deploy, verified by the timestamp moving. **This PC's clock runs about 80 s
+`refresh-architecture-doc`, `session-notes-compact`, `darker-red-bands` and
+`state-after-colours` are merged and safe to delete. Nothing is in flight: no
+open branch, no uncommitted work, no running job.
+Last code change `a7c6a85` (2026-10-14): the colour bands, which change what
+the map draws and nothing about which rides count or what the model holds.
+Before it, the server's behaviour last changed in `9b68a1f`; `7c3ff06` moved
+the gate rule into `qualifiesAt` with identical behaviour. Production serves
+`builtAt 2026-10-15T01:58:42.120Z`, the `a7c6a85` deploy, verified by the timestamp moving
+and by live `/segments` equalling the merged code stop for stop on three lines
+(Ladders 19475 and 14356, Gold Camp Road 49658). **This PC's clock runs about 80 s
 ahead of Railway's** (measured 2026-10-11 against the HTTP `Date` header), so
 a fresh `builtAt` can read earlier than the local push time without being a
 stale build. Live model **746 segments / 953 lines** at the int8 deploy, which
@@ -190,7 +192,7 @@ revision. One cold critic round (FAIL, 3 blocking and 15 minor, all reproduced
 and fixed); no second round, on Julian's call. The task ran at about 2.7 times its
 token budget, mostly the critic reading a 250 KB page.
 
-**The colour bands (2026-10-14, branch `darker-red-bands`).** Climbs above 9%
+**The colour bands (2026-10-14, `a7c6a85`, deployed).** Climbs above 9%
 draw dark red `#881337` and above 12% near-black red `#450a0a`; red `#dc2626`
 now covers 6 to 9%. Drawing only: colours are computed on every request, so no
 rebuild. Recounted through ride 89 with the server's own code, read-only: 126 of
@@ -204,7 +206,9 @@ the basemap's cream `#f8f4f0` and park `#d8e8c8`: Tailwind red-800 and red-900
 each failed the normal-vision floor beside red or red-950 (14.4, 14.5); rose-900
 and red-950 clear it (18.7 and 16.8; colour-blind 14.9 and 12.6, floor 8).
 `gradientBuilder.test.ts` pins every band edge from both sides; it failed on the
-old table at 9.01% before the change.
+old table at 9.01% before the change. The repo's `architecture.html` has the
+bands; its artifact page ("Gradient Field Manual", version 9) does not yet:
+Julian chose to republish it with the next doc change.
 
 **How every measurement here is run, each rule learned by breaking it:**
 - **Pin the control to a fixed ride list.** New rides arrive mid-task.
