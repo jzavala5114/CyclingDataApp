@@ -21,8 +21,9 @@ A pass is `alive`; "HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED" says how
 to read the rest. **Re-estimate item 1 before starting it**: the last two large
 read-only tasks ran 2 to 3 times over budget (STATE, "How work is sized").
 
-**Found 2026-10-16, waiting on Julian's call on the fix: passes at different
-levels make cliffs where they cover different stretches.** From Julian's
+**Found 2026-10-16; the fix, option A, is built and reviewed on
+`per-pass-slopes` and NOT deployed (next heading): passes at different levels
+make cliffs where they cover different stretches.** From Julian's
 screenshot, the Ridgeway trailhead lot (38.7953,-104.8585) drew near-black;
 terrain says 3 to 6%, and the map drew +19.5% (`28973/backward`), +25% at the
 cap (`28974/backward`) and -25% (`19410/backward`). Replayed read-only through
@@ -54,7 +55,76 @@ the drift anchor taught us"); or keep each pass's heights and draw each pass's
 own slope. **Julian chose the last, option A, on 2026-10-16: the plan is the
 next heading.**
 
-### Next: draw each pass's own slope (option A), not started
+### Next: draw each pass's own slope (option A): built, reviewed, NOT deployed
+
+**Where it stands, 2026-10-16.** Steps 1 to 5 below are done on branch
+`per-pass-slopes` (`0312447`, then `1b53982` from the review), pushed and
+NOT merged: merging deploys, and that code fails every ride save and every map
+request until the table exists. Julian held the production steps ("not yet")
+and kept this task to the notes. Left: step 6, then step 7, each on his
+go-ahead. The plan as written follows this block; where they differ, this
+block is what was built.
+
+- **The eval (step 1).** `npm run eval:mixing`, `src/scripts/evalMixing.ts`
+  on the branch. With the speed filter, all 6,114 of 6,114 stored buckets
+  reproduce: the 55 were the filter, not old code. Through ride 89, median
+  |slope - terrain| in points, the means then each pass: 2.09 and 2.01 on all
+  93.27 judged km; 2.38 and 2.25 on pieces two or more passes cover; 4.91 and
+  2.87 where mixing moved the colour. Within one band of terrain on the
+  multi-pass km: 57.9% to 60.2%. The lot draws +2.1 / -0.0 / -3.8% (terrain
+  +5.8 / +3.2 / -8.3); Ladders stays near-black at 13.7%. A rebuild repaints
+  7.85 km of 94.59, 2.26 km of it by more than one band. Its preview hands the
+  new server code the replay's passes and checks all 5,218 stops against its
+  own each-pass slope; with the server made to ignore them it refuses (452
+  stops). It also calls GET /segments end to end, in-process once the table
+  exists, or at `SEGMENTS_URL`: against production before the migration, all
+  751 segments matched. Every connection it opens is read-only.
+- **The estimator.** Count-weighted, as planned. The alternative, pooled least
+  squares (one slope, a level per pass), tied: the rule written before the
+  first run settled 2.25 against 2.26 for count-weighting.
+- **The table (step 2).** `003_pass_buckets.sql`: `segment_pass_buckets
+  (match_id, distance_m, elevation_m)`, keyed on (match_id, distance_m),
+  cascading from `session_segment_matches`. Normalised rather than the plan's
+  copy of segment and direction, so nothing can disagree: the route joins the
+  match rows, whose index serves it. Run on PGlite, an in-memory Postgres:
+  applied twice, the save path, the route's query, both cascades.
+- **Save and draw (steps 3 and 4).** As planned; the merge loop is now
+  `mergeRuns`. The route sends its three id queries together, so the fourth
+  costs no extra round trip (live /segments took 1.0 to 1.9 s).
+- **Tests (step 5).** 463 backend tests on the branch, 446 on main. 19 of 19
+  mutants killed, among them today's behaviour, which fails THE LOT.
+- **Review.** One cold critic: PASS, at 181k tokens against an 80k ask.
+  Fixed from it: a NaN guard (an overflowing average threw in
+  `colorForSlope` and failed the whole map), full-precision heights in the
+  save test (rounding to the centimetre survived), and the route end to end in
+  the eval. Left, in item 5: no gate test runs SQL; the pass query grows with
+  rides, not road; `processSession` has no gate test (pre-existing). The
+  critic's mutant scripts in the scratchpad restore files from copies taken
+  during its run, so running one after an edit reverts the edit; it did once.
+
+**To finish (step 6), in this order, each on Julian's go-ahead.** About 60k
+tokens. (a) `npm run migrate -- src/db/migrations/003_pass_buckets.sql`, read
+it, then the same with `--apply`; check `select
+to_regclass('segment_pass_buckets')` is not null. (b) Rebase
+`per-pass-slopes` on main, merge, push; verify `builtAt` moves; then
+`SEGMENTS_URL=<production> npm run eval:mixing` must report every segment
+matching and the means drawn on all 94.59 km. (c) The rebuild, under
+"Background jobs and backfills", with four gitignored tools in `backend/`,
+each tested read-only on 2026-10-16: `npx tsx tmp-rebuild-rides.ts` (49
+rides; the model holds 48, and the 49th, ride 10, has 2 fixes and no runs);
+`npx tsx tmp-rebuild-snapshot.ts <dir>` (6,114 / 958 / 2,618 rows); `npm run
+rebuild-model -- --dry-run`; the real run, its output to a log, with `node
+tmp-rebuild-monitor.mjs <log> <file holding the start time in ms>
+<progress.log>` every few minutes; then `npx tsx tmp-rebuild-report.ts
+<snapshot dir> <csv>` for the model and the map before and after, with a
+per-stop CSV (`tmp-rebuild-diff.mjs` beside them is the 2026-09-29 rebuild's
+diff, superseded by it). About 10 to 12 minutes in one transaction (44 ms a round trip
+from this PC). **Julian must not save a ride while it runs.** Expected: every
+bucket unchanged, 7.85 km repainted. (d) `npm run eval:mixing`: every bucket's
+passes on file, stored rows equal to the replay, the route matching, the lot
+fixed; then break the route's pass query locally (`and false` on its `where`)
+and see the eval refuse, since only now can that check fail. Never drop the
+table while this code is deployed.
 
 **What it changes.** Today a piece's slope is the least-squares fit over the
 MEAN heights of its window (`slopeAt` in `gradientBuilder.ts`), so passes at
@@ -197,6 +267,16 @@ two weak spots that predate the darker reds, found by the dataviz validator on
 contrast on the basemap's cream `#f8f4f0`, under the 2:1 a light end needs, and
 orange `#f97316` against red `#dc2626` is ΔE 14.9 for normal vision, just under
 the floor of 15. The app has no colour key for its eight colours (an app change).
+Option A's review left three (2026-10-16). No gate test runs SQL: the gate
+tests mock the database, so the route's pass query is guarded only by
+`eval:mixing` calling the route end to end; PGlite as a devDependency would
+run the route's and the save path's SQL at commit, a new dependency for Julian
+to decide. The pass query returns one row per pass per bucket (17,634 through
+ride 89, 2.9 a bucket), so it grows with rides rather than road: 300 rides over
+one commute is about 182k rows for a 100-segment viewport (synthetic, 0.9 s on
+PGlite); when the table nears 100k rows or /segments slows, fit the slopes at
+merge time instead. And `processSession` has no gate test of its own: deleting
+its call to `mergeRuns` fails nothing.
 (`context/architecture.html` is current: the 3rd edition of 2026-10-11 plus the
 colour bands of 2026-10-14; STATE says whether its artifact page is.)
 
@@ -279,15 +359,17 @@ in step.
 
 - **The same-way class.** Unexplained. NEXT item 4.
 
-## STATE, 2026-10-14
+## STATE, 2026-10-16
 
 `main` is the base, and every task branch is merged into it. The ten from
 2026-10-10/11 were deleted on 2026-10-11, locally and on origin;
 `stale-eval-columns`, `state-after-stale`, `next-whats-left`,
 `refresh-architecture-doc`, `session-notes-compact`, `darker-red-bands`,
-`state-after-colours`, `mixing-artefact-notes` and `option-a-plan` are merged
-and safe to delete. Nothing is in flight: no
-open branch, no uncommitted work, no running job.
+`state-after-colours`, `mixing-artefact-notes`, `option-a-plan` and
+`option-a-state` are merged and safe to delete. **In flight:
+`per-pass-slopes`, pushed, NOT merged** (option A, built and reviewed; merging
+it deploys, and the table must exist first: NEXT, "Next: draw each pass's own
+slope"). No uncommitted work, no running job.
 Last code change `a7c6a85` (2026-10-14): the colour bands, which change what
 the map draws and nothing about which rides count or what the model holds.
 Before it, the server's behaviour last changed in `9b68a1f`; `7c3ff06` moved
@@ -299,7 +381,8 @@ ahead of Railway's** (measured 2026-10-11 against the HTTP `Date` header), so
 a fresh `builtAt` can read earlier than the local push time without being a
 stale build. Live model **746 segments / 953 lines** at the int8 deploy, which
 changed nothing in it: the whole `/segments` response hashes the same as
-before, ids now numbers. **444 backend tests, 56 app tests**; `mobile/`
+before, ids now numbers. **446 backend tests on main (463 on
+`per-pass-slopes`), 56 app tests**; `mobile/`
 has a gate lane. **45 usable rides** counted on 2026-10-05. Rides 85 to 88 are
 graded `alive` (2026-10-10). 88 landed that afternoon, so 51 sessions hold
 34,965 fixes; the timestamp measurement earlier the same day saw 50 and
@@ -387,7 +470,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 31 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. First "Next: draw each pass's own slope (option A)", Julian's choice of 2026-10-16; then item 1, the zero-run census: read-only, about 40k tokens |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. First finish "Next: draw each pass's own slope (option A)": built and reviewed on `per-pass-slopes`, only its production steps left, each on Julian's go-ahead, about 60k tokens; then item 1, the zero-run census: read-only, about 40k tokens |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
