@@ -22,14 +22,12 @@ map: `npm run verify-barometer` in `backend/`, read-only, about 20k. A pass is
 `alive`; "HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED" says how to read
 the rest. No ride has landed since.
 
-**Then Julian's call, asked 2026-10-17: the feature or the census.** He wants
-to move on to features, and the planned one, press and hold on a segment
-(after the numbered items), got cheaper with option A: every line's pass rows
-now say how many rides built it and what each one measured. It waits on his
-decision of what a press shows, needs an APK cycle, and is large. Item 1, the
-zero-run census, is read-only, about 40k: how many ridden streets never become
-a line at all, the most valuable unmeasured number. Items 2 to 5 follow either
-way.
+**Then the feature: press and hold on a segment, designed 2026-10-17** (its
+section after the numbered items). Julian chose it over the census and settled
+its four open questions; nothing is built. Two phases, server then app, each
+started only on his go-ahead, about 450k together. Item 1, the zero-run census
+(read-only, about 40k), can run any time, and it also sizes the gaps the
+feature has to bridge. Items 2 to 5 follow.
 
 **Re-estimate anything large before starting it**: the last large read-only
 tasks ran 2 to 3 times over budget (STATE, "How work is sized"), and option A's
@@ -99,25 +97,131 @@ its call to `mergeRuns` fails nothing.
 colour bands of 2026-10-14 but not option A, whose Parts 5 and 6 Julian
 deferred on 2026-10-17; its artifact page lags by both.)
 
-### Planned, not started: press and hold on a segment
+### Designed 2026-10-17, not built: press and hold on a segment
 
-Julian, 2026-10-14: a long press on a drawn line will do something later. What
-it does is not decided and nothing is built. Notes so nothing in between blocks
-it: the phone draws each line as short solid pieces (`gradientRendering.ts`),
-each already tagged with its street name, so a press can find the piece under
-the finger. Everything a label would show is decided on the server: the band
-edges live only in `SLOPE_STOPS`, and each of `/segments`' `colorStops`
-carries a colour and a position, not the slope or the pass count behind it.
-Adding those as new fields on each stop is an additive change that an older APK
-ignores; copying the band table into the app instead makes two copies to keep
-in step.
+Design settled with Julian on 2026-10-17; nothing is built. It replaces the
+placeholder of 2026-10-14, whose two facts still hold: each drawn piece knows
+its street, and the band edges live only in `SLOPE_STOPS`.
 
-**What option A added for it (2026-10-17).** Every drawn line now has pass
-rows: per bucket, each ride's own height, filed under its match row (the ride
-and its first fix). So a press could say how many rides built the line, which
-rides and when, or draw each ride's own profile, from data already stored. The
-stop fields above are still the way to send it. The app's missing colour key
-(item 5) and the `RING_CAPACITY` comment fix would ride in the same APK cycle.
+**What it does.** Long-press a drawn line: a selection starts under the finger
+and flows ahead in that line's direction of travel while the finger stays down;
+lifting it stops. A card at the top shows the selection's stats, updating live
+while it grows. Tap a selected line: it and everything after it fade and a
+panel under the card asks "Remove 340 ft?"; confirming trims. Hold any line
+near the selection's end to connect to it and keep growing from it. A flip
+button swaps the selection onto the other direction's lines of the same
+streets; the close button (or Android back) clears it.
+
+**Julian's four decisions:**
+
+| question | decision | why |
+|---|---|---|
+| which way it grows | **ahead only**, in the pressed line's direction of travel | each line sits on the right-hand side of its own travel: forward at +`OFFSET_M`, and a positive turf offset is to the right. So the press names the direction. "forward"/"backward" are per OSM way, not compass directions |
+| a fork | **ride history** from the incoming line, then **the same street name**, then **the least turn** (60 degrees or under), **else stop** at the fork and mark the branches to hold | his history idea first; stopping beats a blind guess. The eval below scores each rule |
+| the highlight | **same colours, wider, white casing, every other line faded** to about 35% | colour is grade here; brightening a colour moves it toward its neighbouring band |
+| tapping a selected line | **trim from it to the end**, after a preview and one confirm | a wrong branch is several lines long, and a hole in the middle leaves no single distance or climb |
+
+**The card.** Street names in order ("Ridge Trail -> Ladders"); distance in ft
+below half a mile (2,640 ft), else mi to two decimals; climb and descent in ft;
+average grade (net change over distance); the steepest 100 m (330 ft); a height
+profile with one bar per bucket coloured by band, and each band's share of the
+distance under it, which is the colour key the app lacks (NEXT item 5); "built
+from N to M rides, last ridden <date>"; and, when a gap was bridged, "N ft with
+no data". Releasing fits the camera to the selection and turns camera follow
+off; the compass moves below the card.
+
+**Where the work lives.**
+- **Server: a new route, `GET /segments/path`**, additive, so an older APK never
+  calls it. In: the pressed line (segment id, direction, distance along it),
+  optionally a line to connect to. Out: the path as steps (drawn pieces with
+  the same offset geometry `/segments` sends, gap pieces on the centreline),
+  a profile every 15 m (distance along the path, height, slope, colour, rides),
+  the band table built from `SLOPE_STOPS` so the app holds no second copy,
+  and why growth stopped (end, fork, gap, loop, limit). It belongs on the
+  server because the phone receives only drawn segments, and bridging a gap
+  needs the undrawn ones, the ride order and the pass rows.
+- **The graph is `buildEndAdjacency`** (`segmentMatcher.ts`) over canonical
+  segments in a box around the start, **with `endpointSnapM` at 5 m**. The
+  node graph has no edge at 1,987 canonical pairs within 5 m of each other
+  ("Does the matcher need Viterbi?"), and growth would stop dead at each. The
+  matcher stays at 0: for a selection a false edge costs one wrong hop, a
+  missing one ends it.
+- **History** is consecutive match rows within each session, ordered by the
+  `recorded_at` of their first fix, counted as line A to line B where B is
+  entered at A's exit end. The whole table per request: 2,618 rows.
+- **Slopes come from `pieceSlopesPct`**, so the card agrees with the map. The
+  profile integrates those slopes and never plots the bucket means: rides sit
+  at different levels (the mixing artefact), so plotted means would draw a
+  cliff at every join and inflate the climb.
+- **Gaps.** Growth runs on through undrawn segments, and through the undrawn
+  head or tail of a partly covered one, for up to 150 m in a row: drawn dashed
+  grey, counted in distance. Where the other direction is drawn there, its
+  slopes are used negated (the same ground, measured). Elsewhere the change is
+  interpolated between the heights at both ends, and the card marks it as
+  estimated. Over 150 m, growth stops with reason `gap`.
+- **The phone.** `Map.onLongPress`, then `queryRenderedFeatures` over a box
+  around the finger, then the nearest piece by distance to its geometry; the
+  line features gain `segmentId` and `direction` properties, which the
+  `/segments` response already carries. MapLibre has no "finger lifted"
+  event, so release comes from `onTouchEnd`/`onTouchCancel` on a wrapper
+  `View`. **That is unproven on the phone: spike it first.** Fallback: a press
+  selects up to the first stop, with no hold. Growth speed is set in screen
+  points per second, about 120 rising to 400 after 2 s, converted through the
+  zoom, with a 150 ms pause at each fork. The selection has its own source and
+  layers: casing, coloured line, dashed gap, and chevrons (a line-placed
+  symbol) showing the direction. Stats are computed on the phone from the
+  profile, so they update every frame without a round trip. Haptics (a buzz
+  when the hold registers, a tick at each fork) need `expo-haptics`, a new
+  dependency for Julian to approve; v1 works without it.
+
+**Bugs it inherits, and the v1 workaround for each.**
+- Touching trail pieces with no shared node: the 5 m snap above.
+- Ridden ground with no line (gate, wrong-dir, unmeasured zero-run): the
+  gap bridge. The real fix starts with the census, NEXT item 1.
+- Level differences between rides: the integrated profile.
+- Switchbacks (the same-way class, NEXT item 4) can send history picks back
+  and forth: growth stops on revisiting a line, reason `loop`.
+- The two lines of a street are 8 m apart: 17 px at zoom 17, the app's
+  default, and 4 px at zoom 15. The nearest line to the finger wins, chevrons
+  show which way the selection runs, and the flip button fixes a wrong pick.
+
+**The outcome, measured.** `npm run eval:path`, read-only, whose first run is
+step 0 of the build, before any app code:
+- Leave-one-ride-out: at every fork a ride passed, whether the rule picks the
+  branch that ride took. Reported for history-first, name-first and
+  straightest-only. **Passes when history-first beats straightest-only.**
+- Growth started from every drawn line: stops counted by reason, and bridged
+  metres per 10 km grown, a measure of gaps from the rider's side to compare
+  after the census.
+- Climb against the terrain model on Ladders and Gold Camp Road, and the
+  route's p95 latency.
+
+**Tests.** Backend gate: synthetic graphs for straight on; a fork decided by
+history, by name, by turn; a fork with nothing (stop); a loop (stop); the twin
+never taken; a 3 m snapped join followed; a capped run's slices joined by
+`piece_index`; a gap under and over 150 m; partial coverage; twin data
+negated; a profile continuous across a level step. Route parameters and shape
+with the mocked pool. App gate (`tsx --test`): stats over synthetic profiles
+(cut mid-piece, estimated flags, band shares, steepest 100 m), unit formatting
+either side of 2,640 ft, the nearest-line pick between two offset lines,
+cutting the path at a grown distance.
+
+**Phases, each on Julian's go-ahead.**
+1. **Server**, about 200k: the eval's step 0, then the route, its tests and
+   the eval, one cold critic, deploy (additive; verified by `builtAt`, live
+   `/segments` hashing unchanged).
+2. **App**, about 250k: the touch spike, then selection, card, trim, flip,
+   back, a first-run hint ("Hold a line to measure it"), tests, one cold
+   critic, the APK. The `RING_CAPACITY` comment fix rides along. CLAUDE.md
+   asks for a variant tournament on a new feature; the proposal, for token
+   cost, is one only for the card layout, two variants, or none on his say.
+
+**Later, not in v1.** A one-direction mode (Julian's arrow buttons): one line
+per street in a chosen direction, which also halves the clutter, since the
+two lines measure the same ground. A fixed on-screen gap between the two lines
+at every zoom, via `line-offset`. Each ride's own profile over a selection
+(pass rows), the rider's time on it per ride (each match row's first and last
+fix), saved selections, a climb finder.
 
 ### Parked: measured, decided, and what would reopen each
 
@@ -296,7 +400,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 31 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then Julian's call between the press-and-hold feature and item 1, the zero-run census (read-only, about 40k) |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature, designed 2026-10-17 ("Designed 2026-10-17, not built"), phase 1 on Julian's go-ahead (about 200k) |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
