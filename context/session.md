@@ -21,9 +21,9 @@ A pass is `alive`; "HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED" says how
 to read the rest. **Re-estimate item 1 before starting it**: the last two large
 read-only tasks ran 2 to 3 times over budget (STATE, "How work is sized").
 
-**Found 2026-10-16; the fix, option A, is built and reviewed on
-`per-pass-slopes` and NOT deployed (next heading): passes at different levels
-make cliffs where they cover different stretches.** From Julian's
+**Found 2026-10-16, FIXED 2026-10-17 by option A, deployed and rebuilt (next
+heading): passes at different levels made cliffs where they covered different
+stretches.** From Julian's
 screenshot, the Ridgeway trailhead lot (38.7953,-104.8585) drew near-black;
 terrain says 3 to 6%, and the map drew +19.5% (`28973/backward`), +25% at the
 cap (`28974/backward`) and -25% (`19410/backward`). Replayed read-only through
@@ -55,9 +55,46 @@ the drift anchor taught us"); or keep each pass's heights and draw each pass's
 own slope. **Julian chose the last, option A, on 2026-10-16: the plan is the
 next heading.**
 
-### Next: draw each pass's own slope (option A): built, reviewed, NOT deployed
+### Done 2026-10-17: draw each pass's own slope (option A), deployed and rebuilt
 
-**Where it stands, 2026-10-16.** Steps 1 to 5 below are done on branch
+**Shipped 2026-10-17, every check passed.** Each step ran on Julian's go-ahead
+and passed its check before the next began:
+- **(a) The table.** Migration 003 applied; the live table has the declared
+  columns, the key, the cascading foreign key and 0 rows. `eval:query-types`
+  now lists 12 timestamp lies: the 12th is `evalMixing.ts`'s copy of
+  `processSession`'s samples query, the known class; every new statement was
+  described, 93 of 93.
+- **(b) The deploy.** `per-pass-slopes` rebased and merged (`26f4620`);
+  `builtAt 2026-10-17T14:28:03.555Z`, stable over five reads. With no pass
+  rows yet, live `/segments` hashed identical to before on three viewports
+  (the lot, Ladders, the city), and `SEGMENTS_URL` `eval:mixing` matched
+  all 751 segments. Live map requests ran 1.3 to 3.2 s that morning, but
+  `/health` alone took 0.5 to 1.0 s: the network. In-process from this PC
+  the old route had a 527 ms median and the new one 493 ms, byte-identical.
+- **(c) The rebuild**, 14:35 to 14:53 UTC, 18.1 minutes (2.7 rides a
+  minute; the estimate was 10 to 12). Snapshot first, 9,690 rows. After it:
+  6,114 buckets unchanged (largest height change 0.000 m), 958 coverage rows
+  unchanged, 2,618 match rows, 17,634 pass rows, every bucket's rows equal to
+  its pass count and its mean. The map: 7.85 km of 94.59 changed colour, as
+  previewed, 1.12 km of it by two bands or more. Largest flows: purple to blue
+  1.09 km, yellow to green 1.06, green to blue 0.98. Mixing faked descents as
+  well as climbs.
+- **(d) The evals**, in-process and against production: PASS. 17,634 of
+  17,634 stored rows reproduce the replay; the route matches on all 751
+  segments; each pass's own slope draws 93.27 km and the means 1.32 km (pieces
+  no pass covers two buckets of). The lot draws +2.1 / -0.0 / -3.8%, and its
+  view's near-black stops went from 5 to 0; Ladders stays near-black at 13.7%.
+  Breaking the route's pass query locally (`and false`) made the eval refuse:
+  180 of 751 segments differed.
+
+Left: step 7, `architecture.html` Parts 5 and 6 and the artifact republish,
+deferred by Julian on 2026-10-17. A nit for the next backend change: when the
+route check fails, `eval:mixing`'s REFUSED header counts it as one colour
+stop. The rebuild's report, CSV and progress log were written to the session
+scratchpad and may not outlive it; the numbers above are the record.
+
+
+**Where it stood, 2026-10-16, before shipping.** Steps 1 to 5 below are done on branch
 `per-pass-slopes` (`0312447`, then `1b53982` from the review), pushed and
 NOT merged: merging deploys, and that code fails every ride save and every map
 request until the table exists. Julian held the production steps ("not yet")
@@ -102,7 +139,7 @@ block is what was built.
   critic's mutant scripts in the scratchpad restore files from copies taken
   during its run, so running one after an edit reverts the edit; it did once.
 
-**To finish (step 6), in this order, each on Julian's go-ahead.** About 60k
+**To finish (step 6, done 2026-10-17), in this order, each on Julian's go-ahead.** About 60k
 tokens. (a) `npm run migrate -- src/db/migrations/003_pass_buckets.sql`, read
 it, then the same with `--apply`; check `select
 to_regclass('segment_pass_buckets')` is not null. (b) Rebase
@@ -359,37 +396,36 @@ in step.
 
 - **The same-way class.** Unexplained. NEXT item 4.
 
-## STATE, 2026-10-16
+## STATE, 2026-10-17
 
 `main` is the base, and every task branch is merged into it. The ten from
 2026-10-10/11 were deleted on 2026-10-11, locally and on origin;
 `stale-eval-columns`, `state-after-stale`, `next-whats-left`,
 `refresh-architecture-doc`, `session-notes-compact`, `darker-red-bands`,
-`state-after-colours`, `mixing-artefact-notes`, `option-a-plan` and
-`option-a-state` are merged and safe to delete. **In flight:
-`per-pass-slopes`, pushed, NOT merged** (option A, built and reviewed; merging
-it deploys, and the table must exist first: NEXT, "Next: draw each pass's own
-slope"). No uncommitted work, no running job.
-Last code change `a7c6a85` (2026-10-14): the colour bands, which change what
-the map draws and nothing about which rides count or what the model holds.
-Before it, the server's behaviour last changed in `9b68a1f`; `7c3ff06` moved
-the gate rule into `qualifiesAt` with identical behaviour. Production serves
-`builtAt 2026-10-15T01:58:42.120Z`, the `a7c6a85` deploy, verified by the timestamp moving
-and by live `/segments` equalling the merged code stop for stop on three lines
-(Ladders 19475 and 14356, Gold Camp Road 49658). **This PC's clock runs about 80 s
+`state-after-colours`, `mixing-artefact-notes`, `option-a-plan`,
+`option-a-state`, `per-pass-slopes` and `option-a-live` are merged and safe
+to delete. Nothing is in flight: no open branch, no uncommitted work, no
+running job.
+Last code change `26f4620` (2026-10-17): option A, each pass's own slope,
+which changes what the map draws and adds `segment_pass_buckets` (17,634
+rows) beside the model, whose means did not move. Before it, `a7c6a85`
+(2026-10-14), the colour bands. Production serves
+`builtAt 2026-10-17T14:28:03.555Z`, the `26f4620` deploy, verified by the
+timestamp moving, by live `/segments` hashing identical before the rebuild,
+and by `eval:mixing` matching all 751 live segments after it. **This PC's clock runs about 80 s
 ahead of Railway's** (measured 2026-10-11 against the HTTP `Date` header), so
 a fresh `builtAt` can read earlier than the local push time without being a
 stale build. Live model **746 segments / 953 lines** at the int8 deploy, which
 changed nothing in it: the whole `/segments` response hashes the same as
-before, ids now numbers. **446 backend tests on main (463 on
-`per-pass-slopes`), 56 app tests**; `mobile/`
+before, ids now numbers. **463 backend tests, 56 app tests**; `mobile/`
 has a gate lane. **45 usable rides** counted on 2026-10-05. Rides 85 to 88 are
 graded `alive` (2026-10-10). 88 landed that afternoon, so 51 sessions hold
 34,965 fixes; the timestamp measurement earlier the same day saw 50 and
 34,866. **Ride 89 landed on 2026-10-11**, during the doc rewrite: 52 sessions,
 36,266 fixes, 49 usable, model 6,114 buckets / 751 segments / 958 lines. Not
 yet graded with `verify-barometer`. `npm
-run eval:query-types` fails on 11 timestamp lies, by design: measured
+run eval:query-types` fails on 12 timestamp lies, by design (the 12th since
+2026-10-17, `evalMixing.ts`'s copy of the samples query): measured
 negligible on 2026-10-10 (NEXT, "Parked"). A deploy failed once on 2026-09-30, see note 29,
 before adding anything to `backend/` that imports outside it.
 
@@ -470,7 +506,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 31 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. First finish "Next: draw each pass's own slope (option A)": built and reviewed on `per-pass-slopes`, only its production steps left, each on Julian's go-ahead, about 60k tokens; then item 1, the zero-run census: read-only, about 40k tokens |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. Option A shipped on 2026-10-17 (its heading says what is left: the docs, deferred). Next is item 1, the zero-run census: read-only, about 40k tokens |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
