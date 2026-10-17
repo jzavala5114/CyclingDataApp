@@ -46,11 +46,106 @@ darker reds of 2026-10-14 made it visible, and `28974/backward` was that day's
 25%-cap piece, put down then as a bad reading without being chased. Tools,
 local and gitignored: `backend/tmp-mixing-census.ts` (the census),
 `tmp-replay-lines.ts` (each ride's own heights for chosen lines) and
-`tmp-slope-vs-terrain.ts`. Fix options, none built, all needing a rebuild:
-align each new pass to the model's level over the stretch they share before
-averaging; anchor each pass to terrain instead of each ride (close to the
-ground the drift anchor lost on, see "What the drift anchor taught us"); or keep
-each pass's heights and fit the slope per pass when drawing (a schema change).
+`tmp-slope-vs-terrain.ts`. Three fixes were weighed: align each new pass to
+the model's level where they overlap (fails where passes do not overlap, the
+lot's west path); anchor each pass to terrain instead of each ride (leans on the
+terrain model's level everywhere, and sits close to the drift anchor, see "What
+the drift anchor taught us"); or keep each pass's heights and draw each pass's
+own slope. **Julian chose the last, option A, on 2026-10-16: the plan is the
+next heading.**
+
+### Next: draw each pass's own slope (option A), not started
+
+**What it changes.** Today a piece's slope is the least-squares fit over the
+MEAN heights of its window (`slopeAt` in `gradientBuilder.ts`), so passes at
+different levels covering different stretches make steps. After: the slope is
+the mean of each pass's OWN least-squares slope over the same window, weighted
+by how many of the window's buckets the pass covers, from passes covering at
+least two; clamp to ±25% after averaging. Level differences between passes then
+cannot reach the slope at all. The window stays buckets i-2..i+3 by index, as
+today, and each pass contributes its rows at those distances.
+
+**Outcome to measure, written before building.** Success is judged by terrain,
+not by the mixing figure: once the slope IS the passes' slope, "drawn minus
+passes" is 0 by construction, the house defect if reported as a pass. Targets,
+pinned to a named ride: on the pieces mixing moved more than one band (2.26 km
+through ride 89), median |drawn - terrain| from 4.9 points to about 2.9; the
+whole judged map's median |drawn - terrain| no worse than before (it must be
+measured first, it is not in the notes); the Ridgeway lot's three lines go from
++19.5 / +25 / -25% to roughly +2 / 0 / -4%; and the control, Ladders
+`19475/forward`, stays near-black (passes 13.7%).
+
+**Steps, in this order.**
+1. **The eval first, on `main`.** Promote `backend/tmp-mixing-census.ts` to
+   `src/scripts/evalMixing.ts` with `npm run eval:mixing`. Add the speed
+   filter its replay skipped (`rejectImpossibleSpeeds`, exported from
+   `positionSpikes.ts`, which `processSession` runs first), then see whether
+   that closes the 55 of 6,114 buckets it did not reproduce; if not, say why
+   (rides merged under older code would be a rebuild question). Report
+   merged-height slope, per-pass slope and terrain slope per piece, the targets
+   above, the lot and the control. Run it on `main` and record the baseline.
+2. **Migration `003_pass_buckets.sql`**, idempotent like 002, and the same
+   table in `schema.sql`: `segment_pass_buckets (match_id bigint not null
+   references session_segment_matches(id) on delete cascade, segment_id bigint
+   not null references segments(id) on delete cascade, direction text not null
+   check (direction in ('forward', 'backward')), distance_m integer not null,
+   elevation_m double precision not null, primary key (match_id, distance_m))`,
+   plus an index on (segment_id, direction). One row per merged pass per
+   bucket: 17,634 rows through ride 89, the sum of today's pass counts.
+   Additive only. The cascade means
+   `rebuildModel.ts`'s `delete from session_segment_matches` (line 54) clears
+   it with no new code there: check that before relying on it.
+3. **Save path.** In `processSession`'s merge loop (`sessionProcessor.ts`,
+   about lines 355-371), make the `session_segment_matches` insert
+   `returning id` and insert that run's buckets into the new table with the
+   SAME anchored heights `mergeBuckets` was given (the `anchorM == null`
+   branch included). Test: the stored rows equal what was merged.
+4. **Draw path.** `routes/segments.ts` gets a fourth query (pass rows for the
+   viewport's segments); `segmentsWithLines` joins them (extend
+   `segmentsResponse.test.ts`: the bigint join trap that file documents applies
+   to `match_id` too); `buildDirectionalGradientLines` takes them as an
+   optional fourth argument defaulting to none, so every existing caller and
+   test is unchanged. **Use the pass rows only when they account for every
+   merged pass**: for every bucket in the window, rows at that distance equal
+   its `sampleCount`. Otherwise fall back to today's `slopeAt`. That makes the
+   deploy a no-op until the rebuild (no rows yet), and stops a new ride's rows
+   from outvoting the older passes that only the mean holds.
+5. **Tests, each seen failing first where it can.** The lot as a fixture,
+   `28974/backward` from the replay (ride 54 at 60-90 m on terrain, 84 about
+   +12 m at 75-90, 81 about +31 m at 75-105, 84's other pass about +9 m at
+   105-135): +25% today, near 0 after, and the test fails on today's code. A
+   single pass draws exactly today's slope. Passes covering the same buckets at
+   different levels draw exactly today's slope (least squares is linear in the
+   heights, so the mean of slopes equals the slope of the mean). Rows short of
+   `sampleCount` fall back to exactly today's slope. A pass covering one bucket
+   of a window adds nothing. The clamp holds after averaging. The `/segments`
+   response shape is unchanged, so no APK.
+6. **Production, each step only on Julian's go-ahead.** (a) Apply the migration
+   BEFORE merging the code: `npm run migrate -- src/db/migrations/003_pass_buckets.sql`
+   prints it, `--apply` runs it. The code writes to and reads from the table,
+   so deploying first would fail every ride save and every map request.
+   (b) Merge and deploy; verify by `builtAt` moving; live `/segments` for a
+   viewport must hash the same as before, the fallback with no rows yet. (c) The
+   rebuild is a production write: run the "Background jobs and backfills"
+   protocol (snapshot buckets, coverage and matches first: 6,114, 958 and 2,618
+   rows through ride 89, well under 100k; progress log; before/after report and
+   CSV). Run `npm run rebuild-model -- --dry-run` first, then the real run.
+   The rebuild also replays every ride under
+   today's code, so the report has to separate that from the slope change:
+   after it, the eval can show the merged-height slope and the per-pass slope
+   side by side on the same rebuilt data. (d) `eval:mixing` and
+   `eval:quality` against the targets; Julian reopens the app at the lot.
+7. **Docs.** `architecture.html` Part 5 (merging) and Part 6 (limits, open
+   problems; "Ideas already tried" gets the two rejected fixes above), and
+   republish its artifact page, which already lags by the colour bands of
+   2026-10-14.
+
+**Size and cost.** Large: a schema change, the save path, the draw path and a
+rebuild. About 150k to 250k tokens with the tests and one cold critic, scoped to
+the slope maths, the fallback rule and the migration order, rather than a
+fan-out. Re-estimate before starting, and check the running total at each step
+against 1.5 times the estimate. The pass rows also give the planned press and
+hold (below) each line's pass count and per-ride detail for free.
 
 ### 1. The zero-run census
 
@@ -189,8 +284,9 @@ in step.
 `main` is the base, and every task branch is merged into it. The ten from
 2026-10-10/11 were deleted on 2026-10-11, locally and on origin;
 `stale-eval-columns`, `state-after-stale`, `next-whats-left`,
-`refresh-architecture-doc`, `session-notes-compact`, `darker-red-bands` and
-`state-after-colours` are merged and safe to delete. Nothing is in flight: no
+`refresh-architecture-doc`, `session-notes-compact`, `darker-red-bands`,
+`state-after-colours`, `mixing-artefact-notes` and `option-a-plan` are merged
+and safe to delete. Nothing is in flight: no
 open branch, no uncommitted work, no running job.
 Last code change `a7c6a85` (2026-10-14): the colour bands, which change what
 the map draws and nothing about which rides count or what the model holds.
@@ -291,7 +387,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 31 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. Item 1 is the zero-run census: read-only, about 40k tokens |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. First "Next: draw each pass's own slope (option A)", Julian's choice of 2026-10-16; then item 1, the zero-run census: read-only, about 40k tokens |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
