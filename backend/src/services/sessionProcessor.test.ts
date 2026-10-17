@@ -1,6 +1,8 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { collectAnchorResiduals } from "./sessionProcessor.js";
+import type { PoolClient } from "pg";
+import { collectAnchorResiduals, mergeRuns } from "./sessionProcessor.js";
+import { savePassBuckets } from "./elevationAggregator.js";
 import { demKey } from "./demElevation.js";
 import type { Direction, Segment } from "../types/index.js";
 
@@ -103,4 +105,78 @@ test("a DEM height of exactly zero is a reading, not a miss", () => {
     dem([[1, "forward", 0, 0]]),
   );
   assert.deepEqual(residuals, [12]);
+});
+
+// ---- what a ride writes -------------------------------------------------------
+//
+// The map fits a slope to each pass's own rows only while they account for
+// every pass in a window's means, so a pass row has to hold exactly what its
+// mean was given. These hold mergeRuns to that, against a client that records
+// every statement and answers the match insert with a fresh id, as Postgres
+// would.
+
+function recordingClient() {
+  const statements: Array<{ text: string; values: unknown[] }> = [];
+  let nextId = 7000;
+  const client = {
+    query: async (text: string, values: unknown[] = []) => {
+      statements.push({ text, values });
+      return { rows: /insert into session_segment_matches/.test(text) ? [{ id: nextId++ }] : [] };
+    },
+  };
+  return { client: client as unknown as PoolClient, statements };
+}
+
+// The (distance, height) pairs one statement wrote, from its flat value list.
+function written(values: unknown[], width: number, distanceAt: number) {
+  const pairs: Array<[unknown, unknown]> = [];
+  for (let i = 0; i < values.length; i += width) pairs.push([values[i + distanceAt], values[i + distanceAt + 1]]);
+  return pairs;
+}
+
+test("THE PASS ROWS ARE WHAT WAS MERGED: same distances, same anchored heights, under the id the match insert returned", async () => {
+  const { client, statements } = recordingClient();
+  await mergeRuns(
+    client,
+    84,
+    [
+      run(28974, "backward", [{ distanceM: 75, elevationM: 1930.5 }, { distanceM: 90, elevationM: 1930.2 }]),
+      run(19410, "forward", [{ distanceM: 0, elevationM: 1901.0 }]),
+    ],
+    22.3,
+  );
+
+  // Per run: the means, the coverage, the match row, then the pass rows,
+  // which need the match row's id.
+  assert.deepEqual(
+    statements.map((s) => s.text.match(/insert into (\w+)/)![1]),
+    [
+      "segment_elevation_buckets", "segment_coverage", "session_segment_matches", "segment_pass_buckets",
+      "segment_elevation_buckets", "segment_coverage", "session_segment_matches", "segment_pass_buckets",
+    ],
+  );
+  const matchInserts = statements.filter((s) => /insert into session_segment_matches/.test(s.text));
+  for (const insert of matchInserts) assert.match(insert.text, /returning id/, "the id has to come back");
+
+  const means = statements.filter((s) => /insert into segment_elevation_buckets/.test(s.text));
+  const passRows = statements.filter((s) => /insert into segment_pass_buckets/.test(s.text));
+  assert.deepEqual(written(means[0]!.values, 4, 2), [[75, 1930.5 - 22.3], [90, 1930.2 - 22.3]], "the means get the anchored heights");
+  for (const k of [0, 1]) {
+    assert.deepEqual(written(passRows[k]!.values, 3, 1), written(means[k]!.values, 4, 2), `run ${k}: the pass rows hold what the means were given`);
+    const matchIds = new Set(passRows[k]!.values.filter((_, i) => i % 3 === 0));
+    assert.deepEqual(matchIds, new Set([7000 + k]), `run ${k}: filed under its own match row`);
+  }
+});
+
+test("an unanchored ride files its pass rows as measured, like its means", async () => {
+  const { client, statements } = recordingClient();
+  await mergeRuns(client, 84, [run(28974, "backward", [{ distanceM: 75, elevationM: 1930.5 }])], null);
+  const passRows = statements.find((s) => /insert into segment_pass_buckets/.test(s.text))!;
+  assert.deepEqual(passRows.values, [7000, 75, 1930.5]);
+});
+
+test("a run with no buckets writes no pass rows, rather than a statement with no values", async () => {
+  const { client, statements } = recordingClient();
+  await savePassBuckets(client, 7000, []);
+  assert.deepEqual(statements, []);
 });

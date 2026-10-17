@@ -13,6 +13,7 @@ import {
   mergeCoverage,
   passageFor,
   qualifiesAt,
+  savePassBuckets,
   type BucketSample,
 } from "./elevationAggregator.js";
 import { rejectElevationSpikes, smoothElevations } from "./elevationSmoothing.js";
@@ -82,6 +83,41 @@ interface QualifyingRun {
   coveredToM: number;
   firstSampleId: number;
   lastSampleId: number;
+}
+
+// Folds one ride's qualifying runs into the model: each run's heights into the
+// running means, its extent into the coverage, a match row, and the same
+// heights again under that row's id as the pass's own.
+//
+// The means and the pass rows are written from ONE array, after the anchor, so
+// they cannot disagree. The map fits a slope to the pass rows only while they
+// account for every pass in a window's means (gradientBuilder.ts), and a pass
+// row that differed from what its mean holds would draw a shape the model
+// never had.
+//
+// Exported for its tests, not for callers.
+export async function mergeRuns(
+  client: PoolClient,
+  sessionId: number,
+  runs: QualifyingRun[],
+  anchorM: number | null,
+): Promise<void> {
+  for (const run of runs) {
+    const buckets =
+      anchorM == null
+        ? run.buckets
+        : run.buckets.map((b) => ({ ...b, elevationM: b.elevationM - anchorM }));
+    await mergeBuckets(client, run.segment.id, run.direction, buckets);
+    await mergeCoverage(client, run.segment.id, run.direction, run.coveredFromM, run.coveredToM);
+    const { rows } = await client.query<{ id: number }>(
+      `insert into session_segment_matches
+         (session_id, segment_id, direction, first_sample_id, last_sample_id)
+       values ($1, $2, $3, $4, $5)
+       returning id`,
+      [sessionId, run.segment.id, run.direction, run.firstSampleId, run.lastSampleId],
+    );
+    await savePassBuckets(client, rows[0].id, buckets);
+  }
 }
 
 // How far this ride sits from the terrain model, one reading per bucket the DEM
@@ -352,23 +388,7 @@ export async function processSession(
     }
   }
 
-  for (const run of qualifying) {
-    await mergeBuckets(
-      client,
-      run.segment.id,
-      run.direction,
-      anchorM == null
-        ? run.buckets
-        : run.buckets.map((b) => ({ ...b, elevationM: b.elevationM - anchorM })),
-    );
-    await mergeCoverage(client, run.segment.id, run.direction, run.coveredFromM, run.coveredToM);
-    await client.query(
-      `insert into session_segment_matches
-         (session_id, segment_id, direction, first_sample_id, last_sample_id)
-       values ($1, $2, $3, $4, $5)`,
-      [sessionId, run.segment.id, run.direction, run.firstSampleId, run.lastSampleId],
-    );
-  }
+  await mergeRuns(client, sessionId, qualifying, anchorM);
 
   return {
     matchedRuns: qualifying.length,

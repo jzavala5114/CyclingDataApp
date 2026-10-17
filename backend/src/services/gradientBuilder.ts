@@ -1,6 +1,6 @@
 import * as turf from "@turf/turf";
 import { BUCKET_SIZE_M } from "./elevationAggregator.js";
-import type { Direction, ElevationBucket, Segment, SegmentCoverage } from "../types/index.js";
+import type { Direction, ElevationBucket, PassBucket, Segment, SegmentCoverage } from "../types/index.js";
 
 const OFFSET_M = 4;
 
@@ -50,30 +50,118 @@ const SLOPE_WINDOW = 2;
 // reading rather than terrain.
 const MAX_PLAUSIBLE_SLOPE_PCT = 25;
 
-// Least-squares slope of elevation against distance over the window around
-// `index`, in percent.
-function slopeAt(sorted: ElevationBucket[], index: number): number {
+const clampSlope = (slopePct: number) =>
+  Math.max(-MAX_PLAUSIBLE_SLOPE_PCT, Math.min(MAX_PLAUSIBLE_SLOPE_PCT, slopePct));
+
+// The buckets folded into the slope of the piece after `index`: SLOPE_WINDOW
+// before it, and SLOPE_WINDOW past the bucket that ends it.
+function windowAround(sorted: ElevationBucket[], index: number): ElevationBucket[] {
   const lo = Math.max(0, index - SLOPE_WINDOW);
   const hi = Math.min(sorted.length - 1, index + SLOPE_WINDOW + 1);
-  const window = sorted.slice(lo, hi + 1);
-  if (window.length < 2) return 0;
+  return sorted.slice(lo, hi + 1);
+}
 
-  const n = window.length;
-  const meanD = window.reduce((sum, b) => sum + b.distanceM, 0) / n;
-  const meanE = window.reduce((sum, b) => sum + b.elevationM, 0) / n;
+// Least-squares slope of elevation against distance, in percent and not yet
+// clamped; null where there is no slope to fit.
+function leastSquaresPct(points: ReadonlyArray<{ distanceM: number; elevationM: number }>): number | null {
+  const n = points.length;
+  if (n < 2) return null;
+  const meanD = points.reduce((sum, b) => sum + b.distanceM, 0) / n;
+  const meanE = points.reduce((sum, b) => sum + b.elevationM, 0) / n;
 
   let covariance = 0;
   let variance = 0;
-  for (const bucket of window) {
-    const dd = bucket.distanceM - meanD;
-    covariance += dd * (bucket.elevationM - meanE);
+  for (const point of points) {
+    const dd = point.distanceM - meanD;
+    covariance += dd * (point.elevationM - meanE);
     variance += dd * dd;
   }
-  if (variance === 0) return 0;
+  if (variance === 0) return null;
 
   const slopePct = (covariance / variance) * 100;
-  if (!Number.isFinite(slopePct)) return 0;
-  return Math.max(-MAX_PLAUSIBLE_SLOPE_PCT, Math.min(MAX_PLAUSIBLE_SLOPE_PCT, slopePct));
+  return Number.isFinite(slopePct) ? slopePct : null;
+}
+
+// Least-squares slope over the window's mean heights, in percent.
+function slopeAt(sorted: ElevationBucket[], index: number): number {
+  const slopePct = leastSquaresPct(windowAround(sorted, index));
+  return slopePct === null ? 0 : clampSlope(slopePct);
+}
+
+// One direction's pass rows, by the bucket distance each was measured at.
+type PassesAt = Map<number, Array<{ matchId: number; elevationM: number }>>;
+
+// Whether every pass behind the window's means is on file: at each bucket, one
+// pass row for every pass its mean holds. Rides merged before pass rows were
+// kept are in the means and nowhere else, so until a rebuild files them the
+// window is drawn from the means. Fitting the rows that do exist would let a
+// newer ride outvote every pass that only the mean remembers.
+function everyPassOnFile(window: ElevationBucket[], passesAt: PassesAt): boolean {
+  return window.every((bucket) => (passesAt.get(bucket.distanceM)?.length ?? 0) === bucket.sampleCount);
+}
+
+// The slope from each pass's OWN heights: the mean of every pass's
+// least-squares slope over the window, weighted by how many of the window's
+// buckets it covers, from the passes covering two or more. Clamped after
+// averaging, as the means' slope is, so passes that all cover the same buckets
+// give exactly the means' slope: least squares is linear in the heights. Null
+// when no pass covers two of the window's buckets.
+function perPassSlopeAt(window: ElevationBucket[], passesAt: PassesAt): number | null {
+  const byPass = new Map<number, Array<{ distanceM: number; elevationM: number }>>();
+  for (const bucket of window) {
+    for (const { matchId, elevationM } of passesAt.get(bucket.distanceM) ?? []) {
+      const points = byPass.get(matchId) ?? [];
+      points.push({ distanceM: bucket.distanceM, elevationM });
+      byPass.set(matchId, points);
+    }
+  }
+
+  let weighted = 0;
+  let weight = 0;
+  for (const points of byPass.values()) {
+    const slopePct = leastSquaresPct(points);
+    if (slopePct === null) continue;
+    weighted += slopePct * points.length;
+    weight += points.length;
+  }
+  return weight === 0 ? null : clampSlope(weighted / weight);
+}
+
+// The slope the map draws for the piece after bucket `index`.
+//
+// From each pass's own heights wherever every pass is on file, because the
+// means draw cliffs. Each ride is lined up with the terrain model by one
+// offset and a barometer drifts during a ride, so two passes over the same
+// ground can sit metres apart. Where they cover different stretches of a line,
+// a mean changes membership from one bucket to the next and their level
+// difference becomes a step the fit reads as a climb: the Ridgeway trailhead
+// lot drew +25% on ground the terrain model puts at 3 to 6%. A pass's level
+// cannot reach its own slope. Measured through ride 89 by `npm run
+// eval:mixing`: judged against the terrain model, each pass's slope was 2.87
+// points off where mixing had moved the colour, against 4.91 for the means,
+// and 2.25 against 2.38 wherever two or more passes cover a piece.
+function slopeFor(sorted: ElevationBucket[], index: number, passesAt: PassesAt): number {
+  const window = windowAround(sorted, index);
+  if (everyPassOnFile(window, passesAt)) {
+    const perPass = perPassSlopeAt(window, passesAt);
+    if (perPass !== null) return perPass;
+  }
+  return slopeAt(sorted, index);
+}
+
+// The slope of each piece of one direction's line, in percent: one per gap
+// between consecutive buckets, in distance order. `sorted` is that direction's
+// buckets sorted by distance, `passes` its pass rows.
+//
+// Exported for its tests; buildDirectionalGradientLines is the only caller.
+export function pieceSlopesPct(sorted: ElevationBucket[], passes: readonly PassBucket[] = []): number[] {
+  const passesAt: PassesAt = new Map();
+  for (const { matchId, distanceM, elevationM } of passes) {
+    const atDistance = passesAt.get(distanceM) ?? [];
+    atDistance.push({ matchId, elevationM });
+    passesAt.set(distanceM, atDistance);
+  }
+  return sorted.slice(0, -1).map((_, i) => slopeFor(sorted, i, passesAt));
 }
 
 export interface DirectionalGradientLine {
@@ -97,10 +185,15 @@ export interface DirectionalGradientLine {
 // backward run distance 0 sits at the segment's far end, while the geometry is
 // always in forward order. Everything below is computed in travel space and
 // converted to a fraction of the drawn line at the last moment.
+//
+// `passesByDirection` holds each pass's own heights, from which the slope is
+// fitted wherever every pass behind a window is on file (see slopeFor). With
+// none, every piece is drawn from the means.
 export function buildDirectionalGradientLines(
   segment: Segment,
   bucketsByDirection: Record<Direction, ElevationBucket[]>,
   coverageByDirection: Partial<Record<Direction, SegmentCoverage>> = {},
+  passesByDirection: Partial<Record<Direction, PassBucket[]>> = {},
 ): DirectionalGradientLine[] {
   const centerline = turf.lineString(segment.geom.coordinates);
 
@@ -158,13 +251,14 @@ export function buildDirectionalGradientLines(
       // One colour per gap between buckets, spanning the whole drawn line: the
       // first runs back to where coverage starts and the last runs on to where
       // it ends, so there is no unpainted stub at either end.
+      const slopes = pieceSlopesPct(sorted, passesByDirection[direction]);
       const spans =
         sorted.length === 1
           ? [{ startM: fromTravelM, endM: toTravelM, color: colorForSlope(0) }]
           : sorted.slice(0, -1).map((bucket, i) => ({
               startM: i === 0 ? fromTravelM : bucket.distanceM,
               endM: i === sorted.length - 2 ? toTravelM : sorted[i + 1].distanceM,
-              color: colorForSlope(slopeAt(sorted, i)),
+              color: colorForSlope(slopes[i]),
             }));
 
       const colorStops = spans

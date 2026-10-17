@@ -167,3 +167,24 @@ create table segment_elevation_buckets (
     updated_at      timestamptz not null default now(),
     primary key (segment_id, direction, distance_m)
 );
+
+-- Each pass's own height at every bucket it covered: the values the running
+-- means above were built from, one row per pass per bucket, filed under the
+-- pass's match row.
+--
+-- The means alone draw cliffs. Every ride is lined up with the terrain model
+-- by one offset, and a barometer drifts during a ride, so two passes over the
+-- same ground can sit metres apart. Where they cover different stretches of a
+-- line, a mean changes membership from one bucket to the next and their level
+-- difference reads as a climb: the Ridgeway trailhead lot drew +25% on ground
+-- the terrain model puts at 3 to 6%. Fitting each pass's own slope removes the
+-- levels from it. gradientBuilder.ts does that only where these rows account
+-- for every pass in a window's means, and draws from the means otherwise.
+--
+-- Added to a live database by migrations/003_pass_buckets.sql.
+create table segment_pass_buckets (
+    match_id     bigint not null references session_segment_matches(id) on delete cascade,
+    distance_m   integer not null,
+    elevation_m  double precision not null,
+    primary key (match_id, distance_m)
+);

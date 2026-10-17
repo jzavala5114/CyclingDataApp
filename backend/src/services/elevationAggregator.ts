@@ -323,6 +323,32 @@ export async function mergeBuckets(
   );
 }
 
+// Files one pass's own heights under its match row, beside the running means
+// mergeBuckets folds them into. A mean cannot be taken apart again, and the
+// map needs each pass's own shape to keep passes at different levels from
+// drawing a cliff (gradientBuilder.ts). One statement per run, as above, and
+// the same uniqueness holds: within a run each distance appears once.
+export async function savePassBuckets(
+  client: PoolClient,
+  matchId: number,
+  buckets: BucketSample[],
+): Promise<void> {
+  if (buckets.length === 0) return;
+
+  const values: unknown[] = [];
+  const tuples = buckets.map((bucket, i) => {
+    values.push(matchId, bucket.distanceM, bucket.elevationM);
+    const n = i * 3;
+    return `($${n + 1}, $${n + 2}, $${n + 3})`;
+  });
+
+  await client.query(
+    `insert into segment_pass_buckets (match_id, distance_m, elevation_m)
+     values ${tuples.join(", ")}`,
+    values,
+  );
+}
+
 // Widens the stretch of a segment known to have been ridden. Union rather than
 // replace: two rides covering different halves of a street between them cover
 // all of it.

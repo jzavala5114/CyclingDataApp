@@ -52,6 +52,17 @@ export interface ElevationBucket {
   sampleCount: number;
 }
 
+// One pass's own height at one bucket, before it was averaged into the
+// bucket's running mean. `matchId` is the pass's row in session_segment_matches,
+// which tells passes apart, two passes of one ride included.
+export interface PassBucket {
+  segmentId: number;
+  direction: Direction;
+  matchId: number;
+  distanceM: number;
+  elevationM: number;
+}
+
 // The stretch of a segment that has been ridden in a given direction, in
 // metres along the direction of travel, unioned across every ride.
 export interface SegmentCoverage {
