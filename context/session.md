@@ -3,7 +3,7 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-10-16.
+Last updated 2026-10-17.
 
 **Read the four blocks below before anything else.** They are the authoritative
 queue and state. Everything after them is evidence and history: where a section
@@ -12,14 +12,295 @@ stale.
 
 ## NEXT, IN ORDER
 
-Rewritten 2026-10-11 for what is left. The old items 1 to 4 are closed, with
-their evidence, in "CLOSED 2026-10-10 and -11" below the STATE block.
+Rewritten 2026-10-17, after option A shipped. Closed work keeps its evidence
+below the STATE block: "CLOSED 2026-10-16 and -17" (the mixing artefact and
+option A) and "CLOSED 2026-10-10 and -11" (the old items 1 to 4).
 
-**Before item 1, cheap: grade ride 89.** It landed on 2026-10-11, mid-task, and
-is ungraded: `npm run verify-barometer` in `backend/`, read-only, about 20k.
-A pass is `alive`; "HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED" says how
-to read the rest. **Re-estimate item 1 before starting it**: the last two large
-read-only tasks ran 2 to 3 times over budget (STATE, "How work is sized").
+**First, cheap: grade ride 89.** It landed on 2026-10-11 and is still
+ungraded, and since the rebuild of 2026-10-17 it is in the model and on the
+map: `npm run verify-barometer` in `backend/`, read-only, about 20k. A pass is
+`alive`; "HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED" says how to read
+the rest. No ride has landed since.
+
+**Then Julian's call, asked 2026-10-17: the feature or the census.** He wants
+to move on to features, and the planned one, press and hold on a segment
+(after the numbered items), got cheaper with option A: every line's pass rows
+now say how many rides built it and what each one measured. It waits on his
+decision of what a press shows, needs an APK cycle, and is large. Item 1, the
+zero-run census, is read-only, about 40k: how many ridden streets never become
+a line at all, the most valuable unmeasured number. Items 2 to 5 follow either
+way.
+
+**Re-estimate anything large before starting it**: the last large read-only
+tasks ran 2 to 3 times over budget (STATE, "How work is sized"), and option A's
+one cold critic took 181k on a 1,400-line diff against an 80k ask.
+
+### 1. The zero-run census
+
+How many segments a rider rode produce no run at all, and so appear in no
+ledger. Every loss measured so far (wrong-dir, gate, both matcher levers) is
+counted over segments where the matcher made a run, because `traceSession`
+projects only onto the segments its runs touched. The most valuable unmeasured
+number; read-only, about 40k tokens. The witness is ready: `traceSession`'s
+`minPassM` at 15 (`RETRACE_M`). Two traps to design around: projecting every
+fix onto every segment in a ride's bbox is the whole cost of `trace-passes`, so
+filter by the 25 m corridor first; and a parallel street inside that corridor
+shows a pass too, so count a pass as lost only when its fixes are drawn on no
+line at all, the next-door rule. See "What is left for the matcher".
+
+### 2. The barometer strip prints a 95-99% minute as `10`
+
+`sourceStrip` in `verifyBarometer.ts`, seen in rides 70, 71, 79 and 88. Display
+only: no verdict reads the strip. Cap the digit at 9, with a test; about 10k.
+See "HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED".
+
+### 3. `npm run eval:smoothing` exits 1
+
+It did on `main` before the int8 change too: seen 2026-10-06 in the int8
+before/after run, byte-identical output both sides. The zero-phase smoother
+loses on its isolated within-ride measure, **1.461 m -> 1.579 m (+0.118 m)**,
+while winning on shape error against terrain (-0.512 m) and cross-ride
+disagreement (-0.052 m). Unexamined: whether that measure already failed when
+the smoother shipped on 2026-09-24, with fewer rides. If it did, the smoother
+shipped against a failing measure and the notes should say why; if not, more
+rides moved it.
+
+### 4. The same-way class
+
+196 next-door passes / 11.3 km drawn mostly on another piece of the same OSM
+way, almost all on switchback trails. Two explanations tried, both wrong.
+Flagged in `trace-passes` output, not claimed as a defect. Open-ended: worth
+starting only when a line on the map points at it.
+
+### 5. Debt
+
+The linker's measuring tools have no tests. `context/backlog.html` (artifact
+"Trail Fidelity Backlog") is still behind the code: its framing of GPS altitude
+as the weak source is superseded. The comment above `RING_CAPACITY` in
+`RideBarometerModule.kt` says 4,096 readings is "about 2.7 minutes of history at
+the 5Hz"; it is 13.7 minutes (4096 / 5 = 819 s). Comment only: fix it with the
+next `mobile/` change, which needs an APK cycle anyway. The slope palette has
+two weak spots that predate the darker reds, found by the dataviz validator on
+2026-10-14 and left alone: yellow `#eab308` (0 to 3% climbs) has 1.75:1
+contrast on the basemap's cream `#f8f4f0`, under the 2:1 a light end needs, and
+orange `#f97316` against red `#dc2626` is ΔE 14.9 for normal vision, just under
+the floor of 15. The app has no colour key for its eight colours (an app change).
+Option A's review left three (2026-10-16). No gate test runs SQL: the gate
+tests mock the database, so the route's pass query is guarded only by
+`eval:mixing` calling the route end to end; PGlite as a devDependency would
+run the route's and the save path's SQL at commit, a new dependency for Julian
+to decide. The pass query returns one row per pass per bucket (17,634 through
+ride 89, 2.9 a bucket), so it grows with rides rather than road: 300 rides over
+one commute is about 182k rows for a 100-segment viewport (synthetic, 0.9 s on
+PGlite); when the table nears 100k rows or /segments slows, fit the slopes at
+merge time instead. And `processSession` has no gate test of its own: deleting
+its call to `mergeRuns` fails nothing.
+(`context/architecture.html` lags: it has the 3rd edition of 2026-10-11 and the
+colour bands of 2026-10-14 but not option A, whose Parts 5 and 6 Julian
+deferred on 2026-10-17; its artifact page lags by both.)
+
+### Planned, not started: press and hold on a segment
+
+Julian, 2026-10-14: a long press on a drawn line will do something later. What
+it does is not decided and nothing is built. Notes so nothing in between blocks
+it: the phone draws each line as short solid pieces (`gradientRendering.ts`),
+each already tagged with its street name, so a press can find the piece under
+the finger. Everything a label would show is decided on the server: the band
+edges live only in `SLOPE_STOPS`, and each of `/segments`' `colorStops`
+carries a colour and a position, not the slope or the pass count behind it.
+Adding those as new fields on each stop is an additive change that an older APK
+ignores; copying the band table into the app instead makes two copies to keep
+in step.
+
+**What option A added for it (2026-10-17).** Every drawn line now has pass
+rows: per bucket, each ride's own height, filed under its match row (the ride
+and its first fix). So a press could say how many rides built the line, which
+rides and when, or draw each ride's own profile, from data already stored. The
+stop fields above are still the way to send it. The app's missing colour key
+(item 5) and the `RING_CAPACITY` comment fix would ride in the same APK cycle.
+
+### Parked: measured, decided, and what would reopen each
+
+- **Timestamps arrive as `Date` and `Date.parse()` drops their milliseconds:
+  measured NEGLIGIBLE on 2026-10-10, left unfixed by Julian's decision.** pg
+  parses `timestamptz` into a `Date` while the code types `recordedAt`,
+  `endedAt` and two columns in `pruneEmptySessions.ts` as `string`, so
+  `Date.parse(date)` reads every fix time cut to the whole second (the
+  census's 11 lies). Replaying production's speed filter
+  (`rejectImpossibleSpeeds`, `sessionProcessor.ts:173`) over all 50 rides,
+  34,866 fixes, exact times against today's: **2 verdicts change**, one fix
+  each in sessions 15 and 42, both wrongly rejected today (control: 0). Of
+  34,816 gaps, 3,549 are under 1 s and 245 read as 0 s, which the filter
+  treats as no evidence; 7 cross the matcher's 15 s anchor limit and 1 its
+  45 s stitch window (consecutive fixes, a rough indicator). Small because
+  every limit sits far from a second: the filter rejects only above 20 m/s
+  both in and out. `measurePositionSpikes`, where a 0 s gap becomes an
+  infinite speed, runs only in diagnostic scripts: production passes no
+  `positionFilter`. Script: `backend/tmp-measure-timestamps.mjs` (gitignored,
+  local). If ever built: a global `timestamptz` parser returning the ISO
+  string, the int8 pattern with JSON byte-identical, about 80k tokens, no
+  rebuild needed. **Lesson:** it sat at NEXT 1 for five days on how alarming
+  the mechanism sounded; the 30-minute measurement CLAUDE.md now requires
+  would have ranked it here.
+- **`TANGENT_WINDOW_M` stays 10 and the traversal gate stays 25 / 0.7** (old
+  item 4, Julian's call). Reopen the tangent only with the extent-level effect
+  of 14 m, +0.47 km summed over rides, from a dry-run model diff; the gate only
+  with a per-line look at 18 / 0.7's 8 next-door lines.
+- **40 barometric excursions of 3-6 m** (old item 3): 35 pass the spike filter
+  and lie inside stored matches. Their effect after smoothing and averaging is
+  unmeasured.
+- **A ride's first fix keeps its GPS height** (old item 2). The elevation
+  filter keeps a first fix by construction and nothing in the pipeline reads
+  `elevation_source`; it matches the barometer to 0.1 m on rides 68, 82, 84 and
+  87, and sits 19.2 m high on ride 73.
+- **Session 29's `started_at`** is 23.2 h after its fixes (old item 2); the
+  recovery path (bug 22) would fit.
+- **Two code debts left on purpose:** `endpointSnapM`'s table carries gate
+  numbers from before `9c13174`, annotated rather than re-measured; and
+  `enumerateHeadingLines`' `device` / `derived` slots also hold tangent arms,
+  explained in a comment rather than renamed.
+
+## SETTLED: do not re-examine
+
+| question | answer | evidence |
+|---|---|---|
+| Viterbi matching | **No.** 28 m of genuine fork, and the graph has no edge at 45 of the 47 places the rider turned | "Does the matcher need Viterbi?" |
+| joining segment ends that meet but share no node (`endpointSnapM`) | **Built, left at 0.** Cuts impossible transitions 35% and moves the map 70 m in 225 km | "Lever 1 was BUILT and MEASURED" |
+| `MAX_BEARING_DELTA_DEG` | **Swept, left at 45.** Strictly worse at every width | its doc comment in `segmentMatcher.ts` |
+| hairpins causing wrong-dir | **No.** 1 of 23 passes | "Lever 2" |
+| tunnels missing from the map | **A misread label.** The real defect is 55 m of Gold Camp Road | struck entry in "Open items" |
+| `STITCH_WINDOW_S` | **Swept, keep 45.** 90 s adds 249 m, 214 m of it unwitnessed, and no new line | note 26 |
+| "the gate losses were unstitched fragments" | **No.** Each is one pre-stitch run (close to a base rate). The traversals fragment across SEGMENTS, which the stitcher cannot join | "The gate sweep: ATTEMPTED" |
+| the pass ledger's cause order | **Fixed** in `9c13174`. `gate` is 4 passes / 179 m over 44 rides | paid-for #31 |
+| `SessionVerdict.id` and `bad_share` arriving as text | **Fixed** in `af653f8`, converted at the boundary | paid-for #30 |
+| every bigint (ids, uncast `count(*)`) arriving as text | **Fixed at the driver** in `6d6b174`: `db/pgTypes.ts`, one parser for every process. Live `/segments` byte-identical apart from the id's type | "What landed on 2026-10-10" |
+| checking the code's row types against the database | **`npm run eval:query-types`**: Parse + Describe, executes nothing. 82 sites, 0 numeric lies, 0 untyped reads | `backend/README.md` |
+| whether a docs-only push deploys | **No.** Railway watches `backend/**`; tested 2026-10-04 | commit `4b028c8` |
+| the barometer | **Finished.** Session 84 graded `alive`, 1366 of 1367 fixes barometric | "The barometer: shipped, installed, verified" |
+| the traversal gate | **Swept with a 15 m witness 2026-10-11, keep 25 / 0.7.** Most runs a lower span admits are ridden, but the new lines are worth 72-306 m and turn on next-door duplicate paint | old NEXT item 4, `npm run eval:gate` |
+| `TANGENT_WINDOW_M` | **Keep 10.** 14 m wins 298-407 m at ride level but drops 80 m of real lines and draws no new ground | old NEXT item 4 |
+| the colour bands | **Climbs step at 0, 3, 6, 9 and 12%, the darkest open-ended, separate and not blended** (2026-10-14). A 15% step would colour 220 m on 7 trail lines, mostly noise; a blend would show the 0.8-point slope error as flicker | STATE, "The colour bands" |
+| the slope a piece is drawn with | **Each pass's own slope** (2026-10-17, option A): the mean of each pass's least-squares slope over the window, weighted by its bucket count, from passes covering two buckets or more, clamped after; the means' slope only where a window's passes are not all on file. Pooled least squares tied and lost on a rule set before the first run | "CLOSED 2026-10-16 and -17" |
+
+## OPEN: genuinely undecided, do not treat as closed
+
+- **The same-way class.** Unexplained. NEXT item 4.
+
+## STATE, 2026-10-17
+
+`main` is the base, and every task branch is merged into it. The ten from
+2026-10-10/11 were deleted on 2026-10-11, locally and on origin;
+`stale-eval-columns`, `state-after-stale`, `next-whats-left`,
+`refresh-architecture-doc`, `session-notes-compact`, `darker-red-bands`,
+`state-after-colours`, `mixing-artefact-notes`, `option-a-plan`,
+`option-a-state`, `per-pass-slopes` and `option-a-live` are merged and safe
+to delete. Nothing is in flight: no open branch, no uncommitted work, no
+running job.
+Last code change `26f4620` (2026-10-17): option A, each pass's own slope,
+which changes what the map draws and adds `segment_pass_buckets` (17,634
+rows) beside the model, whose means did not move. Before it, `a7c6a85`
+(2026-10-14), the colour bands. Production serves
+`builtAt 2026-10-17T14:28:03.555Z`, the `26f4620` deploy, verified by the
+timestamp moving, by live `/segments` hashing identical before the rebuild,
+and by `eval:mixing` matching all 751 live segments after it. **This PC's clock runs about 80 s
+ahead of Railway's** (measured 2026-10-11 against the HTTP `Date` header), so
+a fresh `builtAt` can read earlier than the local push time without being a
+stale build. Live model **746 segments / 953 lines** at the int8 deploy, which
+changed nothing in it: the whole `/segments` response hashes the same as
+before, ids now numbers. **463 backend tests, 56 app tests**; `mobile/`
+has a gate lane. **45 usable rides** counted on 2026-10-05. Rides 85 to 88 are
+graded `alive` (2026-10-10). 88 landed that afternoon, so 51 sessions hold
+34,965 fixes; the timestamp measurement earlier the same day saw 50 and
+34,866. **Ride 89 landed on 2026-10-11**, during the doc rewrite: 52 sessions,
+36,266 fixes, 49 usable, model 6,114 buckets / 751 segments / 958 lines. Not
+yet graded with `verify-barometer`. `npm
+run eval:query-types` fails on 12 timestamp lies, by design (the 12th since
+2026-10-17, `evalMixing.ts`'s copy of the samples query): measured
+negligible on 2026-10-10 (NEXT, "Parked"). A deploy failed once on 2026-09-30, see note 29,
+before adding anything to `backend/` that imports outside it.
+
+**`context/architecture.html` is the 3rd edition (2026-10-11)**, rewritten for
+feature designers as well as coders and republished to its artifact ("Gradient
+Field Manual", version 9). Its live numbers are pinned through ride 89. Every
+number in it was checked by a throwaway read-only script against the code and the
+data: 105 checks, kept as `backend/tmp-doc-check.ts` (gitignored) for the next
+revision. One cold critic round (FAIL, 3 blocking and 15 minor, all reproduced
+and fixed); no second round, on Julian's call. The task ran at about 2.7 times its
+token budget, mostly the critic reading a 250 KB page.
+
+**The colour bands (2026-10-14, `a7c6a85`, deployed).** Climbs above 9%
+draw dark red `#881337` and above 12% near-black red `#450a0a`; red `#dc2626`
+now covers 6 to 9%. Drawing only: colours are computed on every request, so no
+rebuild. Recounted through ride 89 with the server's own code, read-only: 126 of
+5,218 colour stops change, 1.53 km red to dark red and 0.63 km red to near-black,
+and nothing else moves. Above 12% is 17 lines, all trail; no road passes 10.2%
+(Gold Camp Road). Why these edges: Garmin ClimbPro steps at 3, 6, 9 and 12%, and
+every bike computer checked (Garmin, Hammerhead Karoo, Wahoo) uses separate
+steps, not a blend; above 15% is 220 m on 7 trail lines; slope error is about
+0.8 points against 3-point bands. Shades come from the dataviz validator against
+the basemap's cream `#f8f4f0` and park `#d8e8c8`: Tailwind red-800 and red-900
+each failed the normal-vision floor beside red or red-950 (14.4, 14.5); rose-900
+and red-950 clear it (18.7 and 16.8; colour-blind 14.9 and 12.6, floor 8).
+`gradientBuilder.test.ts` pins every band edge from both sides; it failed on the
+old table at 9.01% before the change. The repo's `architecture.html` has the
+bands; its artifact page ("Gradient Field Manual", version 9) does not yet:
+Julian chose to republish it with the next doc change.
+
+**How every measurement here is run, each rule learned by breaking it:**
+- **Pin the control to a fixed ride list.** New rides arrive mid-task.
+- **Before trusting a check, run the input that should make it say no.**
+- **Count what a fix would change, not what it touches.** The timestamp defect
+  touched 99.9% of fix times and changed 2 of 34,866 verdicts; it sat at NEXT 1
+  for five days on the first number.
+- **Run the code on the case before writing down what it does.** old NEXT item 3
+  sat for a week on "the spike filter lets it through", reasoned from an assumed
+  riding speed. Run on the stored ride, the filter rejected it: the rider was
+  nearly stopped.
+- **A witness with a floor cannot speak below it.** `findPasses` needs 25 m, so
+  its silence about anything shorter is not evidence.
+- **Verify a deploy by `builtAt` moving, never by status**, and if a timestamp
+  looks unexplained, suspect the recorded baseline before the deploy trigger.
+- **Compare before and after from FROZEN copies** (`git archive` of `main`, a copy
+  of the branch), back to back, with a data fingerprint around each pair.
+  Running from the working tree lets a later edit leak into an earlier run.
+- **A Windows junction in a scratch copy points INTO the repo.** Delete the link
+  itself (`[System.IO.Directory]::Delete(path, $false)`); never recurse into it.
+
+**The house defect**, shared by six of the nine errors made on 2026-10-04: **a
+check that cannot fail, reported as a check that passed.**
+
+**How work is sized since 2026-10-10.** CLAUDE.md is untracked by design, so
+this is the record of what changed in it and why. Every triage block carries a
+token Budget line, so Julian can veto an expensive run before it starts.
+Critic rounds are capped, medium one and large two, and stop early after two
+rounds of only nits; more rounds run only on Julian's say. A finding blocks
+shipping only with a plausible path to it, and only once the builder has
+re-run its reproduction. A fix whose payoff is unknown gets a 30-minute
+read-only measurement first. Why: the int8 review ran six rounds, rounds 4 to
+6 found only code nobody here would write at about 200k tokens a round, and
+the timestamp item measured negligible after five days at the top of the
+queue. **Calibrated 2026-10-11:** the architecture-doc rewrite was budgeted at
+250k and cost about 600k, plus 246k for one cold critic, and the 1.5x stop was
+missed. A cold critic reads the whole artifact (about 1k tokens per KB, plus its
+own exploring); republishing an artifact in place means Reading every line of
+the live page first, in chunks under 25k (about 70k for 200 KB); and live counts
+move mid-task, so pin them to a named ride. Check the running total at every
+phase boundary against 1.5 times the estimate.
+
+Where to start depends on what you came for:
+
+| you want to | read |
+|---|---|
+| know what the app is and how a ride becomes a coloured line | `context/architecture.html` (3rd edition, the full walkthrough, written for feature designers too), then "What it is", "Layout", "Data flow" here |
+| design a feature | `context/architecture.html` Part 6: what each kind of change costs, the limits every feature inherits, ideas already tried, open problems |
+| change anything in the backend | "Bugs already paid for" — 31 failure modes, each one paid for once already |
+| run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
+| touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then Julian's call between the press-and-hold feature and item 1, the zero-run census (read-only, about 40k) |
+| understand why there is no drift correction | "What the drift anchor taught us" |
+| see the branch and deploy state | "Where things stand", immediately below |
+
+## CLOSED 2026-10-16 and -17: the mixing artefact, fixed by option A
 
 **Found 2026-10-16, FIXED 2026-10-17 by option A, deployed and rebuilt (next
 heading): passes at different levels made cliffs where they covered different
@@ -253,262 +534,6 @@ the slope maths, the fallback rule and the migration order, rather than a
 fan-out. Re-estimate before starting, and check the running total at each step
 against 1.5 times the estimate. The pass rows also give the planned press and
 hold (below) each line's pass count and per-ride detail for free.
-
-### 1. The zero-run census
-
-How many segments a rider rode produce no run at all, and so appear in no
-ledger. Every loss measured so far (wrong-dir, gate, both matcher levers) is
-counted over segments where the matcher made a run, because `traceSession`
-projects only onto the segments its runs touched. The most valuable unmeasured
-number; read-only, about 40k tokens. The witness is ready: `traceSession`'s
-`minPassM` at 15 (`RETRACE_M`). Two traps to design around: projecting every
-fix onto every segment in a ride's bbox is the whole cost of `trace-passes`, so
-filter by the 25 m corridor first; and a parallel street inside that corridor
-shows a pass too, so count a pass as lost only when its fixes are drawn on no
-line at all, the next-door rule. See "What is left for the matcher".
-
-### 2. The barometer strip prints a 95-99% minute as `10`
-
-`sourceStrip` in `verifyBarometer.ts`, seen in rides 70, 71, 79 and 88. Display
-only: no verdict reads the strip. Cap the digit at 9, with a test; about 10k.
-See "HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED".
-
-### 3. `npm run eval:smoothing` exits 1
-
-It did on `main` before the int8 change too: seen 2026-10-06 in the int8
-before/after run, byte-identical output both sides. The zero-phase smoother
-loses on its isolated within-ride measure, **1.461 m -> 1.579 m (+0.118 m)**,
-while winning on shape error against terrain (-0.512 m) and cross-ride
-disagreement (-0.052 m). Unexamined: whether that measure already failed when
-the smoother shipped on 2026-09-24, with fewer rides. If it did, the smoother
-shipped against a failing measure and the notes should say why; if not, more
-rides moved it.
-
-### 4. The same-way class
-
-196 next-door passes / 11.3 km drawn mostly on another piece of the same OSM
-way, almost all on switchback trails. Two explanations tried, both wrong.
-Flagged in `trace-passes` output, not claimed as a defect. Open-ended: worth
-starting only when a line on the map points at it.
-
-### 5. Debt
-
-The linker's measuring tools have no tests. `context/backlog.html` (artifact
-"Trail Fidelity Backlog") is still behind the code: its framing of GPS altitude
-as the weak source is superseded. The comment above `RING_CAPACITY` in
-`RideBarometerModule.kt` says 4,096 readings is "about 2.7 minutes of history at
-the 5Hz"; it is 13.7 minutes (4096 / 5 = 819 s). Comment only: fix it with the
-next `mobile/` change, which needs an APK cycle anyway. The slope palette has
-two weak spots that predate the darker reds, found by the dataviz validator on
-2026-10-14 and left alone: yellow `#eab308` (0 to 3% climbs) has 1.75:1
-contrast on the basemap's cream `#f8f4f0`, under the 2:1 a light end needs, and
-orange `#f97316` against red `#dc2626` is ΔE 14.9 for normal vision, just under
-the floor of 15. The app has no colour key for its eight colours (an app change).
-Option A's review left three (2026-10-16). No gate test runs SQL: the gate
-tests mock the database, so the route's pass query is guarded only by
-`eval:mixing` calling the route end to end; PGlite as a devDependency would
-run the route's and the save path's SQL at commit, a new dependency for Julian
-to decide. The pass query returns one row per pass per bucket (17,634 through
-ride 89, 2.9 a bucket), so it grows with rides rather than road: 300 rides over
-one commute is about 182k rows for a 100-segment viewport (synthetic, 0.9 s on
-PGlite); when the table nears 100k rows or /segments slows, fit the slopes at
-merge time instead. And `processSession` has no gate test of its own: deleting
-its call to `mergeRuns` fails nothing.
-(`context/architecture.html` is current: the 3rd edition of 2026-10-11 plus the
-colour bands of 2026-10-14; STATE says whether its artifact page is.)
-
-### Planned, not started: press and hold on a segment
-
-Julian, 2026-10-14: a long press on a drawn line will do something later. What
-it does is not decided and nothing is built. Notes so nothing in between blocks
-it: the phone draws each line as short solid pieces (`gradientRendering.ts`),
-each already tagged with its street name, so a press can find the piece under
-the finger. Everything a label would show is decided on the server: the band
-edges live only in `SLOPE_STOPS`, and each of `/segments`' `colorStops`
-carries a colour and a position, not the slope or the pass count behind it.
-Adding those as new fields on each stop is an additive change that an older APK
-ignores; copying the band table into the app instead makes two copies to keep
-in step.
-
-### Parked: measured, decided, and what would reopen each
-
-- **Timestamps arrive as `Date` and `Date.parse()` drops their milliseconds:
-  measured NEGLIGIBLE on 2026-10-10, left unfixed by Julian's decision.** pg
-  parses `timestamptz` into a `Date` while the code types `recordedAt`,
-  `endedAt` and two columns in `pruneEmptySessions.ts` as `string`, so
-  `Date.parse(date)` reads every fix time cut to the whole second (the
-  census's 11 lies). Replaying production's speed filter
-  (`rejectImpossibleSpeeds`, `sessionProcessor.ts:173`) over all 50 rides,
-  34,866 fixes, exact times against today's: **2 verdicts change**, one fix
-  each in sessions 15 and 42, both wrongly rejected today (control: 0). Of
-  34,816 gaps, 3,549 are under 1 s and 245 read as 0 s, which the filter
-  treats as no evidence; 7 cross the matcher's 15 s anchor limit and 1 its
-  45 s stitch window (consecutive fixes, a rough indicator). Small because
-  every limit sits far from a second: the filter rejects only above 20 m/s
-  both in and out. `measurePositionSpikes`, where a 0 s gap becomes an
-  infinite speed, runs only in diagnostic scripts: production passes no
-  `positionFilter`. Script: `backend/tmp-measure-timestamps.mjs` (gitignored,
-  local). If ever built: a global `timestamptz` parser returning the ISO
-  string, the int8 pattern with JSON byte-identical, about 80k tokens, no
-  rebuild needed. **Lesson:** it sat at NEXT 1 for five days on how alarming
-  the mechanism sounded; the 30-minute measurement CLAUDE.md now requires
-  would have ranked it here.
-- **`TANGENT_WINDOW_M` stays 10 and the traversal gate stays 25 / 0.7** (old
-  item 4, Julian's call). Reopen the tangent only with the extent-level effect
-  of 14 m, +0.47 km summed over rides, from a dry-run model diff; the gate only
-  with a per-line look at 18 / 0.7's 8 next-door lines.
-- **40 barometric excursions of 3-6 m** (old item 3): 35 pass the spike filter
-  and lie inside stored matches. Their effect after smoothing and averaging is
-  unmeasured.
-- **A ride's first fix keeps its GPS height** (old item 2). The elevation
-  filter keeps a first fix by construction and nothing in the pipeline reads
-  `elevation_source`; it matches the barometer to 0.1 m on rides 68, 82, 84 and
-  87, and sits 19.2 m high on ride 73.
-- **Session 29's `started_at`** is 23.2 h after its fixes (old item 2); the
-  recovery path (bug 22) would fit.
-- **Two code debts left on purpose:** `endpointSnapM`'s table carries gate
-  numbers from before `9c13174`, annotated rather than re-measured; and
-  `enumerateHeadingLines`' `device` / `derived` slots also hold tangent arms,
-  explained in a comment rather than renamed.
-
-## SETTLED: do not re-examine
-
-| question | answer | evidence |
-|---|---|---|
-| Viterbi matching | **No.** 28 m of genuine fork, and the graph has no edge at 45 of the 47 places the rider turned | "Does the matcher need Viterbi?" |
-| joining segment ends that meet but share no node (`endpointSnapM`) | **Built, left at 0.** Cuts impossible transitions 35% and moves the map 70 m in 225 km | "Lever 1 was BUILT and MEASURED" |
-| `MAX_BEARING_DELTA_DEG` | **Swept, left at 45.** Strictly worse at every width | its doc comment in `segmentMatcher.ts` |
-| hairpins causing wrong-dir | **No.** 1 of 23 passes | "Lever 2" |
-| tunnels missing from the map | **A misread label.** The real defect is 55 m of Gold Camp Road | struck entry in "Open items" |
-| `STITCH_WINDOW_S` | **Swept, keep 45.** 90 s adds 249 m, 214 m of it unwitnessed, and no new line | note 26 |
-| "the gate losses were unstitched fragments" | **No.** Each is one pre-stitch run (close to a base rate). The traversals fragment across SEGMENTS, which the stitcher cannot join | "The gate sweep: ATTEMPTED" |
-| the pass ledger's cause order | **Fixed** in `9c13174`. `gate` is 4 passes / 179 m over 44 rides | paid-for #31 |
-| `SessionVerdict.id` and `bad_share` arriving as text | **Fixed** in `af653f8`, converted at the boundary | paid-for #30 |
-| every bigint (ids, uncast `count(*)`) arriving as text | **Fixed at the driver** in `6d6b174`: `db/pgTypes.ts`, one parser for every process. Live `/segments` byte-identical apart from the id's type | "What landed on 2026-10-10" |
-| checking the code's row types against the database | **`npm run eval:query-types`**: Parse + Describe, executes nothing. 82 sites, 0 numeric lies, 0 untyped reads | `backend/README.md` |
-| whether a docs-only push deploys | **No.** Railway watches `backend/**`; tested 2026-10-04 | commit `4b028c8` |
-| the barometer | **Finished.** Session 84 graded `alive`, 1366 of 1367 fixes barometric | "The barometer: shipped, installed, verified" |
-| the traversal gate | **Swept with a 15 m witness 2026-10-11, keep 25 / 0.7.** Most runs a lower span admits are ridden, but the new lines are worth 72-306 m and turn on next-door duplicate paint | old NEXT item 4, `npm run eval:gate` |
-| `TANGENT_WINDOW_M` | **Keep 10.** 14 m wins 298-407 m at ride level but drops 80 m of real lines and draws no new ground | old NEXT item 4 |
-| the colour bands | **Climbs step at 0, 3, 6, 9 and 12%, the darkest open-ended, separate and not blended** (2026-10-14). A 15% step would colour 220 m on 7 trail lines, mostly noise; a blend would show the 0.8-point slope error as flicker | STATE, "The colour bands" |
-
-## OPEN: genuinely undecided, do not treat as closed
-
-- **The same-way class.** Unexplained. NEXT item 4.
-
-## STATE, 2026-10-17
-
-`main` is the base, and every task branch is merged into it. The ten from
-2026-10-10/11 were deleted on 2026-10-11, locally and on origin;
-`stale-eval-columns`, `state-after-stale`, `next-whats-left`,
-`refresh-architecture-doc`, `session-notes-compact`, `darker-red-bands`,
-`state-after-colours`, `mixing-artefact-notes`, `option-a-plan`,
-`option-a-state`, `per-pass-slopes` and `option-a-live` are merged and safe
-to delete. Nothing is in flight: no open branch, no uncommitted work, no
-running job.
-Last code change `26f4620` (2026-10-17): option A, each pass's own slope,
-which changes what the map draws and adds `segment_pass_buckets` (17,634
-rows) beside the model, whose means did not move. Before it, `a7c6a85`
-(2026-10-14), the colour bands. Production serves
-`builtAt 2026-10-17T14:28:03.555Z`, the `26f4620` deploy, verified by the
-timestamp moving, by live `/segments` hashing identical before the rebuild,
-and by `eval:mixing` matching all 751 live segments after it. **This PC's clock runs about 80 s
-ahead of Railway's** (measured 2026-10-11 against the HTTP `Date` header), so
-a fresh `builtAt` can read earlier than the local push time without being a
-stale build. Live model **746 segments / 953 lines** at the int8 deploy, which
-changed nothing in it: the whole `/segments` response hashes the same as
-before, ids now numbers. **463 backend tests, 56 app tests**; `mobile/`
-has a gate lane. **45 usable rides** counted on 2026-10-05. Rides 85 to 88 are
-graded `alive` (2026-10-10). 88 landed that afternoon, so 51 sessions hold
-34,965 fixes; the timestamp measurement earlier the same day saw 50 and
-34,866. **Ride 89 landed on 2026-10-11**, during the doc rewrite: 52 sessions,
-36,266 fixes, 49 usable, model 6,114 buckets / 751 segments / 958 lines. Not
-yet graded with `verify-barometer`. `npm
-run eval:query-types` fails on 12 timestamp lies, by design (the 12th since
-2026-10-17, `evalMixing.ts`'s copy of the samples query): measured
-negligible on 2026-10-10 (NEXT, "Parked"). A deploy failed once on 2026-09-30, see note 29,
-before adding anything to `backend/` that imports outside it.
-
-**`context/architecture.html` is the 3rd edition (2026-10-11)**, rewritten for
-feature designers as well as coders and republished to its artifact ("Gradient
-Field Manual", version 9). Its live numbers are pinned through ride 89. Every
-number in it was checked by a throwaway read-only script against the code and the
-data: 105 checks, kept as `backend/tmp-doc-check.ts` (gitignored) for the next
-revision. One cold critic round (FAIL, 3 blocking and 15 minor, all reproduced
-and fixed); no second round, on Julian's call. The task ran at about 2.7 times its
-token budget, mostly the critic reading a 250 KB page.
-
-**The colour bands (2026-10-14, `a7c6a85`, deployed).** Climbs above 9%
-draw dark red `#881337` and above 12% near-black red `#450a0a`; red `#dc2626`
-now covers 6 to 9%. Drawing only: colours are computed on every request, so no
-rebuild. Recounted through ride 89 with the server's own code, read-only: 126 of
-5,218 colour stops change, 1.53 km red to dark red and 0.63 km red to near-black,
-and nothing else moves. Above 12% is 17 lines, all trail; no road passes 10.2%
-(Gold Camp Road). Why these edges: Garmin ClimbPro steps at 3, 6, 9 and 12%, and
-every bike computer checked (Garmin, Hammerhead Karoo, Wahoo) uses separate
-steps, not a blend; above 15% is 220 m on 7 trail lines; slope error is about
-0.8 points against 3-point bands. Shades come from the dataviz validator against
-the basemap's cream `#f8f4f0` and park `#d8e8c8`: Tailwind red-800 and red-900
-each failed the normal-vision floor beside red or red-950 (14.4, 14.5); rose-900
-and red-950 clear it (18.7 and 16.8; colour-blind 14.9 and 12.6, floor 8).
-`gradientBuilder.test.ts` pins every band edge from both sides; it failed on the
-old table at 9.01% before the change. The repo's `architecture.html` has the
-bands; its artifact page ("Gradient Field Manual", version 9) does not yet:
-Julian chose to republish it with the next doc change.
-
-**How every measurement here is run, each rule learned by breaking it:**
-- **Pin the control to a fixed ride list.** New rides arrive mid-task.
-- **Before trusting a check, run the input that should make it say no.**
-- **Count what a fix would change, not what it touches.** The timestamp defect
-  touched 99.9% of fix times and changed 2 of 34,866 verdicts; it sat at NEXT 1
-  for five days on the first number.
-- **Run the code on the case before writing down what it does.** old NEXT item 3
-  sat for a week on "the spike filter lets it through", reasoned from an assumed
-  riding speed. Run on the stored ride, the filter rejected it: the rider was
-  nearly stopped.
-- **A witness with a floor cannot speak below it.** `findPasses` needs 25 m, so
-  its silence about anything shorter is not evidence.
-- **Verify a deploy by `builtAt` moving, never by status**, and if a timestamp
-  looks unexplained, suspect the recorded baseline before the deploy trigger.
-- **Compare before and after from FROZEN copies** (`git archive` of `main`, a copy
-  of the branch), back to back, with a data fingerprint around each pair.
-  Running from the working tree lets a later edit leak into an earlier run.
-- **A Windows junction in a scratch copy points INTO the repo.** Delete the link
-  itself (`[System.IO.Directory]::Delete(path, $false)`); never recurse into it.
-
-**The house defect**, shared by six of the nine errors made on 2026-10-04: **a
-check that cannot fail, reported as a check that passed.**
-
-**How work is sized since 2026-10-10.** CLAUDE.md is untracked by design, so
-this is the record of what changed in it and why. Every triage block carries a
-token Budget line, so Julian can veto an expensive run before it starts.
-Critic rounds are capped, medium one and large two, and stop early after two
-rounds of only nits; more rounds run only on Julian's say. A finding blocks
-shipping only with a plausible path to it, and only once the builder has
-re-run its reproduction. A fix whose payoff is unknown gets a 30-minute
-read-only measurement first. Why: the int8 review ran six rounds, rounds 4 to
-6 found only code nobody here would write at about 200k tokens a round, and
-the timestamp item measured negligible after five days at the top of the
-queue. **Calibrated 2026-10-11:** the architecture-doc rewrite was budgeted at
-250k and cost about 600k, plus 246k for one cold critic, and the 1.5x stop was
-missed. A cold critic reads the whole artifact (about 1k tokens per KB, plus its
-own exploring); republishing an artifact in place means Reading every line of
-the live page first, in chunks under 25k (about 70k for 200 KB); and live counts
-move mid-task, so pin them to a named ride. Check the running total at every
-phase boundary against 1.5 times the estimate.
-
-Where to start depends on what you came for:
-
-| you want to | read |
-|---|---|
-| know what the app is and how a ride becomes a coloured line | `context/architecture.html` (3rd edition, the full walkthrough, written for feature designers too), then "What it is", "Layout", "Data flow" here |
-| design a feature | `context/architecture.html` Part 6: what each kind of change costs, the limits every feature inherits, ideas already tried, open problems |
-| change anything in the backend | "Bugs already paid for" — 31 failure modes, each one paid for once already |
-| run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
-| touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file. Option A shipped on 2026-10-17 (its heading says what is left: the docs, deferred). Next is item 1, the zero-run census: read-only, about 40k tokens |
-| understand why there is no drift correction | "What the drift anchor taught us" |
-| see the branch and deploy state | "Where things stand", immediately below |
 
 ## CLOSED 2026-10-10 and -11: the old NEXT items 1 to 4
 
