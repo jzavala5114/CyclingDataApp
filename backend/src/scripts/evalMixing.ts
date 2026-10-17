@@ -1,6 +1,11 @@
 import "dotenv/config";
+import { once } from "node:events";
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import * as turf from "@turf/turf";
+import express from "express";
 import { pool } from "../db/pool.js";
+import { segmentsRouter } from "../routes/segments.js";
 import {
   ENDPOINT_SNAP_M,
   matchSamplesToSegments,
@@ -87,11 +92,26 @@ import type {
 // city before anything is written. Once the table holds rows, they are also
 // compared with the replay, pass by pass.
 //
-// READ ONLY: plain SELECTs in one read-only transaction, rolled back. Fetches
-// no terrain; it uses the cached values, as evalModelQuality.ts does.
+// Then the route itself, end to end: GET /segments over HTTP for a box around
+// every drawn segment, its own four queries, join and builder against the live
+// tables, compared segment by segment with what this script draws from them.
+// No gate test runs the route's SQL (they mock the database), so this is what
+// sees a pass query broken in a way that returns nothing: every window would
+// quietly fall back to the means and draw the cliffs again. In-process by
+// default, once the table exists; with SEGMENTS_URL set, the deployed server
+// at that address instead:
+//
+//   SEGMENTS_URL=https://cyclingdataapp-backend-production.up.railway.app npm run eval:mixing
+//
+// READ ONLY: plain SELECTs in one read-only transaction, rolled back, and
+// every connection this process opens, the in-process route's included, is
+// set read-only before its first statement. Fetches no terrain; it uses the
+// cached values, as evalModelQuality.ts does. Against SEGMENTS_URL it sends
+// one GET, so never while that server is deploying.
 //
 // Exits 1 when this script's slope disagrees with the server's colour at any
-// stop, now or in the preview, or when the verdict fails.
+// stop, now or in the preview; when the route's answer differs from it; or
+// when the verdict fails.
 
 const BBOX_PAD_DEG = 0.005;
 const HALF_BUCKET_M = BUCKET_SIZE_M / 2;
@@ -134,6 +154,13 @@ const terrainAt = new Map<string, number>();
 let sessionIds: number[] = [];
 let passTableExists = false;
 let storedPassRows: Array<PassBucket & { sessionId: number; firstSampleId: number }> = [];
+
+// Before the first connection, so it reaches every one, the route's too.
+pool.on("connect", (connection) => {
+  void connection.query("set default_transaction_read_only = on");
+});
+let routeSegments: Array<{ id: number; directionalLines: unknown }> | null = null;
+let routeSource = "";
 
 const client = await pool.connect();
 try {
@@ -300,6 +327,29 @@ try {
          from segment_pass_buckets p
          join session_segment_matches m on m.id = p.match_id`,
     ));
+  }
+  if (process.env.SEGMENTS_URL || passTableExists) {
+    const coords = segs.flatMap((seg) => seg.geom.coordinates);
+    const lons = coords.map((c) => c[0]!);
+    const lats = coords.map((c) => c[1]!);
+    const box =
+      `minLon=${Math.min(...lons) - 0.001}&minLat=${Math.min(...lats) - 0.001}` +
+      `&maxLon=${Math.max(...lons) + 0.001}&maxLat=${Math.max(...lats) + 0.001}`;
+    let server: Server | null = null;
+    let base = process.env.SEGMENTS_URL?.replace(/\/$/, "") ?? "";
+    if (!base) {
+      server = express().use("/segments", segmentsRouter).listen(0, "127.0.0.1");
+      await once(server, "listening");
+      base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    }
+    try {
+      const res = await fetch(`${base}/segments?${box}`);
+      if (!res.ok) throw new Error(`GET /segments from ${base}: HTTP ${res.status}`);
+      routeSegments = ((await res.json()) as { segments: Array<{ id: number; directionalLines: unknown }> }).segments;
+      routeSource = process.env.SEGMENTS_URL ? base : "in-process";
+    } finally {
+      server?.close();
+    }
   }
   await client.query("rollback");
 } finally {
@@ -615,6 +665,24 @@ for (const [s, drawn] of drawnNow.entries()) {
         nearRideEnds,
       });
     }
+  }
+}
+
+// The route's answer, segment by segment. Same tables, a moment later: a ride
+// saved in between shows up here, and a re-run settles it.
+if (routeSegments === null) {
+  console.log("the route, end to end: not run (no pass table yet, and no SEGMENTS_URL)");
+} else {
+  const theirs = new Map(routeSegments.map((seg) => [seg.id, JSON.stringify(seg.directionalLines)]));
+  const differing = drawnNow.filter((seg) => theirs.get(seg.id) !== JSON.stringify(seg.directionalLines));
+  const unknown = routeSegments.filter((seg) => !drawnNow.some((d) => d.id === seg.id));
+  if (differing.length > 0 || unknown.length > 0) {
+    disagreements.push(
+      `route (${routeSource}): ${differing.length} of ${drawnNow.length} segments draw differently from this script, ` +
+        `${unknown.length} it sent are not drawn here; first: ${[...differing, ...unknown].slice(0, 5).map((seg) => seg.id).join(", ")}`,
+    );
+  } else {
+    console.log(`the route, end to end (${routeSource}): all ${drawnNow.length} segments arrive exactly as drawn here`);
   }
 }
 

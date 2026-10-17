@@ -245,6 +245,21 @@ test("the clamp comes after the averaging, as it does for the means", () => {
   assert.equal(pieceSlopesPct(meansOf(bothSteep), bothSteep)[2], 25);
 });
 
+test("an average that is not a number is drawn from the means, rather than failing the whole map", () => {
+  // Two passes whose own slopes are finite but whose weighted sum is not: no
+  // barometer reads 1.5e307 m, but a NaN here throws in colorForSlope, which
+  // would take every street in the viewport down with this one.
+  const passes = passRows([[701, 0, 0], [701, 15, 1.5e307], [702, 0, 1.5e307], [702, 15, 0]]);
+  const buckets = [0, 15].map((distanceM) => ({
+    segmentId: 28974,
+    direction: "backward" as const,
+    distanceM,
+    elevationM: 7.5e306,
+    sampleCount: 2,
+  }));
+  assert.deepEqual(pieceSlopesPct(buckets, passes), pieceSlopesPct(buckets));
+});
+
 test("a window where no pass covers two buckets is drawn from the means", () => {
   const passes = passRows([[701, 0, 1850], [702, 15, 1851.5]]);
   const buckets = meansOf(passes);

@@ -105,7 +105,10 @@ function everyPassOnFile(window: ElevationBucket[], passesAt: PassesAt): boolean
 // buckets it covers, from the passes covering two or more. Clamped after
 // averaging, as the means' slope is, so passes that all cover the same buckets
 // give exactly the means' slope: least squares is linear in the heights. Null
-// when no pass covers two of the window's buckets.
+// when no pass covers two of the window's buckets, or when the average is not
+// a number: each pass's slope is finite, but their sum can still overflow, and
+// a NaN reaching colorForSlope throws, which would fail the whole map rather
+// than one piece of it.
 function perPassSlopeAt(window: ElevationBucket[], passesAt: PassesAt): number | null {
   const byPass = new Map<number, Array<{ distanceM: number; elevationM: number }>>();
   for (const bucket of window) {
@@ -124,7 +127,9 @@ function perPassSlopeAt(window: ElevationBucket[], passesAt: PassesAt): number |
     weighted += slopePct * points.length;
     weight += points.length;
   }
-  return weight === 0 ? null : clampSlope(weighted / weight);
+  if (weight === 0) return null;
+  const slopePct = weighted / weight;
+  return Number.isFinite(slopePct) ? clampSlope(slopePct) : null;
 }
 
 // The slope the map draws for the piece after bucket `index`.

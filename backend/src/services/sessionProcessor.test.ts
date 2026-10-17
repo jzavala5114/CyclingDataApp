@@ -135,15 +135,17 @@ function written(values: unknown[], width: number, distanceAt: number) {
 }
 
 test("THE PASS ROWS ARE WHAT WAS MERGED: same distances, same anchored heights, under the id the match insert returned", async () => {
+  // Heights and anchor at full precision, as the barometer and fitAnchor give
+  // them, so a pass row rounded to the centimetre no longer equals its mean's.
   const { client, statements } = recordingClient();
   await mergeRuns(
     client,
     84,
     [
-      run(28974, "backward", [{ distanceM: 75, elevationM: 1930.5 }, { distanceM: 90, elevationM: 1930.2 }]),
-      run(19410, "forward", [{ distanceM: 0, elevationM: 1901.0 }]),
+      run(28974, "backward", [{ distanceM: 75, elevationM: 1930.537291 }, { distanceM: 90, elevationM: 1930.204817 }]),
+      run(19410, "forward", [{ distanceM: 0, elevationM: 1901.013376 }]),
     ],
-    22.3,
+    22.318734,
   );
 
   // Per run: the means, the coverage, the match row, then the pass rows,
@@ -160,7 +162,11 @@ test("THE PASS ROWS ARE WHAT WAS MERGED: same distances, same anchored heights, 
 
   const means = statements.filter((s) => /insert into segment_elevation_buckets/.test(s.text));
   const passRows = statements.filter((s) => /insert into segment_pass_buckets/.test(s.text));
-  assert.deepEqual(written(means[0]!.values, 4, 2), [[75, 1930.5 - 22.3], [90, 1930.2 - 22.3]], "the means get the anchored heights");
+  assert.deepEqual(
+    written(means[0]!.values, 4, 2),
+    [[75, 1930.537291 - 22.318734], [90, 1930.204817 - 22.318734]],
+    "the means get the anchored heights",
+  );
   for (const k of [0, 1]) {
     assert.deepEqual(written(passRows[k]!.values, 3, 1), written(means[k]!.values, 4, 2), `run ${k}: the pass rows hold what the means were given`);
     const matchIds = new Set(passRows[k]!.values.filter((_, i) => i % 3 === 0));
@@ -170,9 +176,9 @@ test("THE PASS ROWS ARE WHAT WAS MERGED: same distances, same anchored heights, 
 
 test("an unanchored ride files its pass rows as measured, like its means", async () => {
   const { client, statements } = recordingClient();
-  await mergeRuns(client, 84, [run(28974, "backward", [{ distanceM: 75, elevationM: 1930.5 }])], null);
+  await mergeRuns(client, 84, [run(28974, "backward", [{ distanceM: 75, elevationM: 1930.537291 }])], null);
   const passRows = statements.find((s) => /insert into segment_pass_buckets/.test(s.text))!;
-  assert.deepEqual(passRows.values, [7000, 75, 1930.5]);
+  assert.deepEqual(passRows.values, [7000, 75, 1930.537291]);
 });
 
 test("a run with no buckets writes no pass rows, rather than a statement with no values", async () => {
