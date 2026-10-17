@@ -3,7 +3,7 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-10-14.
+Last updated 2026-10-16.
 
 **Read the four blocks below before anything else.** They are the authoritative
 queue and state. Everything after them is evidence and history: where a section
@@ -20,6 +20,37 @@ is ungraded: `npm run verify-barometer` in `backend/`, read-only, about 20k.
 A pass is `alive`; "HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED" says how
 to read the rest. **Re-estimate item 1 before starting it**: the last two large
 read-only tasks ran 2 to 3 times over budget (STATE, "How work is sized").
+
+**Found 2026-10-16, waiting on Julian's call on the fix: passes at different
+levels make cliffs where they cover different stretches.** From Julian's
+screenshot, the Ridgeway trailhead lot (38.7953,-104.8585) drew near-black;
+terrain says 3 to 6%, and the map drew +19.5% (`28973/backward`), +25% at the
+cap (`28974/backward`) and -25% (`19410/backward`). Replayed read-only through
+`evalModelQuality.ts`'s steps, which reproduced all 21 stored buckets: each
+ride's own profile is smooth, but after the one-offset-per-ride anchor the rides
+sit at different levels (ride 54 on terrain, 84 about +10 m, 81 +16 m at its
+start and +31 m at its end). Ride 81 read 12.4 m higher at the same spot 3 h
+apart: barometer drift a constant anchor cannot follow. Where rides cover
+different stretches of a line, the running mean changes membership from one
+bucket to the next, and their level differences become steps that the 75 m fit
+reads as 19 to 25%. City-wide, 48 rides replayed and 6,059 of 6,114 buckets
+reproduced: mixing moves the colour more than one band (3 points) on 2.26 km of
+the 90.8 km it can judge, on 66 of 958 lines. 63% of that has a pass from a
+ride's first or last 5 minutes in the window, which is why trailheads show it.
+It is 44% of the near-black climbs (0.28 of 0.63 km) and 13% of the dark red
+(0.20 of 1.53 km). On those pieces the median distance from terrain is 4.9
+points for the drawn slope and 2.9 for the passes' own slopes. Control: Ladders
+`19475/forward`, the near-black Julian confirmed as right, is clean (drawn
+15.3%, passes 13.7%, terrain 20.6%). Pre-existing since merging began; the
+darker reds of 2026-10-14 made it visible, and `28974/backward` was that day's
+25%-cap piece, put down then as a bad reading without being chased. Tools,
+local and gitignored: `backend/tmp-mixing-census.ts` (the census),
+`tmp-replay-lines.ts` (each ride's own heights for chosen lines) and
+`tmp-slope-vs-terrain.ts`. Fix options, none built, all needing a rebuild:
+align each new pass to the model's level over the stretch they share before
+averaging; anchor each pass to terrain instead of each ride (close to the
+ground the drift anchor lost on, see "What the drift anchor taught us"); or keep
+each pass's heights and fit the slope per pass when drawing (a schema change).
 
 ### 1. The zero-run census
 
