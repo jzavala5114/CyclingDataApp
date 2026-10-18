@@ -1,5 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
+import * as turf from "@turf/turf";
 import { RequestCancelled, type PathRequest } from "./api.js";
 import { ASK_AFTER_MS, NEAR_END_M, SelectionController, connectionEndM, type Hit } from "./selectionController.js";
 import { metresPerPoint } from "./holdGesture.js";
@@ -458,4 +459,265 @@ test("at a fork, holding a branch joins it at its start and grows on along it", 
   assert.ok(Math.abs(r.snap().grownM - 410) < 1e-6, "the 20m to the fork appear at once");
   await r.advance(300);
   assert.ok(r.snap().grownM > 410, "and growth runs on up the branch");
+});
+
+// ---- When the rider does something else while an answer is on its way ----
+// Each of these passed every test above and went wrong at the phone's real
+// timing; found by the cold review of 2026-10-18.
+
+// Every piece starts where the one before it ends: a gap means a connection
+// was joined at an end it was not asked from.
+function assertContinuous(r: ReturnType<typeof rig>) {
+  const pieces = r.snap().selection!.pieces;
+  for (let i = 1; i < pieces.length; i++) {
+    const gapM = turf.distance(turf.point(pieces[i - 1]!.geometry.coordinates.at(-1)!), turf.point(pieces[i]!.geometry.coordinates[0]!), {
+      units: "meters",
+    });
+    assert.ok(gapM < 1, `piece ${i} starts ${gapM.toFixed(1)}m from where piece ${i - 1} ends`);
+  }
+}
+
+// Grown part way along the second street of the press answer, finger up.
+async function letGoPartWay(r: ReturnType<typeof rig>, stop: Parameters<typeof pressAnswer>[0] = { reason: "end" }) {
+  await hold(r, hitOn(first, 10));
+  await r.answer(0, pressAnswer(stop));
+  for (let i = 0; i < 400 && r.snap().grownM < 280; i++) await r.advance(16);
+  r.controller.touchEnded();
+  return r.snap().grownM;
+}
+
+test("holding the tip of a run let go part grown carries it on, even when the finger finds the line under it", async () => {
+  const r = rig();
+  const grown = await letGoPartWay(r);
+  assert.ok(grown > 190 && grown < 390, "let go part way along the second street");
+  // 3m short of the tip, and the hit test finding the second street's own
+  // line rather than the selection drawn over it.
+  await hold(r, hitOn(second, 10 + grown - 3));
+  assert.equal(r.asked.length, 1, "nothing asked: a connection to a point behind the end could only go round the block");
+  assert.equal(r.snap().mode, "holding");
+  await r.advance(300);
+  assert.ok(r.snap().grownM > grown, "it grows on from the tip");
+
+  // Well ahead of the tip on the same line, a hold still joins straight along it.
+  const r2 = rig();
+  const grown2 = await letGoPartWay(r2);
+  await hold(r2, hitOn(second, 10 + grown2 + 40));
+  const request = r2.asked[1]!.request;
+  assert.deepEqual([request.from.segmentId, request.to!.segmentId], [2, 2]);
+  assert.ok(request.to!.atM! > request.from.atM! + 30, "the target lies ahead of the end, on the same line");
+});
+
+test("a hold near the end while more path is on its way calls the more off, and the connection joins at the end it was asked from", async () => {
+  const r = rig();
+  await hold(r, hitOn(first, 10));
+  await r.answer(0, pressAnswer({ reason: "limit" }));
+  await r.advance(6000);
+  assert.equal(r.snap().busy, "more");
+  r.controller.touchEnded();
+  const third = street(3, 400, 200);
+  await hold(r, hitOn(third, 460));
+  const more = r.asked[1]!;
+  const connect = r.asked[2]!;
+  assert.equal(connect.request.to!.segmentId, 3);
+  assert.equal(more.signal!.aborted, true, "the more is called off");
+  assert.equal(r.snap().busy, "connect");
+  await r.advance(1000);
+  assert.equal(r.snap().selection!.lengthM, 390);
+  assert.equal(r.snap().grownM, 390, "nothing grows while the connection is on its way");
+  connect.resolve(
+    makePath(
+      [
+        { segmentId: 3, lengthM: 60, slopes: [1], rule: "connect" },
+        { segmentId: 3, lengthM: 140, slopes: [1], fromM: 60, rule: null },
+      ],
+      { reason: "end" },
+      400,
+      -4,
+    ),
+  );
+  await r.advance(16);
+  assertContinuous(r);
+  assert.ok(!r.snap().selection!.pieces.some((p) => p.segmentId === 4), "the street the rider did not choose is not in it");
+  assert.ok(Math.abs(r.snap().grownM - 450) < 1, "joined at the held point, 60m past the end");
+});
+
+test("a tap on the selection waits while an answer is on its way, so a trim never names a piece that has moved", async () => {
+  // During a flip: the flipped selection has other pieces.
+  const r = rig();
+  await shownSelection(r);
+  void r.controller.flip();
+  r.controller.tapSelection(0);
+  assert.equal(r.snap().trimFrom, null);
+  // During a lead-in, which moves every piece along.
+  const r2 = rig();
+  await letGoPartWay(r2);
+  await hold(r2, hitOn(street(30, -100, 90), -60));
+  r2.controller.touchEnded();
+  assert.equal(r2.snap().busy, "connect");
+  r2.controller.tapSelection(1);
+  assert.equal(r2.snap().trimFrom, null);
+  // And once the answer is in, the tap asks as usual.
+  await r2.answer(1, makePath([{ segmentId: 30, lengthM: 70, slopes: [-5], rule: "connect", fromM: 20 }], { reason: "joined" }, -60, -4));
+  r2.controller.tapSelection(1);
+  assert.equal(r2.snap().trimFrom, 1);
+});
+
+test("closing calls off whatever is on its way, a flip's requests included, and leaves nothing waiting", async () => {
+  // A flip.
+  const r = rig();
+  await shownSelection(r);
+  const flipping = r.controller.flip();
+  await flush();
+  const flipAsk = r.asked[1]!;
+  assert.ok(flipAsk.signal, "a flip's requests can be called off");
+  r.controller.clear();
+  assert.equal(flipAsk.signal!.aborted, true);
+  await flipping;
+  assert.deepEqual([r.snap().busy, r.snap().selection, r.snap().error], [null, null, null]);
+  // More path past a limit.
+  const r2 = rig();
+  await hold(r2, hitOn(first, 10));
+  await r2.answer(0, pressAnswer({ reason: "limit" }));
+  await r2.advance(6000);
+  r2.controller.touchEnded();
+  r2.controller.clear();
+  assert.equal(r2.asked[1]!.signal!.aborted, true);
+  assert.equal(r2.snap().busy, null);
+  // A connection.
+  const r3 = rig();
+  const grown = await shownSelection(r3);
+  await hold(r3, hitOn(street(20, 10 + grown + 60, 200), 10 + grown + 100));
+  r3.controller.touchEnded();
+  r3.controller.clear();
+  assert.equal(r3.asked[1]!.signal!.aborted, true);
+  assert.equal(r3.snap().busy, null);
+});
+
+test("a trim tried while an answer is on its way leaves nothing stuck: the answer lands, the spinner stops, the flip works", async () => {
+  // A connection: let go before it lands, then tap the selection and confirm.
+  const r = rig();
+  const grown = await shownSelection(r);
+  await hold(r, hitOn(street(20, 10 + grown + 60, 200), 10 + grown + 100));
+  r.controller.touchEnded();
+  r.controller.tapSelection(0);
+  r.controller.confirmTrim();
+  assert.equal(r.snap().busy, "connect");
+  await r.answer(
+    1,
+    makePath(
+      [
+        { segmentId: 1, lengthM: 40, slopes: [3], fromM: 10 + grown, rule: null },
+        { segmentId: 9, lengthM: 20, slopes: [0], source: "none", rule: "connect" },
+        { segmentId: 20, lengthM: 200, slopes: [2], rule: "connect" },
+      ],
+      { reason: "end" },
+      10 + grown,
+      -4,
+    ),
+  );
+  assert.deepEqual([r.snap().busy, r.snap().mode], [null, "shown"], "the connection is in, nothing waits");
+  void r.controller.flip();
+  assert.equal(r.snap().busy, "flip", "and the flip starts");
+
+  // A flip: tap and confirm while it is on its way.
+  const r2 = rig();
+  const grown2 = await shownSelection(r2);
+  const flipping = r2.controller.flip();
+  await flush();
+  r2.controller.tapSelection(0);
+  r2.controller.confirmTrim();
+  r2.asked[1]!.resolve(makePath([{ segmentId: 1, lengthM: grown2, slopes: [-3], direction: "backward", rule: "connect" }], { reason: "joined" }));
+  await flipping;
+  assert.equal(r2.snap().busy, null, "the flip is in, nothing waits");
+  assert.equal(r2.snap().selection!.pieces[0]!.direction, "backward");
+  void r2.controller.flip();
+  assert.equal(r2.snap().busy, "flip", "and it can flip back");
+});
+
+test("a hold behind the start leads in and leaves the end as it was, still able to grow", async () => {
+  const r = rig();
+  const grown = await letGoPartWay(r);
+  assert.equal(r.snap().canGrow, true);
+  await hold(r, hitOn(street(30, -100, 90), -60));
+  await r.answer(1, makePath([{ segmentId: 30, lengthM: 70, slopes: [-5], rule: "connect", fromM: 20 }], { reason: "joined" }, -60, -4));
+  const snap = r.snap();
+  assert.equal(snap.selection!.stop.reason, "end", "the end is not cut");
+  assert.equal(snap.selection!.lengthM, 70 + 390, "what was fetched past the end is kept");
+  assert.ok(Math.abs(snap.grownM - (70 + grown)) < 1e-9);
+  assert.equal(snap.canGrow, true);
+  assertContinuous(r);
+});
+
+test("an answer that lands between the finger coming down and the long press: the hold works out again what it means", async () => {
+  const r = rig();
+  const grown = await shownSelection(r);
+  const near = street(20, 10 + grown + 60, 200);
+  await hold(r, hitOn(near, 10 + grown + 100));
+  r.controller.touchEnded();
+  // A second finger down near the old end, asked about at once from that end.
+  const id = r.controller.touchStarted();
+  r.controller.touchResolved(id, hitOn(near, 10 + grown + 150));
+  await r.advance(ASK_AFTER_MS + 16);
+  const early = r.asked[2]!;
+  assert.ok(Math.abs(early.request.from.atM! - (10 + grown)) < 0.5, "asked from the old end");
+  // The first connection lands before the long press: the end moves on.
+  const toAtM = r.asked[1]!.request.to!.atM!;
+  await r.answer(
+    1,
+    makePath(
+      [
+        { segmentId: 1, lengthM: 40, slopes: [3], fromM: 10 + grown, rule: null },
+        { segmentId: 9, lengthM: 20, slopes: [0], source: "none", rule: "connect" },
+        { segmentId: 20, lengthM: toAtM, slopes: [2], rule: "connect" },
+        { segmentId: 20, lengthM: 200 - toAtM, slopes: [2], fromM: toAtM, rule: null },
+      ],
+      { reason: "end" },
+      10 + grown,
+      -4,
+    ),
+  );
+  await r.advance(400 - ASK_AFTER_MS - 16);
+  r.controller.longPressed();
+  assert.equal(early.signal!.aborted, true, "the request from the old end is called off");
+  const again = r.asked[3]!.request;
+  assert.equal(again.from.segmentId, 20, "and asked again from the new end");
+  assert.ok(Math.abs(again.from.atM! - toAtM) < 0.5);
+  assert.ok(again.to!.atM! > again.from.atM!, "ahead along the held line");
+});
+
+test("an answer that lands after the rider has touched the map again does not move the camera", async () => {
+  const r = rig();
+  await hold(r, hitOn(first, 10));
+  await r.advance(300);
+  r.controller.touchEnded();
+  // A pan while the answer is on its way.
+  r.controller.touchStarted();
+  r.controller.touchMoved();
+  r.controller.touchEnded();
+  await r.answer(0, pressAnswer());
+  assert.equal(r.snap().preview, false, "the answer still fills in the numbers");
+  assert.equal(r.fits.length, 0, "but the camera stays where the rider put it");
+});
+
+test("holding the selection while the trim question is open closes it, even when the selection cannot grow", async () => {
+  const r = rig();
+  await hold(r, hitOn(first, 10));
+  await r.answer(0, pressAnswer());
+  for (let i = 0; i < 400 && r.snap().grownM < 390; i++) await r.advance(16);
+  r.controller.touchEnded();
+  assert.equal(r.snap().canGrow, false, "grown to the end of the way");
+  r.controller.tapSelection(1);
+  assert.equal(r.snap().trimFrom, 1);
+  await hold(r, hitOn(first, 50, "forward", { piece: 0 }));
+  assert.equal(r.snap().trimFrom, null, "the question shown on the card is gone too");
+});
+
+test("holding the selection while a flip or a connection is on its way grows nothing that is about to be replaced", async () => {
+  const r = rig();
+  const grown = await shownSelection(r);
+  void r.controller.flip();
+  await hold(r, hitOn(first, 50, "forward", { piece: 0 }));
+  await r.advance(300);
+  assert.equal(r.snap().grownM, grown);
+  assert.equal(r.snap().busy, "flip");
 });

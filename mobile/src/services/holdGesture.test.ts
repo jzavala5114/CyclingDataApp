@@ -11,9 +11,12 @@ import {
   metresPerPoint,
   nearestLine,
   previewSelection,
+  SELECTION_HIT_LAYERS,
+  SELECTION_LAYER,
   travelMAt,
 } from "./holdGesture.js";
-import { east } from "./testPaths.js";
+import { fromResponse, growingFeature, selectionFeatures } from "./pathSelection.js";
+import { east, makePath } from "./testPaths.js";
 import type { DirectionalGradientLine } from "../types";
 
 // Which line a finger means, where along it, and what grows before the
@@ -147,4 +150,23 @@ test("a touch means the selection over the line beneath it, a branch over a line
   // A line whose segment the phone has not loaded is no line at all.
   assert.equal(hit([{ ...base("forward", forwardLine), properties: { segmentId: 99, direction: "forward" } }], east(50, -4)).line, null);
   assert.deepEqual(hit([], east(0)), { lonLat: east(0), zoom: 17, line: null, piece: null, branch: null });
+});
+
+test("let go mid-run, the run still growing is the selection to a touch, and the screen queries its layers", () => {
+  const street = {
+    id: 7,
+    streetName: "East Cimarron Street",
+    geom: centreline,
+    lengthM: 200,
+    directionalLines: [{ direction: "forward" as const, geometry: forwardLine, colorStops: [{ distanceFraction: 0, color: "#eab308" }] }],
+  };
+  // 150m grown of a 200m selection: the map draws the last run, part grown,
+  // from the growing source alone.
+  const selection = fromResponse(makePath([{ segmentId: 7, lengthM: 200, slopes: [3] }], { reason: "end" }, 0, -4));
+  const growing = growingFeature(selectionFeatures(selection), 150)!;
+  const base = { geometry: forwardLine, properties: { segmentId: 7, direction: "forward" } };
+  const atTip = hitFromFeatures([base, growing] as never, east(147, -4), 17, new Map([[7, street]]), () => undefined);
+  assert.equal(atTip.piece, 0, "the tip the rider sees is the selection");
+  for (const id of Object.values(SELECTION_LAYER)) assert.ok(SELECTION_HIT_LAYERS.includes(id), `${id} is hit-tested`);
+  assert.ok(SELECTION_HIT_LAYERS.includes("selection-growing-line") && SELECTION_HIT_LAYERS.includes("selection-growing-gap"));
 });

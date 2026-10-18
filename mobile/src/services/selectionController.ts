@@ -87,6 +87,10 @@ export const ASK_AFTER_MS = 150;
 // joins it; further away it starts a new selection. A bridged gap is under
 // 150m by design (MAX_NO_DATA_M), and a fork lies at most that far ahead.
 export const NEAR_END_M = 250;
+// How far past the selected stretch of its own line a hold still counts as on
+// it, for the rounding between the drawn line and travel metres. Further
+// ahead on the same line, a hold joins straight along it.
+const ON_SELECTION_SLACK_M = 2;
 
 type Intent =
   | { kind: "new"; request: PathRequest; hit: Hit }
@@ -94,11 +98,18 @@ type Intent =
   | { kind: "prepend"; request: PathRequest; hit: Hit }
   | { kind: "resume" };
 
+/** The selection, and how much of it was selected, that a touch's intent was worked out against. */
+interface Basis {
+  selection: Selection | null;
+  grownM: number;
+}
+
 interface Touch {
   id: number;
   startedAt: number;
   hit: Hit | null;
   intent: Intent | null;
+  basis: Basis | null;
   longPressed: boolean;
   ended: boolean;
   /** The request asked for this touch, once asked. */
@@ -144,10 +155,17 @@ export class SelectionController {
 
   private touch: Touch | null = null;
   private touchCount = 0;
-  // Bumped whenever the rider replaces or clears the selection, so an answer
-  // to an older one is dropped rather than written over the new.
+  // Bumped by supersede(), whenever the rider starts something new or
+  // replaces, trims or clears the selection, so an answer to what came before
+  // is dropped rather than written over what is there now.
   private generation = 0;
-  private pendingAbort: AbortController | null = null;
+  // The one request whose answer the controller is waiting on, `busy` says
+  // which: a hold's, more path past a limit, or a flip's.
+  private inflight: AbortController | null = null;
+  // Set when the rider lets go or flips, cleared when a finger next comes
+  // down: an answer that lands later frames the camera only if the rider has
+  // not touched the map in the meantime, so it never jumps under a pan.
+  private fitWhenAnswered = false;
 
   private holdStartedAt = 0;
   private lastFrameAt = 0;
@@ -205,6 +223,23 @@ export class SelectionController {
     this.selection = selection;
     this.preview = preview;
     this.features = selection ? selectionFeatures(selection) : [];
+    // The trim question names a piece of the selection it was asked about.
+    this.trimFrom = null;
+  }
+
+  private basis(): Basis {
+    return { selection: this.selection, grownM: this.grownM };
+  }
+
+  // Whatever the controller was waiting on is no longer wanted: the rider has
+  // started something else, or replaced, trimmed or cleared the selection. Its
+  // request is called off, and the generation moves on, so an answer already
+  // on its way is dropped rather than applied to what is there now.
+  private supersede() {
+    this.generation += 1;
+    this.inflight?.abort();
+    this.inflight = null;
+    this.busy = null;
   }
 
   // ---- touches ----
@@ -212,12 +247,14 @@ export class SelectionController {
   /** A single finger came down on the map. */
   touchStarted(): number {
     this.dropTouch();
+    this.fitWhenAnswered = false;
     this.touchCount += 1;
     this.touch = {
       id: this.touchCount,
       startedAt: this.deps.now(),
       hit: null,
       intent: null,
+      basis: null,
       longPressed: false,
       ended: false,
       asked: null,
@@ -233,6 +270,7 @@ export class SelectionController {
     if (!touch || touch.id !== id || touch.ended) return;
     touch.hit = hit;
     touch.intent = this.intentFor(hit);
+    touch.basis = this.basis();
     if (!touch.intent || touch.intent.kind === "resume") {
       if (touch.longPressed) this.beginHold(touch);
       return;
@@ -309,12 +347,14 @@ export class SelectionController {
     const [lon, lat] = hit.lonLat;
     const held: PathPoint = { segmentId: segment.id, direction: drawing.direction, lon: lon!, lat: lat! };
     if (selection) {
+      const heldAtM = heldTravelM(segment, drawing, hit.lonLat);
+      if (this.onSelectedStretch(selection, segment.id, drawing.direction, heldAtM)) return { kind: "resume" };
       const end = pointOnPath(selection, this.grownM);
       const start = pointOnPath(selection, 0);
       const toEnd = end ? distanceM(hit.lonLat, [end.lon, end.lat]) : Infinity;
       const toStart = start ? distanceM(hit.lonLat, [start.lon, start.lat]) : Infinity;
       if (toEnd <= NEAR_END_M && toEnd <= toStart) {
-        const to = { ...held, atM: heldTravelM(segment, drawing, hit.lonLat) };
+        const to = { ...held, atM: heldAtM };
         return { kind: "extend", request: this.extendRequest(selection, to), to, hit };
       }
       if (toStart <= NEAR_END_M && start) {
@@ -330,6 +370,21 @@ export class SelectionController {
       }
     }
     return { kind: "new", request: { from: held }, hit };
+  }
+
+  // Whether a point on a line, in that line's travel metres, lies on what is
+  // selected of it. The selection is drawn over the line it runs along, so a
+  // finger on the selection can still find the faded line under it; and a
+  // connection from the end to a point behind it on the same line could only
+  // go round the block.
+  private onSelectedStretch(selection: Selection, segmentId: number, direction: Direction, atM: number): boolean {
+    for (const piece of selection.pieces) {
+      if (piece.atM >= this.grownM) break;
+      if (piece.segmentId !== segmentId || piece.direction !== direction) continue;
+      const selectedToM = piece.fromM + Math.min(piece.lengthM, this.grownM - piece.atM);
+      if (piece.fromM - ON_SELECTION_SLACK_M <= atM && atM <= selectedToM + ON_SELECTION_SLACK_M) return true;
+    }
+    return false;
   }
 
   // A hold past the end: from the selection's end, through the held line, and
@@ -350,13 +405,16 @@ export class SelectionController {
     const abort = new AbortController();
     const asked: NonNullable<Touch["asked"]> = { abort, answer: null, failed: null };
     touch.asked = asked;
+    // A touch whose intent was worked out again has asked again, and only its
+    // latest request's answer counts.
     this.deps.fetchPath(intent.request, abort.signal).then(
       (answer) => {
+        if (touch.asked !== asked) return;
         asked.answer = answer;
         if (touch.longPressed) this.answered(touch);
       },
       (err) => {
-        if (err instanceof RequestCancelled || abort.signal.aborted) return;
+        if (touch.asked !== asked || err instanceof RequestCancelled || abort.signal.aborted) return;
         asked.failed = err;
         if (touch.longPressed) this.answered(touch);
       },
@@ -366,28 +424,47 @@ export class SelectionController {
   // ---- holding ----
 
   private beginHold(touch: Touch) {
-    const intent = touch.intent;
     const hit = touch.hit;
-    if (!intent || !hit) return;
-    this.trimFrom = null;
+    if (!hit) return;
+    // An answer landed between the finger coming down and the long press, so
+    // what the hold means, and the request it made, were worked out against a
+    // selection that is no longer there: work them out again.
+    const basis = touch.basis;
+    if (basis && (basis.selection !== this.selection || Math.abs(basis.grownM - this.grownM) > 0.01)) {
+      touch.asked?.abort.abort();
+      touch.asked = null;
+      touch.intent = this.intentFor(hit);
+      touch.basis = this.basis();
+      this.ask(touch);
+    }
+    const intent = touch.intent;
+    if (!intent) return;
     if (intent.kind === "resume") {
-      if (!this.canGrow()) return;
+      // Carrying the selection on while a connection or a flip is on its way
+      // would grow what is about to be replaced. While more path is on its
+      // way it is what the rider wants: growth waits at the end for it.
+      const hadTrim = this.trimFrom !== null;
+      this.trimFrom = null;
+      if (!this.canGrow() || this.busy === "connect" || this.busy === "flip") {
+        if (hadTrim) this.emit();
+        return;
+      }
       this.startGrowing(hit);
       return;
     }
+    // A hold that asks the server replaces whatever else was on its way.
+    this.supersede();
+    this.inflight = touch.asked?.abort ?? null;
+    touch.generation = this.generation;
+    this.trimFrom = null;
     this.error = null;
     if (intent.kind === "new") {
-      this.generation += 1;
-      this.pendingAbort?.abort();
-      this.pendingAbort = null;
       const { segment, drawing } = hit.line!;
       this.setSelection(previewSelection(segment, drawing, hit.lonLat), true);
       this.grownM = 0;
       this.busy = "path";
-      touch.generation = this.generation;
       this.startGrowing(hit);
     } else {
-      touch.generation = this.generation;
       this.mode = "holding";
       this.busy = "connect";
       this.emit();
@@ -461,6 +538,7 @@ export class SelectionController {
     this.cancelFrame?.();
     this.cancelFrame = null;
     this.mode = this.selection ? "shown" : "idle";
+    this.fitWhenAnswered = true;
     this.emit();
     if (!this.preview) this.fitSelection();
   }
@@ -479,6 +557,7 @@ export class SelectionController {
     if (!intent || intent.kind === "resume" || !asked) return;
     // The rider has since replaced, cleared, trimmed or flipped the selection.
     if (touch.generation !== this.generation) return;
+    this.inflight = null;
     if (asked.failed) {
       this.cancelFrame?.();
       this.cancelFrame = null;
@@ -505,7 +584,7 @@ export class SelectionController {
       this.grownM = Math.min(this.grownM, answer.lengthM);
       if (!stillHolding) {
         this.mode = "shown";
-        this.fitSelection();
+        if (this.fitWhenAnswered) this.fitSelection();
       }
       this.emit();
       if (stillHolding) this.scheduleFrame();
@@ -518,9 +597,12 @@ export class SelectionController {
       this.restartAsNew(touch, intent.hit, stillHolding);
       return;
     }
-    const base = cutAt(this.selection!, this.grownM);
     this.busy = null;
     if (intent.kind === "extend") {
+      // Asked from the end as it was when the hold began, which nothing can
+      // move while the answer is on its way: growth waits on a connection,
+      // and anything else supersedes it.
+      const base = cutAt(this.selection!, this.grownM);
       const joinedM = base.lengthM + connectionEndM(answer, intent.to);
       this.setSelection(appendPath(base, answer));
       this.grownM = joinedM;
@@ -529,18 +611,20 @@ export class SelectionController {
       } else {
         this.mode = "shown";
         this.emit();
-        this.fitSelection();
+        if (this.fitWhenAnswered) this.fitSelection();
       }
       return;
     }
-    // prepend: nothing grows from the start, so the hold is done.
-    this.setSelection(prependPath(base, answer));
-    this.grownM = base.lengthM + answer.lengthM;
+    // prepend: the answer leads into the start, and the end, with whatever
+    // was fetched past it, stays as it was. Nothing grows from the start, so
+    // the hold is done.
+    this.setSelection(prependPath(this.selection!, answer));
+    this.grownM += answer.lengthM;
     this.mode = "shown";
     this.cancelFrame?.();
     this.cancelFrame = null;
     this.emit();
-    this.fitSelection();
+    if (stillHolding || this.fitWhenAnswered) this.fitSelection();
   }
 
   private restartAsNew(touch: Touch, hit: Hit, stillHolding: boolean) {
@@ -556,6 +640,7 @@ export class SelectionController {
       request: { from: { segmentId: hit.line.segment.id, direction: hit.line.drawing.direction, lon: lon!, lat: lat! } },
       hit,
     };
+    touch.basis = this.basis();
     touch.asked = null;
     this.ask(touch);
     this.beginHold(touch);
@@ -570,9 +655,11 @@ export class SelectionController {
     if (!selection) return;
     const tip = pointOnPath(selection, selection.lengthM);
     if (!tip) return;
+    // Asked only when nothing else is on its way (step() checks `busy`), so
+    // there is nothing to supersede.
     const generation = this.generation;
     const abort = new AbortController();
-    this.pendingAbort = abort;
+    this.inflight = abort;
     this.busy = "more";
     this.emit();
     this.deps
@@ -582,7 +669,8 @@ export class SelectionController {
       )
       .then(
         (answer) => {
-          if (generation !== this.generation || this.selection !== selection) return;
+          if (generation !== this.generation || this.busy !== "more" || this.selection !== selection) return;
+          this.inflight = null;
           this.busy = null;
           this.setSelection(appendPath(selection, answer));
           this.emit();
@@ -590,6 +678,7 @@ export class SelectionController {
         },
         (err) => {
           if (err instanceof RequestCancelled || abort.signal.aborted || generation !== this.generation) return;
+          this.inflight = null;
           this.busy = null;
           this.error = `Couldn't load more: ${describeError(err)}`;
           this.emit();
@@ -601,7 +690,9 @@ export class SelectionController {
 
   /** A tap on the selection: preview trimming from that piece to the end. */
   tapSelection(piece: number) {
-    if (!this.selection || this.preview || this.mode === "holding") return;
+    // While an answer is on its way the selection is about to change, and
+    // with it the piece a trim would name.
+    if (!this.selection || this.preview || this.mode === "holding" || this.busy) return;
     if (piece < 0 || piece >= this.selection.pieces.length || this.selection.pieces[piece]!.atM >= this.grownM) return;
     this.trimFrom = piece;
     this.emit();
@@ -623,15 +714,19 @@ export class SelectionController {
   // the rider holds the line they want instead.
   confirmTrim() {
     if (!this.selection || this.trimFrom === null) return;
-    const atM = this.selection.pieces[this.trimFrom]!.atM;
+    const piece = this.selection.pieces[this.trimFrom];
     this.trimFrom = null;
-    if (atM <= 0.5) {
+    if (!piece) {
+      this.emit();
+      return;
+    }
+    if (piece.atM <= 0.5) {
       this.clear();
       return;
     }
-    this.generation += 1;
-    this.setSelection(cutAt(this.selection, atM));
-    this.grownM = atM;
+    this.supersede();
+    this.setSelection(cutAt(this.selection, piece.atM));
+    this.grownM = piece.atM;
     this.emit();
     this.fitSelection();
   }
@@ -639,22 +734,27 @@ export class SelectionController {
   async flip() {
     if (!this.selection || this.preview || this.busy || this.mode === "holding") return;
     const base = cutAt(this.selection, this.grownM);
-    this.generation += 1;
+    this.supersede();
     const generation = this.generation;
+    const abort = new AbortController();
+    this.inflight = abort;
     this.trimFrom = null;
     this.error = null;
     this.busy = "flip";
+    this.fitWhenAnswered = true;
     this.emit();
     try {
-      const { selection } = await flipSelection(base, (request) => this.deps.fetchPath(request));
+      const { selection } = await flipSelection(base, (request) => this.deps.fetchPath(request, abort.signal));
       if (generation !== this.generation) return;
+      this.inflight = null;
       this.setSelection(selection);
       this.grownM = selection.lengthM;
       this.busy = null;
       this.emit();
-      this.fitSelection();
+      if (this.fitWhenAnswered) this.fitSelection();
     } catch (err) {
-      if (generation !== this.generation) return;
+      if (generation !== this.generation || err instanceof RequestCancelled || abort.signal.aborted) return;
+      this.inflight = null;
       this.busy = null;
       this.error = err instanceof FlipFailed ? `Can't flip this: ${err.message}` : `Couldn't flip: ${describeError(err)}`;
       this.emit();
@@ -663,17 +763,12 @@ export class SelectionController {
 
   /** The close button, or Android back. */
   clear() {
-    this.generation += 1;
-    this.pendingAbort?.abort();
-    this.pendingAbort = null;
+    this.supersede();
     this.cancelFrame?.();
     this.cancelFrame = null;
-    if (this.touch?.longPressed) this.touch.asked?.abort.abort();
     this.setSelection(null);
     this.mode = "idle";
     this.grownM = 0;
-    this.busy = null;
-    this.trimFrom = null;
     this.error = null;
     this.emit();
   }

@@ -1,4 +1,4 @@
-import { useMemo, useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore, type ComponentProps } from "react";
 import { GeoJSONSource, Layer } from "@maplibre/maplibre-react-native";
 import type { DataDrivenPropertyValueSpecification, FilterSpecification } from "@maplibre/maplibre-gl-style-spec";
 import type { Feature, FeatureCollection, LineString, Point } from "geojson";
@@ -9,6 +9,7 @@ import {
   pointOnPath,
   type SelectionFeatureProps,
 } from "../services/pathSelection";
+import { SELECTION_LAYER } from "../services/holdGesture";
 import type { SelectionController } from "../services/selectionController";
 
 // The selection on the map: the same colours as every other line (colour is
@@ -22,7 +23,9 @@ import type { SelectionController } from "../services/selectionController";
 // still growing comes from a source of its own, a single short line.
 
 /** Layers a touch is tested against, as the screen queries them. */
-export const SELECTION_HIT_LAYERS = ["selection-line", "selection-gap", "selection-branch-line"];
+export { SELECTION_HIT_LAYERS } from "../services/holdGesture";
+
+type SourcePress = NonNullable<ComponentProps<typeof GeoJSONSource>["onPress"]>;
 
 const EMPTY: FeatureCollection = { type: "FeatureCollection", features: [] };
 const CASING_COLOR = "#ffffff";
@@ -42,7 +45,7 @@ export function SelectionLayers({ controller }: { controller: SelectionControlle
   const unmeasured: FilterSpecification = ["==", ["get", "noData"], true];
 
   // A tap previews a trim: the tapped piece and everything after it fade.
-  const trimAtM = trimFrom !== null && selection ? selection.pieces[trimFrom]!.atM : null;
+  const trimAtM = trimFrom !== null ? (selection?.pieces[trimFrom]?.atM ?? null) : null;
   const opacity: DataDrivenPropertyValueSpecification<number> =
     trimAtM === null ? 1 : ["case", [">=", ["get", "startM"], trimAtM - 0.001], 0.25, 1];
 
@@ -69,20 +72,19 @@ export function SelectionLayers({ controller }: { controller: SelectionControlle
     ? { type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "Point", coordinates: [tip.lon, tip.lat] }, properties: {} }] }
     : (EMPTY as FeatureCollection<Point>);
 
+  // A tap on any of the selection, the part-grown run included, asks to trim there.
+  const onPress: SourcePress = (event) => {
+    const hit = event.nativeEvent.features.find((f) => f.properties?.kind === "selection") as
+      | Feature<LineString, SelectionFeatureProps>
+      | undefined;
+    if (!hit) return;
+    event.stopPropagation();
+    controller.tapSelection(hit.properties.piece);
+  };
+
   return (
     <>
-      <GeoJSONSource
-        id="selection"
-        data={all}
-        onPress={(event) => {
-          const hit = event.nativeEvent.features.find((f) => f.properties?.kind === "selection") as
-            | Feature<LineString, SelectionFeatureProps>
-            | undefined;
-          if (!hit) return;
-          event.stopPropagation();
-          controller.tapSelection(hit.properties.piece);
-        }}
-      >
+      <GeoJSONSource id="selection" data={all} onPress={onPress}>
         <Layer
           id="selection-casing"
           type="line"
@@ -91,14 +93,14 @@ export function SelectionLayers({ controller }: { controller: SelectionControlle
           paint={{ "line-color": CASING_COLOR, "line-width": 11, "line-opacity": opacity }}
         />
         <Layer
-          id="selection-line"
+          id={SELECTION_LAYER.line}
           type="line"
           filter={["all", grown, measured]}
           layout={ROUND}
           paint={{ "line-color": ["get", "color"], "line-width": 7, "line-opacity": opacity }}
         />
         <Layer
-          id="selection-gap"
+          id={SELECTION_LAYER.gap}
           type="line"
           filter={["all", grown, unmeasured]}
           layout={{ "line-join": "round" }}
@@ -123,7 +125,7 @@ export function SelectionLayers({ controller }: { controller: SelectionControlle
         />
       </GeoJSONSource>
 
-      <GeoJSONSource id="selection-growing" data={growingData}>
+      <GeoJSONSource id="selection-growing" data={growingData} onPress={onPress}>
         {/* Let go mid-run, the last run stays part grown, so it fades with a trim too. */}
         <Layer
           id="selection-growing-casing"
@@ -132,14 +134,14 @@ export function SelectionLayers({ controller }: { controller: SelectionControlle
           paint={{ "line-color": CASING_COLOR, "line-width": 11, "line-opacity": opacity }}
         />
         <Layer
-          id="selection-growing-line"
+          id={SELECTION_LAYER.growingLine}
           type="line"
           filter={measured}
           layout={ROUND}
           paint={{ "line-color": ["get", "color"], "line-width": 7, "line-opacity": opacity }}
         />
         <Layer
-          id="selection-growing-gap"
+          id={SELECTION_LAYER.growingGap}
           type="line"
           filter={unmeasured}
           paint={{ "line-color": NO_DATA_COLOR, "line-width": 5, "line-dasharray": [1.4, 1.2], "line-opacity": opacity }}
@@ -154,7 +156,7 @@ export function SelectionLayers({ controller }: { controller: SelectionControlle
           paint={{ "line-color": "#111827", "line-width": 10, "line-opacity": 0.55 }}
         />
         <Layer
-          id="selection-branch-line"
+          id={SELECTION_LAYER.branchLine}
           type="line"
           layout={ROUND}
           paint={{ "line-color": "#ffffff", "line-width": 5, "line-dasharray": [1, 1.4] }}

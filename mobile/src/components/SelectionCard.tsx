@@ -89,7 +89,7 @@ export function SelectionCard({
   const measuredShares = stats?.bands.filter((b) => b.lengthM > 0) ?? [];
   const noDataShare = stats && stats.distanceM > 0 ? stats.noDataM / stats.distanceM : 0;
   const legend = measuredShares.filter((b) => b.share >= LEGEND_MIN_SHARE);
-  const trimAtM = trimFrom !== null && selection ? selection.pieces[trimFrom]!.atM : null;
+  const trimAtM = trimFrom !== null ? (selection?.pieces[trimFrom]?.atM ?? null) : null;
   const canFlip = !!selection && !preview && mode !== "holding" && busy === null;
 
   return (

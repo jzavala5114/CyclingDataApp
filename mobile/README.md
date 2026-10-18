@@ -82,10 +82,17 @@ are built from, and what to do next.
   leads into the selection instead.
 - **At a fork** growth stops and marks the ways on; hold the one you want.
 - **Tap the selection** to remove that piece and everything after it, after
-  one confirm.
+  one confirm. While the card shows a spinner a tap does nothing: the
+  selection is about to change, and the piece with it.
 - **⇄** turns it round: the same streets, on the other direction's lines,
   with that direction's own rides.
 - **×** or Android back clears it.
+
+One answer is awaited at a time. A new hold that asks the server, a trim, a
+flip or × calls off whatever the card was waiting on, and an answer that
+arrives for something since replaced is dropped. An answer that lands after
+you have touched the map again fills in the numbers but leaves the camera
+where you put it.
 
 The design, and why each choice was made, is in `../context/session.md`,
 "Press and hold on a segment, designed 2026-10-17"; the server half is
@@ -98,7 +105,9 @@ Where it lives:
 - `src/services/pathSelection.ts`: joining, cutting and adding up a path; the
   card's numbers; the map's features
 - `src/services/holdGesture.ts`: which line the finger is on, where along it,
-  the stand-in drawn while the server answers, and growth speed
+  the stand-in drawn while the server answers, growth speed, and the layers a
+  touch is tested against (`SELECTION_HIT_LAYERS`, which the layers are named
+  from)
 - `src/services/flipSelection.ts`: the flip, checked street by street
 - `src/services/selectionStatus.ts`: the card's line saying what to do next
 - `src/components/SelectionLayers.tsx` and `src/components/SelectionCard.tsx`:

@@ -183,6 +183,20 @@ export interface RenderedFeature {
 /** The selection's lines win a tie this close: the base line under them is the same line. */
 const PREFER_WITHIN_M = 1;
 
+// The layers a touch is tested against besides the base lines: everything
+// that draws the selection's own line, the runs fully grown and the one still
+// growing (let go mid-run, the tip the rider aims at is drawn by that one
+// alone), and a fork's branches. SelectionLayers.tsx names its layers from
+// these, so the two cannot drift apart.
+export const SELECTION_LAYER = {
+  line: "selection-line",
+  gap: "selection-gap",
+  growingLine: "selection-growing-line",
+  growingGap: "selection-growing-gap",
+  branchLine: "selection-branch-line",
+} as const;
+export const SELECTION_HIT_LAYERS: string[] = Object.values(SELECTION_LAYER);
+
 // What the finger is on, from the features rendered around it: the
 // selection, a fork's branch, or a drawn line, whichever is nearest, the
 // selection first and a branch second where they are as near as a line. The
