@@ -46,32 +46,52 @@ export function insideBox(box: Box, marginM: number): (point: readonly number[])
   return ([lon, lat]) => lon! >= inner.minLon && lon! <= inner.maxLon && lat! >= inner.minLat && lat! <= inner.maxLat;
 }
 
-// The canonical segments in a box, and every other slice of any capped run
-// that has a slice in it. buildEndAdjacency tells a run's real ends from its
-// 150m cuts by the slices' piece_index, so a family cut short by the box edge
-// would make its last loaded cut look like the run's end node, and join it to
-// the cross street hundreds of metres away. Sidewalks are left out, as the
-// matcher leaves them out: they are drawn as their road.
-export async function loadSegmentsInBox(db: Db, box: Box): Promise<Segment[]> {
+// How far around a drawn segment the path loads the network: about 280m
+// north-south and 215m east-west here. Growth never runs more than
+// MAX_NO_DATA_M (150m) from data, so every junction it can reach, and every
+// segment touching one, lies inside this.
+export const NEAR_DRAWN_DEG = 0.0025;
+
+// The canonical segments near the drawn segments in a box, and every other
+// slice of any capped run that has a slice among them.
+//
+// Near drawn ones only, because growth goes nowhere else: loading the whole box
+// took 0.3 to 2.2 s for 377 to 1,900 segments, most of which no selection can
+// reach. A connection between two points can therefore only cross ground
+// within NEAR_DRAWN_DEG of a drawn line.
+//
+// Whole families, because buildEndAdjacency tells a run's real ends from its
+// 150m cuts by the slices' piece_index: a family cut short would make its last
+// loaded cut look like the run's end node, and join it to the cross street
+// hundreds of metres away. Sidewalks are left out, as the matcher leaves them
+// out: they are drawn as their road.
+export async function loadPathSegments(db: Db, box: Box): Promise<Segment[]> {
   const { rows } = await db.query<Segment>(
-    `with boxed as (
-       select osm_way_id, least(start_node_id, end_node_id) as lo, greatest(start_node_id, end_node_id) as hi
-         from segments
-        where geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)
-          and canonical_segment_id is null
+    `with drawn as (
+       select s.geom
+         from segments s
+        where s.geom && ST_MakeEnvelope($1, $2, $3, $4, 4326)
+          and s.canonical_segment_id is null
+          and exists (select 1 from segment_elevation_buckets b where b.segment_id = s.id)
+     ), near as (
+       select distinct n.osm_way_id, least(n.start_node_id, n.end_node_id) as lo,
+              greatest(n.start_node_id, n.end_node_id) as hi
+         from drawn d
+         join segments n on n.geom && ST_Expand(d.geom, $5)
+        where n.canonical_segment_id is null
      )
      select distinct on (s.id)
             s.id, s.osm_way_id as "osmWayId", s.kind, s.street_name as "streetName",
             s.start_node_id as "startNodeId", s.end_node_id as "endNodeId", s.piece_index as "pieceIndex",
             ST_AsGeoJSON(s.geom)::json as geom, s.length_m as "lengthM", s.bearing_deg as "bearingDeg"
-       from boxed b
+       from near b
        join segments s
          on s.osm_way_id = b.osm_way_id
         and least(s.start_node_id, s.end_node_id) = b.lo
         and greatest(s.start_node_id, s.end_node_id) = b.hi
       where s.canonical_segment_id is null
       order by s.id`,
-    [box.minLon, box.minLat, box.maxLon, box.maxLat],
+    [box.minLon, box.minLat, box.maxLon, box.maxLat, NEAR_DRAWN_DEG],
   );
   return rows;
 }

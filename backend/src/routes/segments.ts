@@ -1,9 +1,29 @@
+import * as turf from "@turf/turf";
 import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { asyncRoute } from "./asyncRoute.js";
 import { segmentsWithLines } from "../services/segmentsResponse.js";
-import type { ElevationBucket, PassBucket, Segment, SegmentCoverage } from "../types/index.js";
+import {
+  boxAround,
+  insideBox,
+  loadExtents,
+  loadLineData,
+  loadPathSegments,
+  loadTransitions,
+} from "../services/pathData.js";
+import {
+  buildPathGraph,
+  connectPath,
+  growPath,
+  lineKey,
+  type Candidate,
+  type PathGraph,
+  type PathPiece,
+  type PathPoint,
+} from "../services/pathGrowth.js";
+import { pathResponse, type PathEnd } from "../services/pathResponse.js";
+import type { Direction, ElevationBucket, PassBucket, Segment, SegmentCoverage } from "../types/index.js";
 
 export const segmentsRouter = Router();
 
@@ -73,4 +93,143 @@ segmentsRouter.get("/", asyncRoute(async (req, res) => {
 
   // Joined in services/segmentsResponse.ts, which says why that join is fragile.
   res.json({ segments: segmentsWithLines(segmentRows, bucketRows, coverageRows, passRows) });
+}));
+
+// GET /segments/path: the path a press-and-hold selection grows along. The
+// design is context/session.md, "Designed 2026-10-17, not built: press and
+// hold on a segment"; services/pathGrowth.ts grows it, and
+// services/pathResponse.ts says what each field means.
+//
+// Three requests, by what they name:
+//   a press:          the pressed line and point. Grows from there.
+//   hold past the end: the selection's end (with atM) and toSegmentId..toLat,
+//                     the line held. Connects to it, then grows from it.
+//   hold behind it:   the line held, toSegmentId..toAtM the selection's start,
+//                     grow=false. Connects to the start and stops there.
+// `avoid` lists the selection's segments, so growth stops (`loop`) rather than
+// run back into it.
+//
+// The network is loaded for PATH_BOX_M around the point or points, near drawn
+// lines only (loadPathSegments). Growth stops with `limit` at a junction within
+// PATH_EDGE_M of that box's edge, where a branch may not have been loaded, and
+// the phone asks again from the tip.
+const PATH_BOX_M = 2000;
+const PATH_EDGE_M = 100;
+const MAX_AVOID = 500;
+
+const directionSchema = z.enum(["forward", "backward"]);
+const pathQuerySchema = z
+  .object({
+    segmentId: z.coerce.number().int().positive(),
+    direction: directionSchema,
+    lon: z.coerce.number().min(-180).max(180),
+    lat: z.coerce.number().min(-90).max(90),
+    atM: z.coerce.number().min(0).optional(),
+    toSegmentId: z.coerce.number().int().positive().optional(),
+    toDirection: directionSchema.optional(),
+    toLon: z.coerce.number().min(-180).max(180).optional(),
+    toLat: z.coerce.number().min(-90).max(90).optional(),
+    toAtM: z.coerce.number().min(0).optional(),
+    grow: z.enum(["true", "false"]).default("true"),
+    avoid: z
+      .string()
+      .regex(/^\d+(,\d+)*$/, "a comma-separated list of segment ids")
+      .refine((ids) => ids.split(",").length <= MAX_AVOID, `at most ${MAX_AVOID} ids`)
+      .optional(),
+  })
+  .refine(
+    (q) => [q.toSegmentId, q.toDirection, q.toLon, q.toLat].every((v) => v === undefined) ||
+      [q.toSegmentId, q.toDirection, q.toLon, q.toLat].every((v) => v !== undefined),
+    "toSegmentId, toDirection, toLon and toLat go together",
+  )
+  .refine((q) => q.grow === "true" || q.toSegmentId !== undefined, "grow=false needs a point to reach");
+
+// Metres along `direction` to the point of the segment nearest `lonLat`. turf
+// measures along the geometry, which can differ slightly from the stored
+// length every other distance uses, so it is rescaled onto that.
+function travelMAt(segment: Segment, direction: Direction, lonLat: [number, number]): number {
+  const line = turf.lineString(segment.geom.coordinates);
+  const geometryM = turf.length(line, { units: "meters" });
+  const nearest = turf.nearestPointOnLine(line, lonLat, { units: "meters" });
+  const forwardM = nearest.properties.totalDistance * (geometryM > 0 ? segment.lengthM / geometryM : 1);
+  return direction === "forward" ? forwardM : segment.lengthM - forwardM;
+}
+
+// A request's point on the loaded network, or null when its segment is not
+// there. A pressed point (no atM) is moved onto its line's drawn stretch: the
+// phone only draws that stretch, and a finger lands beside it.
+function locate(
+  graph: PathGraph,
+  point: { segmentId: number; direction: Direction; lon: number; lat: number; atM?: number },
+): PathPoint | null {
+  const segment = graph.segments.get(point.segmentId);
+  if (!segment) return null;
+  let atM = point.atM ?? travelMAt(segment, point.direction, [point.lon, point.lat]);
+  atM = Math.max(0, Math.min(segment.lengthM, atM));
+  const extent = graph.extents.get(lineKey(point));
+  if (point.atM === undefined && extent) atM = Math.max(extent.fromM, Math.min(extent.toM, atM));
+  return { segmentId: point.segmentId, direction: point.direction, atM };
+}
+
+segmentsRouter.get("/path", asyncRoute(async (req, res) => {
+  const parsed = pathQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({
+      error: parsed.error.issues.map((issue) => `${issue.path.join(".") || "query"}: ${issue.message}`).join("; "),
+    });
+  }
+  const q = parsed.data;
+  const target =
+    q.toSegmentId === undefined
+      ? null
+      : { segmentId: q.toSegmentId, direction: q.toDirection!, lon: q.toLon!, lat: q.toLat!, atM: q.toAtM };
+  const points: Array<[number, number]> = [[q.lon, q.lat]];
+  if (target) points.push([target.lon, target.lat]);
+  const box = boxAround(points, PATH_BOX_M);
+
+  // The network and the ride order go out together; the extents need the
+  // network's ids.
+  const [segments, transitions] = await Promise.all([loadPathSegments(pool, box), loadTransitions(pool)]);
+  const extents = await loadExtents(pool, segments);
+  const graph = buildPathGraph({ segments, extents, transitions, decidable: insideBox(box, PATH_EDGE_M) });
+
+  const from = locate(graph, q);
+  const to = target && locate(graph, target);
+  if (!from || (target && !to)) {
+    const missing = from ? target!.segmentId : q.segmentId;
+    return res.status(404).json({ error: `segment ${missing} is not near a drawn line there` });
+  }
+
+  const avoid = q.avoid ? q.avoid.split(",").map(Number) : [];
+  let pieces: PathPiece[] = [];
+  let reason: PathEnd;
+  let branches: readonly Candidate[] = [];
+  if (!to) {
+    const grown = growPath(graph, from, { avoid });
+    ({ pieces } = grown);
+    ({ reason, branches } = grown.stop);
+  } else {
+    const connector = connectPath(graph, from, to);
+    if (connector === null) {
+      reason = "unreachable";
+    } else if (q.grow === "false") {
+      pieces = connector;
+      reason = "joined";
+    } else {
+      // On from the held point, the connection's own segments counting as
+      // already selected; its first piece carries no rule, its segment having
+      // joined as the connection's last.
+      const last = connector[connector.length - 1];
+      const connectorM = last ? last.atM + (last.toM - last.fromM) : 0;
+      const grown = growPath(graph, to, { avoid: [...avoid, ...connector.map((p) => p.segmentId)], startRule: null });
+      pieces = [...connector, ...grown.pieces.map((p) => ({ ...p, atM: p.atM + connectorM }))];
+      ({ reason, branches } = grown.stop);
+    }
+  }
+
+  const { lines, rides } =
+    pieces.length > 0
+      ? await loadLineData(pool, graph.segments, pieces.map((p) => p.segmentId))
+      : { lines: new Map(), rides: new Map() };
+  res.json(pathResponse(graph, pieces, reason, branches, lines, rides));
 }));

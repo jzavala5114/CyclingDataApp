@@ -1,5 +1,9 @@
 import "dotenv/config";
+import { once } from "node:events";
+import type { AddressInfo } from "node:net";
+import express from "express";
 import { pool } from "../db/pool.js";
+import { segmentsRouter } from "../routes/segments.js";
 import {
   buildPathGraph,
   candidatesAt,
@@ -13,7 +17,7 @@ import {
   type RuleName,
   type StopReason,
 } from "../services/pathGrowth.js";
-import { boxAround, insideBox, loadExtents, loadLineData, loadSegmentsInBox, loadTransitions } from "../services/pathData.js";
+import { loadExtents, loadLineData, loadTransitions } from "../services/pathData.js";
 import type { Direction, Segment } from "../types/index.js";
 
 // How well a press-and-hold selection grows, measured on the stored rides.
@@ -30,7 +34,7 @@ import type { Direction, Segment } from "../types/index.js";
 //    name first, no history at all, and the least turn always, the baseline.
 // 2. Growth from the start of every drawn line: why it stops, how far it gets,
 //    and how much of it has no data, with and without the 5m snap.
-// 3. The route's own loading, timed, at a handful of starts.
+// 3. The route itself, timed end to end in-process, at 20 presses.
 // 4. Each line of Ladders and Gold Camp Road against the terrain model: the
 //    card's net change and climb beside the DEM's. Reported, not judged: on
 //    singletrack the DEM samples a centreline the rider was not on.
@@ -43,8 +47,8 @@ import type { Direction, Segment } from "../types/index.js";
 // line: everything growth can reach, since it never runs more than 150m from
 // data.
 const CORRIDOR_DEG = 0.003;
-const ROUTE_BOX_M = 1500;
-const ROUTE_EDGE_M = 100;
+// Presses the route is timed at.
+const ROUTE_PRESSES = 20;
 
 const NAMED = ["ladders", "gold camp road"];
 
@@ -62,7 +66,7 @@ let extentsMs = 0;
 let transitionsMs = 0;
 let extents = new Map<string, { fromM: number; toM: number }>();
 let transitions: Awaited<ReturnType<typeof loadTransitions>> = [];
-const routeTimings: string[] = [];
+const routeRuns: Array<{ ms: number; kb: number; km: number; reason: StopReason }> = [];
 let named: { lines: Awaited<ReturnType<typeof loadLineData>>["lines"]; dem: Map<string, Array<{ distanceM: number; elevationM: number }>> } | null =
   null;
 
@@ -107,33 +111,40 @@ try {
   transitions = await loadTransitions(client);
   transitionsMs = ms(t0);
 
-  // The route's loading, at starts spread through the drawn lines.
+  // The route itself, in-process over HTTP from this PC, at presses spread
+  // through the drawn lines: one request first to open the pool's
+  // connections, as a running server has them open, then each timed.
   const byId = new Map(corridor.map((s) => [s.id, s]));
   const drawnKeys = [...extents.keys()].sort();
-  const step = Math.max(1, Math.floor(drawnKeys.length / 5));
-  for (let i = 0; i < drawnKeys.length && routeTimings.length < 5; i += step) {
-    const [id, direction] = drawnKeys[i]!.split(":") as [string, Direction];
-    const segment = byId.get(Number(id))!;
-    const extent = extents.get(drawnKeys[i]!)!;
-    const point = direction === "forward" ? segment.geom.coordinates[0]! : segment.geom.coordinates.at(-1)!;
-    const box = boxAround([point], ROUTE_BOX_M);
-    // Through the pool, as the route asks, so the line data's four queries run
-    // side by side; every pool connection is read-only (above).
-    const t1 = performance.now();
-    const segments = await loadSegmentsInBox(pool, box);
-    const boxExtents = await loadExtents(pool, segments);
-    const loadMs = ms(t1);
-    const t2 = performance.now();
-    const graph = buildPathGraph({ segments, extents: boxExtents, transitions, decidable: insideBox(box, ROUTE_EDGE_M) });
-    const grown = growPath(graph, { segmentId: segment.id, direction, atM: extent.fromM });
-    const lineIds = [...new Set(grown.pieces.map((p) => p.segmentId))];
-    const t3 = performance.now();
-    await loadLineData(pool, graph.segments, lineIds);
-    routeTimings.push(
-      `  ${String(segment.streetName ?? "(unnamed)").padEnd(28)} ${String(segments.length).padStart(6)} segments` +
-        `  load ${String(loadMs).padStart(5)} ms  grow ${String(Math.round(t3 - t2)).padStart(4)} ms` +
-        `  line data ${String(ms(t3)).padStart(4)} ms  ->  ${km(grown.lengthM)} km, ${grown.stop.reason}`,
-    );
+  const step = Math.max(1, Math.floor(drawnKeys.length / ROUTE_PRESSES));
+  const presses = drawnKeys.filter((_, i) => i % step === 0).slice(0, ROUTE_PRESSES + 1);
+  const server = express().use("/segments", segmentsRouter).listen(0, "127.0.0.1");
+  await once(server, "listening");
+  try {
+    const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    for (const [n, key] of presses.entries()) {
+      const [id, direction] = key.split(":") as [string, Direction];
+      const segment = byId.get(Number(id))!;
+      const extent = extents.get(key)!;
+      const [lon, lat] = direction === "forward" ? segment.geom.coordinates[0]! : segment.geom.coordinates.at(-1)!;
+      const query = new URLSearchParams({
+        segmentId: id,
+        direction,
+        lon: String(lon),
+        lat: String(lat),
+        atM: String(extent.fromM),
+      });
+      const t1 = performance.now();
+      const res = await fetch(`${base}/segments/path?${query}`);
+      const text = await res.text();
+      const elapsed = performance.now() - t1;
+      if (!res.ok) throw new Error(`GET /segments/path?${query}: HTTP ${res.status} ${text}`);
+      if (n === 0) continue;
+      const body = JSON.parse(text) as { lengthM: number; stop: { reason: StopReason } };
+      routeRuns.push({ ms: elapsed, kb: text.length / 1024, km: body.lengthM / 1000, reason: body.stop.reason });
+    }
+  } finally {
+    server.close();
   }
 
   // The named streets, for the terrain comparison.
@@ -288,8 +299,18 @@ for (const [label, g] of [
 
 // ---- 3. the route's loading -------------------------------------------------
 
-console.log(`\n3. THE ROUTE'S LOADING, a ${ROUTE_BOX_M} m box, growth stopping ${ROUTE_EDGE_M} m inside its edge`);
-for (const line of routeTimings) console.log(line);
+{
+  const times = routeRuns.map((r) => r.ms).sort((a, b) => a - b);
+  const reasons = new Map<StopReason, number>();
+  for (const r of routeRuns) reasons.set(r.reason, (reasons.get(r.reason) ?? 0) + 1);
+  console.log(`\n3. THE ROUTE, end to end in-process from this PC, ${routeRuns.length} presses after one to warm up`);
+  console.log(
+    `   ms: median ${Math.round(at(times, 0.5))}, p95 ${Math.round(at(times, 0.95))}, max ${Math.round(times.at(-1) ?? 0)};` +
+      ` response median ${at(routeRuns.map((r) => r.kb).sort((a, b) => a - b), 0.5).toFixed(0)} KB;` +
+      ` path median ${at(routeRuns.map((r) => r.km).sort((a, b) => a - b), 0.5).toFixed(2)} km`,
+  );
+  console.log(`   stops: ${[...reasons].map(([r, k]) => `${r} ${k}`).join(", ")}`);
+}
 
 // ---- 4. against the terrain model --------------------------------------------
 

@@ -348,8 +348,8 @@ export interface GrowOptions extends PickOptions {
   maxM?: number;
   /** Segments already in the selection: reaching one again is a loop. */
   avoid?: Iterable<number>;
-  /** The rule the first piece reports: "start" for a press. */
-  startRule?: PieceRule;
+  /** The rule the first piece reports: "start" for a press, null to continue a segment already joined. */
+  startRule?: PieceRule | null;
 }
 
 const lengthOf = (pieces: readonly PathPiece[]) => {
@@ -376,7 +376,7 @@ export function growPath(graph: PathGraph, start: PathPoint, options: GrowOption
   let line: LineRef = { segmentId: start.segmentId, direction: start.direction };
   let segment = graph.segments.get(line.segmentId);
   let enterM = segment ? Math.max(0, Math.min(segment.lengthM, start.atM)) : 0;
-  let rule: PieceRule | null = options.startRule ?? "start";
+  let rule: PieceRule | null = options.startRule === undefined ? "start" : options.startRule;
   let stop: PathStop = { reason: "end", branches: [] };
 
   grow: while (segment) {

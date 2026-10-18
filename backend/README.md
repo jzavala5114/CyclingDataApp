@@ -49,11 +49,20 @@ npm run eval:quality    # where the elevation model stands, against the live arc
 npm run eval:smoothing  # eval: the zero-phase elevation smoother
 npm run eval:linker     # eval: what folding a sidewalk does to the drawn map
 npm run eval:query-types  # eval: what every query returns, against the type the code declares
+npm run eval:path       # eval: how a press-and-hold selection grows, on the stored rides
 ```
 
 `npm test` runs Node's built-in test runner through tsx. It needs nothing but
-the source, so it is safe on any checkout. All four evals read the live
+the source, so it is safe on any checkout. All five evals read the live
 database and write nothing.
+
+`npm run eval:path` scores the fork rule of `GET /segments/path`
+leave-one-ride-out: at every fork a stored ride passed, does the rule pick
+the way that ride went, judged on the other rides' history? It exits 1
+unless the rule as shipped beats the least turn, and also reports where
+growth from every drawn line stops, what the 5 m snap buys, the route's
+latency end to end in-process, and Ladders and Gold Camp Road against the
+terrain model.
 
 `npm run eval:query-types` asks the database for the column types of every
 query under `src/` and checks each against the row type the code declares,
@@ -126,6 +135,7 @@ Two cautions when comparing runs:
 - `POST /sessions/:id/samples` — upload a batch of `{ recordedAt, lat, lon, elevationM, elevationSource, altitudeAccuracyM, headingDeg, speedMps, accuracyM }`. `elevationSource` is `"barometer"` or `"gps"`; it and `altitudeAccuracyM` are optional, so an older build of the app still uploads successfully and its samples land unlabelled.
 - `POST /sessions/:id/end` — end the session; map-matches its samples to nearby segments and merges them into the running elevation model
 - `GET /segments?minLon=&minLat=&maxLon=&maxLat=` — segments in a viewport, each with `directionalLines` (offset gradient geometry + color stops) ready for MapLibre
+- `GET /segments/path?segmentId=&direction=&lon=&lat=[&atM=][&toSegmentId=&toDirection=&toLon=&toLat=[&toAtM=]][&grow=false][&avoid=id,id]`: the path a press-and-hold selection grows along, ahead from the pressed line in its own direction of travel: `pieces` (each with the map's own offset geometry in travel order, its data `source`, the `rule` that took it, and the rides behind it), `spans` (the slope of every stretch, as the map colours it), `stop` (why it ends: `end`, `fork` with its `branches`, `gap`, `loop`, `limit`, or for a connection `joined` / `unreachable`), and the colour `bands`. With a `to` point it first connects to it. A bad parameter is a 400. See `src/services/pathResponse.ts` for every field and `src/routes/segments.ts` for the three kinds of request.
 
 See `src/services/segmentMatcher.ts`, `elevationAggregator.ts`, and
 `gradientBuilder.ts` for the core algorithms, and `src/db/schema.sql` for the
