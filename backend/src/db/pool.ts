@@ -71,10 +71,20 @@ class CheckedPool extends Pool {
 // through NATs, and an idle connection that dies anyway leaves the pool with a
 // line in the log (the listener below). No client-side query timeout: scripts
 // sharing this pool run statements for up to 15 minutes on purpose.
+//
+// Four of them never close however long the pause (`min`): four is the most
+// one press holds at once, loadLineData's four statements. A new connection
+// through the pooler took 400 to 850ms on the server (the request trace,
+// 2026-10-18: a press that opened four answered in 1118ms, against a median
+// 227ms with them waiting), and the 10-minute timeout alone left the first
+// press after any longer pause to open all four again. The server opens them
+// when it starts (warmPool.ts); a connection past the four still closes after
+// 10 minutes idle. pg-pool's end(), which every script calls, closes them all.
 export const pool = new CheckedPool({
   connectionString: process.env.DATABASE_URL,
   connectionTimeoutMillis: 10_000,
   idleTimeoutMillis: 10 * 60_000,
+  min: 4,
   keepAlive: true,
   keepAliveInitialDelayMillis: 10_000,
   statement_timeout: 60_000,

@@ -2,6 +2,8 @@ import "dotenv/config";
 import { readFileSync } from "node:fs";
 import cors from "cors";
 import express from "express";
+import { pool } from "./db/pool.js";
+import { warmPool } from "./db/warmPool.js";
 import { accessLog } from "./routes/accessLog.js";
 import { segmentsRouter } from "./routes/segments.js";
 import { sessionsRouter } from "./routes/sessions.js";
@@ -67,4 +69,9 @@ process.on("unhandledRejection", (reason) => {
 const port = Number(process.env.PORT ?? 3000);
 app.listen(port, () => {
   console.log(`backend listening on :${port}`);
+  // The pool's kept connections, opened before the first press needs them.
+  void warmPool(pool, pool.options.min ?? 0).then(({ opened, failed, ms }) => {
+    console.log(`database: opened ${opened} connection(s) in ${Math.round(ms)}ms`);
+    for (const reason of failed) console.error(`database: a connection failed to open at start: ${reason}`);
+  });
 });

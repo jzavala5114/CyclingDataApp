@@ -426,6 +426,11 @@ test("IDLE CONNECTIONS OUTLAST A RIDER'S PAUSE between presses, and are kept ali
   // hours on Linux, far past any NAT's idle timeout (a cold review's F3).
   const delay = pool.options.keepAliveInitialDelayMillis;
   assert.ok(delay !== undefined && delay > 0 && delay <= 30_000, `the first keepalive probe waits ${delay}ms`);
+  // A press holds up to four at once (loadLineData's four statements); those
+  // four never time out, so the first press after a long pause does not pay
+  // 400 to 850ms to open each again (the request trace, 2026-10-18).
+  assert.ok((pool.options.min ?? 0) >= 4, `the pool keeps ${pool.options.min} connections through a pause`);
+  assert.ok(pool.options.min! <= pool.options.max!, "min never exceeds max");
   // A client-side query timeout would cut the scripts' long statements short.
   assert.equal((pool.options as { query_timeout?: number }).query_timeout, undefined);
 });
