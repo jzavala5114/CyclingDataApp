@@ -26,16 +26,20 @@ the rest. No ride has landed since.
 numbered items). Julian chose it over the census and settled its four open
 questions on 2026-10-17. **Phase 1, the server, shipped 2026-10-17**
 (`5ccbc35`, `builtAt 2026-10-18T01:40:59.257Z`): `GET /segments/path` is live, and nothing
-calls it until the app does. **Phase 2, the app, is built, on the phone, and
-NOT merged**: branch `press-hold-app` at `829c09c`, pushed, unreviewed.
-**Julian tried it on 2026-10-18: "pretty amazing so far", the functionality
-"feels great"; he sees the lag, and has no way to tell whether the stats are
-right.** Resume on that branch, in this order (details under "2. **App**" in
-the feature's section):
-- **First, the cold critic** on the mobile diff, about 180k, then its fixes,
-  the final APK, and merge. Nothing deploys: the server is unchanged.
-- **Then the lag.** Measure first (where the first answer's 3 to 5 seconds
-  go), then the fix, on Julian's go-ahead if it touches the server.
+calls it until the app does. **Phase 2, the app, shipped 2026-10-18**: merged
+into `main` from `press-hold-app` (`d7204c3` and these notes) after two cold
+reviews, both FAIL and both fixed, every finding with a test and an eval that
+fail without its fix. The final APK, from `d7204c3`, is built but not yet
+installed: the phone, on the build from before round 2's fixes (`4d6d0a0`),
+was unplugged first. Nothing deployed: the server is unchanged. **Julian tried
+it on 2026-10-18: "pretty amazing so far", the functionality "feels great";
+he sees the lag, and has no way to tell whether the stats are right.** Next,
+in this order (details under
+"2. **App**" in the feature's section):
+- **The lag: measured, not fixed.** The server's own access log shows a press
+  after 30s or more of quiet taking a median 2.84s on the server against
+  1.17s warm, the step at the database pool's 30s idle timeout. The fix is a
+  server change and a deploy, on Julian's go-ahead.
 - **Then whether the card's numbers are right**: a check against something
   independent, which nothing does yet.
 
@@ -288,9 +292,10 @@ cutting the path at a grown distance.
    estimated until the next request; `avoid` takes at most 500 ids; and the
    eval's read-only guard rides on pg's deprecated query queueing, as
    `eval:mixing`'s does.
-2. **App: built 2026-10-17 on `press-hold-app` (pushed, not merged), paused
-   at Julian's session limit before its review.** About 430k so far against a
-   710k re-estimate.
+2. **App: shipped 2026-10-18**, merged into `main` from `press-hold-app`
+   (built 2026-10-17, reviewed twice and fixed 2026-10-18). About 800k in all,
+   against 250k first planned and a 710k re-estimate; the two cold critics
+   alone cost 236k and 176k, each over its brief's budget (150k, 100k).
    - **Touch spike: PASS.** Injected touches on the Pixel 10 Pro: MapLibre's
      `onLongPress` at about 400ms, then `onTouchEnd` on the wrapper `View`
      when the finger lifts (+2502ms on a 2.5s hold), no `onPress` after a long
@@ -329,15 +334,27 @@ cutting the path at a grown distance.
      carry on, the camera following the tip, tap to trim and confirm, flip,
      Android back, hold a line near the end to join it, the first-run hint.
      Not seen on the phone: leading in from near the start, a fork's branches.
-   - **Found on the phone and open: the first answer is slow, and Julian sees
-     it too (2026-10-18).** Holds waited 3 to 5 seconds at the end of the
-     pressed line for the server, against a median 1.15 to 1.38s from this PC
-     with the server warm. Suspected: the
-     pool closes idle connections after 30s (`idleTimeoutMillis` in
-     `backend/src/db/pool.ts`), so a press after a pause opens fresh
-     connections to the database. Unmeasured; a server change and a deploy, so
-     Julian's call. A one-line trace of each answer's time on the phone would
-     settle it first.
+   - **Found on the phone: the first answer is slow, and Julian sees it too.**
+     Holds waited 3 to 5 seconds at the end of the pressed line, against a
+     median 1.15 to 1.38s from this PC with the server warm. **Measured
+     2026-10-18, read-only**, from the backend's own access log
+     (`railway logs --service cyclingdataapp-backend --deployment --json`;
+     `--http` returns nothing on this plan). Server time for
+     `GET /segments/path` by the quiet before it: under 5s, 147 requests,
+     median 1170ms (p90 1559); 5 to 30s, 7, median 1386ms; 30s or more, 11,
+     median 2840ms (p90 4052, max 4890). Every press after 36s or more of
+     quiet took 2405 to 4890ms, every one after 6 to 19s 1075 to 1686ms: the
+     step sits at the pool's `idleTimeoutMillis: 30_000`
+     (`backend/src/db/pool.ts`), which closes idle connections. Julian's
+     presses were 27 to 448s apart, so nearly all paid it (median 2698ms on
+     the server alone). Also found: the phone's whole-world `GET /segments` on
+     opening the app answers 304 in 3272 to 3500ms, running the whole query
+     to say "not modified"; and nothing listens for `pool.on("error")`, so an
+     idle connection the pooler drops is an uncaught `error` event, a crash,
+     whose window a longer idle timeout widens. The database is Supabase's
+     session-mode pooler (`aws-0-us-west-2.pooler.supabase.com:5432`). Not
+     measured yet: where the warm 1.17s goes, and how the cold 1.7s splits
+     between connecting and a cold Postgres backend.
    - **Open: whether the card's numbers are right.** Every number on the card
      agrees with the server's spans (the eval checks that on live data), so the
      card can be no more wrong than the map's colours, but nothing checks either
@@ -349,30 +366,56 @@ cutting the path at a grown distance.
      60m) smoothing out ups and downs that a terrain model sampled along an OSM
      centreline inflates with its own bumps, but neither number is known to be
      the true one.
-   - **Resume, in order.** Check out `press-hold-app` (`829c09c`); `git
-     status` clean but for CLAUDE.md.
-     1. **One cold critic** on the mobile diff, about 180k, judged against this
-        section. Its brief, if the file survives, is
-        `C:\Users\Julian\AppData\Local\Temp\claude\c--Users-Julian-Documents-GitHub-CyclingDataApp\e24d4bb5-018e-46b7-89ee-9dee82f392bf\scratchpad\press-hold-app\critique\brief.md`: the reference is this section and
-        `backend/src/services/pathResponse.ts`; the rubric is "What it does",
-        "The card" and Julian's four decisions; attack the controller's races
-        first (touch start, hit resolved, the 150ms ask, long press, answer,
-        lift, a second touch, clear, trim, flip), then the arithmetic, the
-        server contract, `MapScreen.tsx`'s wiring, and whether the tests and
-        the eval can fail; every finding reproduced; at most one
-        `npx tsx scripts/evalSelection.ts 4` against production; never the
-        phone. The first critic was stopped before it read any code. Then its
-        fixes, the final APK, merge into `main`, push, and these notes. No
-        deploy: the server is unchanged.
-     2. **The lag.** First measure, read-only: time each stage of
-        `GET /segments/path` (the network and ride order, the extents, the
-        line data) on a first request after a minute idle against a warm one,
-        from Railway's own request log or a trace line, and on the phone time
-        each answer. If idle connections are the cost, the candidates are a
-        longer `idleTimeoutMillis` (with Supabase's connection cap in mind),
-        or the phone warming the server when the app opens. Either way a
-        server change and a deploy, on Julian's go-ahead.
-     3. **The numbers against the ground.** A read-only eval: for selections on
+   - **The review, 2026-10-18.** Round 1: FAIL, three blocking and two
+     should-fix. Holding the tip of a run let go part grown, as the card says
+     to, went round the block or replaced the selection: the growing run was
+     not hit-tested, so the finger found the line under it and asked for a
+     connection to a point behind the end. A tap during a flip crashed the
+     app (a trim index into a changed selection), and during a lead-in
+     trimmed the wrong place. A "more" answer landing during a connection grew
+     on, and the connection then joined at the wrong end. A trim while
+     something was awaited left the spinner turning for good. A lead-in cut
+     the selection's end. Fixed with one rule, one answer awaited at a time
+     (`supersede()` on every hold that asks, every trim, flip and close, with
+     a hold's intent worked out again at the long press if an answer landed
+     since the finger came down), taps refused while anything is awaited, the
+     growing layers hit-tested, and a hold on the selected stretch of the
+     selection's own line, same direction, carrying it on. Round 2: FAIL,
+     nothing blocking, all five confirmed fixed; an unreachable answer after
+     letting go emptied the selection (present since `ea7cf8b`; now the
+     selection stays and the card says why), the eval's hold check passed
+     while a resume grew nothing, the stretch rule could lose its direction
+     check unseen, and two nits. All fixed. Every finding was reproduced by
+     its probe before the fix; the critiques, probes and mutants are in the
+     scratchpad of session `e24d4bb5`, `press-hold-app/critique/` and
+     `press-hold-app/fix-round-{1,2}/`.
+   - **Checks at ship:** 131 app tests, the new controller tests each failing
+     on the code before its fix; 21 mutants of the fixes killed, four guards
+     with no reachable trigger surviving by design. `npm test` runs with
+     `--test-timeout=5000`: a mutant made a test wait forever, which would
+     have frozen the pre-commit hook. `eval:selection` gained a `hold` check
+     that drives the real controller over each live answer (the tip
+     hit-tested as the selection; holds through the line under it carry on
+     and grow; 25m ahead joins straight along; the street's other line
+     asks), a band check summed from the spans by colour, and `--record` /
+     `--replay`, so a mutant is judged on a recorded live run with no
+     traffic. Live, builtAt 2026-10-18T01:40:59.257Z: PASS, 16 presses, 75 of
+     75 resumes, 16 of 16 flips. A 2m slack past the selected stretch turned
+     out unneeded on real lines (travel metres line up exactly); it stays as
+     rounding margin. Not seen on the phone: leading in, a fork's branches,
+     and the tip hold through the device's own query (the eval rebuilds the
+     query from the layer list).
+   - **Next, in order.**
+     1. **The lag.** Measured above; next, time the route's stages on a cold
+        and a warm connection (a read-only script against the same pooler:
+        connect, first query, each of the route's queries), to split the cold
+        1.7s and see where the warm 1.17s goes. The candidates: a
+        `pool.on("error")` listener first in any case, then a longer
+        `idleTimeoutMillis` (two containers overlap during a deploy, 2 x max
+        10 connections, within the pooler's cap), or a warm connection kept,
+        or the app warming the server when it opens; and the 304 on app open.
+        A server change and a deploy, on Julian's go-ahead.
+     2. **The numbers against the ground.** A read-only eval: for selections on
         stretches with a known answer, the card's net change and climb against
         the terrain model, and against a reference Julian trusts (a climb's
         published figures, or his own ride on another app), so the 38% gap
@@ -491,15 +534,15 @@ fix), saved selections, a climb finder.
 `refresh-architecture-doc`, `session-notes-compact`, `darker-red-bands`,
 `state-after-colours`, `mixing-artefact-notes`, `option-a-plan`,
 `option-a-state`, `per-pass-slopes` and `option-a-live` are merged and safe
-to delete, and so are `press-hold-plan`, `path-route`, `path-route-live` and
-`notes-after-phase1`.
-**In flight: `press-hold-app`** (`829c09c` and these notes), pushed, NOT
-merged: phase 2 of press and hold, built and tested, not yet reviewed. Julian
-tried it on 2026-10-18 and likes it; the lag and the numbers are open. Its
-release APK is installed on the phone (built 2026-10-17 at about 22:45 from
-the code of `829c09c`); merging it changes no server code, so nothing
-deploys. No running job.
-Last code change `5ccbc35` (2026-10-17): `GET /segments/path`, phase 1 of
+to delete, and so are `press-hold-plan`, `path-route`, `path-route-live`,
+`notes-after-phase1` and `press-hold-app`.
+Nothing is in flight: no open branch, no uncommitted work, no running job.
+The release APK built from `d7204c3`
+(`mobile/android/app/build/outputs/apk/release/`) waits to be installed: the
+phone was unplugged first and runs `4d6d0a0`'s build, without round 2's fixes.
+Last code change `d7204c3` (2026-10-18): phase 2 of press and hold, the app
+half, merged with its two reviews' fixes; app only, so nothing deployed.
+Before it, `5ccbc35` (2026-10-17): `GET /segments/path`, phase 1 of
 press and hold. Additive: nothing calls it until the app's phase 2, and the
 map's line drawing moved into helpers without changing a byte. Before it,
 `26f4620` (2026-10-17): option A, each pass's own slope,
@@ -609,7 +652,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 33 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature ("Press and hold on a segment, designed 2026-10-17"): phase 1, the server, is live; phase 2, the app, is built on `press-hold-app` and on the phone; resume with its cold critic, then the lag, then whether the numbers are right |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature ("Press and hold on a segment, designed 2026-10-17"): phase 1, the server, is live; phase 2, the app, shipped 2026-10-18; next the lag (measured, not fixed), then whether the numbers are right |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
