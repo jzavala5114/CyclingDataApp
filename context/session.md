@@ -29,9 +29,8 @@ questions on 2026-10-17. **Phase 1, the server, shipped 2026-10-17**
 calls it until the app does. **Phase 2, the app, shipped 2026-10-18**: merged
 into `main` from `press-hold-app` (`d7204c3` and these notes) after two cold
 reviews, both FAIL and both fixed, every finding with a test and an eval that
-fail without its fix. The final APK, from `d7204c3`, is built but not yet
-installed: the phone, on the build from before round 2's fixes (`4d6d0a0`),
-was unplugged first. Nothing deployed: the server is unchanged. **Julian tried
+fail without its fix. The final APK, from `d7204c3`, is on the phone
+(installed 2026-10-18 at 02:00). Nothing deployed: the server is unchanged. **Julian tried
 it on 2026-10-18: "pretty amazing so far", the functionality "feels great";
 he sees the lag, and has no way to tell whether the stats are right.** Next,
 in this order (details under
@@ -537,9 +536,8 @@ fix), saved selections, a climb finder.
 to delete, and so are `press-hold-plan`, `path-route`, `path-route-live`,
 `notes-after-phase1` and `press-hold-app`.
 Nothing is in flight: no open branch, no uncommitted work, no running job.
-The release APK built from `d7204c3`
-(`mobile/android/app/build/outputs/apk/release/`) waits to be installed: the
-phone was unplugged first and runs `4d6d0a0`'s build, without round 2's fixes.
+The phone runs the release APK built from `d7204c3` (installed 2026-10-18 at
+02:00).
 Last code change `d7204c3` (2026-10-18): phase 2 of press and hold, the app
 half, merged with its two reviews' fixes; app only, so nothing deployed.
 Before it, `5ccbc35` (2026-10-17): `GET /segments/path`, phase 1 of
