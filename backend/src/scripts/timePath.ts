@@ -10,8 +10,11 @@
 // here. In production it costs the round trip from wherever Railway runs the
 // backend: on 2026-10-18 that was Amsterdam, about 150ms from the database in
 // Oregon against about 43ms from here, and the stages below are round trips
-// and transfer far more than work (EXPLAIN ANALYZE put the database's own
-// execution at about 50ms of a 418ms warm request from here).
+// and transfer far more than work. A one-off EXPLAIN ANALYZE of each statement
+// that day put the database's own execution at about 50ms of a 418ms warm
+// request from here; this tool does not repeat it, the query census refusing
+// the dynamic SQL it takes. Production's own split of each request, as it
+// runs there, is in the access log's trace (npm run split:access-log).
 import "dotenv/config";
 import * as turf from "@turf/turf";
 import { pool } from "../db/pool.js";

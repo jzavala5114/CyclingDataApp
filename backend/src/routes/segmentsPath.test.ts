@@ -165,7 +165,7 @@ async function get(query: Record<string, string | number>) {
     const { port } = server.address() as AddressInfo;
     const params = new URLSearchParams(Object.entries(query).map(([k, v]) => [k, String(v)]));
     const res = await fetch(`http://127.0.0.1:${port}/segments/path?${params}`);
-    return { status: res.status, body: (await res.json()) as PathBody };
+    return { status: res.status, body: (await res.json()) as PathBody, serverTiming: res.headers.get("server-timing") };
   } finally {
     server.close();
   }
@@ -221,6 +221,17 @@ test("a press grows ahead from the pressed point, in numbers the phone can use",
   }
   assert.ok(near(heightM, (4 * body.lengthM) / 100, 1e-6), "climbs 4% all the way");
   assert.equal(body.stop.aheadM, 0);
+});
+
+test("a press says what the server spent on it, stage by stage, in a Server-Timing header", async (t) => {
+  // For eval:latency and the access log (requestTrace.ts): which stage a slow
+  // press spent its time in, and whether it had to open connections.
+  fakeDatabase(t);
+  const { status, serverTiming } = await get({ segmentId: 70001, direction: "forward", lon: LON + 0.00005, lat: 38.8205 });
+  assert.equal(status, 200);
+  const metrics = serverTiming!.split(", ").map((m) => m.split(";")[0]);
+  assert.deepEqual(metrics, ["network", "rideOrder", "extents", "growth", "lines", "total", "pool"]);
+  assert.match(serverTiming!, /^(\w+;dur=\d+\.\d, ){6}pool;desc="idle \d+ of \d+ waiting \d+ opened \d+"$/);
 });
 
 test("each piece is the map's own line: GET /segments draws exactly that geometry, both directions", async (t) => {

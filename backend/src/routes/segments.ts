@@ -3,6 +3,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { pool } from "../db/pool.js";
 import { asyncRoute } from "./asyncRoute.js";
+import { traceOf } from "./requestTrace.js";
 import { segmentsWithLines } from "../services/segmentsResponse.js";
 import {
   boxAround,
@@ -192,11 +193,17 @@ segmentsRouter.get("/path", asyncRoute(async (req, res) => {
   const points: Array<[number, number]> = [[q.lon, q.lat]];
   if (target) points.push([target.lon, target.lat]);
   const box = boxAround(points, PATH_BOX_M);
+  // Each stage's time goes to the access log and a Server-Timing header
+  // (requestTrace.ts).
+  const trace = traceOf(res);
 
   // The network and the ride order go out together; the extents need the
   // network's ids.
-  const [segments, transitions] = await Promise.all([loadPathSegments(pool, box), loadTransitions(pool)]);
-  const extents = await loadExtents(pool, segments);
+  const [segments, transitions] = await Promise.all([
+    trace.time("network", loadPathSegments(pool, box)),
+    trace.time("rideOrder", loadTransitions(pool)),
+  ]);
+  const extents = await trace.time("extents", loadExtents(pool, segments));
   const graph = buildPathGraph({ segments, extents, transitions, decidable: insideBox(box, PATH_EDGE_M) });
 
   const from = locate(graph, q);
@@ -235,9 +242,12 @@ segmentsRouter.get("/path", asyncRoute(async (req, res) => {
     }
   }
 
+  trace.mark("growth");
+
   const { lines, rides } =
     pieces.length > 0
-      ? await loadLineData(pool, graph.segments, pieces.map((p) => p.segmentId))
+      ? await trace.time("lines", loadLineData(pool, graph.segments, pieces.map((p) => p.segmentId)))
       : { lines: new Map(), rides: new Map() };
-  res.json(pathResponse(graph, pieces, stop, lines, rides));
+  res.setHeader("Server-Timing", trace.serverTiming());
+  trace.timeSync("respond", () => res.json(pathResponse(graph, pieces, stop, lines, rides)));
 }));

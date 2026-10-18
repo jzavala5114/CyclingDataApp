@@ -422,6 +422,10 @@ test("IDLE CONNECTIONS OUTLAST A RIDER'S PAUSE between presses, and are kept ali
   // 1170ms warm. Minutes between presses are ordinary.
   assert.ok(pool.options.idleTimeoutMillis! >= 5 * 60_000, `idle connections close after ${pool.options.idleTimeoutMillis}ms`);
   assert.equal(pool.options.keepAlive, true, "keepalive probes hold a waiting connection's route open");
+  // Without a delay, or with 0, the first probe waits the OS default: two
+  // hours on Linux, far past any NAT's idle timeout (a cold review's F3).
+  const delay = pool.options.keepAliveInitialDelayMillis;
+  assert.ok(delay !== undefined && delay > 0 && delay <= 30_000, `the first keepalive probe waits ${delay}ms`);
   // A client-side query timeout would cut the scripts' long statements short.
   assert.equal((pool.options as { query_timeout?: number }).query_timeout, undefined);
 });
