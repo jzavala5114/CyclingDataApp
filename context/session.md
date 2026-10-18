@@ -26,13 +26,21 @@ the rest. No ride has landed since.
 numbered items). Julian chose it over the census and settled its four open
 questions on 2026-10-17. **Phase 1, the server, shipped 2026-10-17**
 (`5ccbc35`, `builtAt 2026-10-18T01:40:59.257Z`): `GET /segments/path` is live, and nothing
-calls it until the app does. **Phase 2, the app, is built but paused
-unreviewed** (2026-10-17, Julian's session limit): branch `press-hold-app`,
-pushed, NOT merged; its APK is on the phone. What is left, in order, is under
-"2. **App**" in the feature's section: one cold critic, its fixes, the final
-APK, merge, notes. Item 1, the zero-run census (read-only, about
-40k), can run any time, and it also sizes the gaps the feature has to bridge.
-Items 2 to 5 follow.
+calls it until the app does. **Phase 2, the app, is built, on the phone, and
+NOT merged**: branch `press-hold-app` at `829c09c`, pushed, unreviewed.
+**Julian tried it on 2026-10-18: "pretty amazing so far", the functionality
+"feels great"; he sees the lag, and has no way to tell whether the stats are
+right.** Resume on that branch, in this order (details under "2. **App**" in
+the feature's section):
+- **First, the cold critic** on the mobile diff, about 180k, then its fixes,
+  the final APK, and merge. Nothing deploys: the server is unchanged.
+- **Then the lag.** Measure first (where the first answer's 3 to 5 seconds
+  go), then the fix, on Julian's go-ahead if it touches the server.
+- **Then whether the card's numbers are right**: a check against something
+  independent, which nothing does yet.
+
+Item 1, the zero-run census (read-only, about 40k), can run any time, and it
+also sizes the gaps the feature has to bridge. Items 2 to 5 follow.
 
 **Re-estimate anything large before starting it**: the last large read-only
 tasks ran 2 to 3 times over budget (STATE, "How work is sized"), and option A's
@@ -288,8 +296,8 @@ cutting the path at a grown distance.
      when the finger lifts (+2502ms on a 2.5s hold), no `onPress` after a long
      press, and with `dragPan` off from the long press a drag does not move the
      map. `queryRenderedFeatures` in a 44-point box takes 9 to 16ms and returns
-     both lines of a street, 17 points apart at zoom 17. Not yet tried with a
-     real finger.
+     both lines of a street, 17 points apart at zoom 17. Julian then used it
+     with his own finger on 2026-10-18 and it held up.
    - **Built:** `selectionController.ts` (the hold as a state machine, no React),
      `pathSelection.ts` (joins, cuts, the card's numbers, map features, units),
      `holdGesture.ts` (line pick, travel metres, preview, speed, hit priority),
@@ -321,19 +329,55 @@ cutting the path at a grown distance.
      carry on, the camera following the tip, tap to trim and confirm, flip,
      Android back, hold a line near the end to join it, the first-run hint.
      Not seen on the phone: leading in from near the start, a fork's branches.
-   - **Found on the phone and open: the first answer is slow.** Holds waited 3
-     to 5 seconds at the end of the pressed line for the server, against a
-     median 1.15 to 1.38s from this PC with the server warm. Suspected: the
+   - **Found on the phone and open: the first answer is slow, and Julian sees
+     it too (2026-10-18).** Holds waited 3 to 5 seconds at the end of the
+     pressed line for the server, against a median 1.15 to 1.38s from this PC
+     with the server warm. Suspected: the
      pool closes idle connections after 30s (`idleTimeoutMillis` in
      `backend/src/db/pool.ts`), so a press after a pause opens fresh
      connections to the database. Unmeasured; a server change and a deploy, so
      Julian's call. A one-line trace of each answer's time on the phone would
      settle it first.
-   - **Left, in order:** one cold critic on the mobile diff (judged against this
-     section; attack the controller's races first, then the arithmetic, the
-     contract, the screen wiring, and whether tests and eval can fail), about
-     180k; its fixes; the final APK; merge; these notes. The first critic was
-     stopped before it read any code.
+   - **Open: whether the card's numbers are right.** Every number on the card
+     agrees with the server's spans (the eval checks that on live data), so the
+     card can be no more wrong than the map's colours, but nothing checks either
+     against the ground. The one comparison so far is phase 1's `eval:path`
+     terrain report, on the 69 Ladders and Gold Camp Road lines: net change
+     differs from the terrain model's by 3.96m a line on average, and the climb
+     sums to 264.7m from our slopes against 429.7m from the terrain model, 38%
+     lower. Unexplained. The likely cause is the slope fit (SLOPE_WINDOW, about
+     60m) smoothing out ups and downs that a terrain model sampled along an OSM
+     centreline inflates with its own bumps, but neither number is known to be
+     the true one.
+   - **Resume, in order.** Check out `press-hold-app` (`829c09c`); `git
+     status` clean but for CLAUDE.md.
+     1. **One cold critic** on the mobile diff, about 180k, judged against this
+        section. Its brief, if the file survives, is
+        `C:\Users\Julian\AppData\Local\Temp\claude\c--Users-Julian-Documents-GitHub-CyclingDataApp\e24d4bb5-018e-46b7-89ee-9dee82f392bf\scratchpad\press-hold-app\critique\brief.md`: the reference is this section and
+        `backend/src/services/pathResponse.ts`; the rubric is "What it does",
+        "The card" and Julian's four decisions; attack the controller's races
+        first (touch start, hit resolved, the 150ms ask, long press, answer,
+        lift, a second touch, clear, trim, flip), then the arithmetic, the
+        server contract, `MapScreen.tsx`'s wiring, and whether the tests and
+        the eval can fail; every finding reproduced; at most one
+        `npx tsx scripts/evalSelection.ts 4` against production; never the
+        phone. The first critic was stopped before it read any code. Then its
+        fixes, the final APK, merge into `main`, push, and these notes. No
+        deploy: the server is unchanged.
+     2. **The lag.** First measure, read-only: time each stage of
+        `GET /segments/path` (the network and ride order, the extents, the
+        line data) on a first request after a minute idle against a warm one,
+        from Railway's own request log or a trace line, and on the phone time
+        each answer. If idle connections are the cost, the candidates are a
+        longer `idleTimeoutMillis` (with Supabase's connection cap in mind),
+        or the phone warming the server when the app opens. Either way a
+        server change and a deploy, on Julian's go-ahead.
+     3. **The numbers against the ground.** A read-only eval: for selections on
+        stretches with a known answer, the card's net change and climb against
+        the terrain model, and against a reference Julian trusts (a climb's
+        published figures, or his own ride on another app), so the 38% gap
+        above gets a cause and the card a stated accuracy. About 60k to design
+        and run; what it finds may move the slope fit, which is server work.
    As first planned, about 250k: the touch spike, then selection, card, trim, flip,
    back, a first-run hint ("Hold a line to measure it"), tests, one cold
    critic, the APK. The `RING_CAPACITY` comment fix rides along. CLAUDE.md
@@ -449,10 +493,12 @@ fix), saved selections, a climb finder.
 `option-a-state`, `per-pass-slopes` and `option-a-live` are merged and safe
 to delete, and so are `press-hold-plan`, `path-route`, `path-route-live` and
 `notes-after-phase1`.
-**In flight: `press-hold-app`**, pushed, NOT merged: phase 2 of press and
-hold, built and tested, not yet reviewed. Its release APK is installed on the
-phone (built 2026-10-17 from that branch); merging it changes no server code,
-so nothing deploys. No running job.
+**In flight: `press-hold-app`** (`829c09c` and these notes), pushed, NOT
+merged: phase 2 of press and hold, built and tested, not yet reviewed. Julian
+tried it on 2026-10-18 and likes it; the lag and the numbers are open. Its
+release APK is installed on the phone (built 2026-10-17 at about 22:45 from
+the code of `829c09c`); merging it changes no server code, so nothing
+deploys. No running job.
 Last code change `5ccbc35` (2026-10-17): `GET /segments/path`, phase 1 of
 press and hold. Additive: nothing calls it until the app's phase 2, and the
 map's line drawing moved into helpers without changing a byte. Before it,
@@ -563,7 +609,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 33 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature ("Press and hold on a segment, designed 2026-10-17"): phase 1, the server, is live; phase 2, the app, is built on `press-hold-app` and waits on its cold critic |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature ("Press and hold on a segment, designed 2026-10-17"): phase 1, the server, is live; phase 2, the app, is built on `press-hold-app` and on the phone; resume with its cold critic, then the lag, then whether the numbers are right |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
@@ -2483,6 +2529,20 @@ cd mobile/android && ./gradlew :app:assembleRelease
 "$ANDROID_HOME/platform-tools/adb.exe" install -r \
   app/build/outputs/apk/release/app-release.apk
 ```
+
+**From Git Bash on this PC** (2026-10-17): the shell has no `ANDROID_HOME`,
+and gradle then fails with "SDK location not found"; give it per command,
+`ANDROID_HOME='C:\Users\Julian\AppData\Local\Android\Sdk' ./gradlew
+:app:assembleRelease`, and adb is
+`/c/Users/Julian/AppData/Local/Android/Sdk/platform-tools/adb.exe`. A first
+build takes about 3 minutes, a rebuild after JS changes under one. To try a
+gesture without Julian's hands: `adb shell input swipe X Y X Y 2500` is a
+2.5s hold at pixel X,Y (dp times 2.625 on the Pixel 10 Pro), `input tap` a
+tap, `input keyevent KEYCODE_BACK` back; screenshot with `adb shell
+screencap -p /sdcard/x.png` then `adb pull` with `MSYS_NO_PATHCONV=1`, or
+Git Bash rewrites `/sdcard` into a Windows path. The screen locks after 10
+minutes; `adb shell svc power stayon usb` keeps it on while plugged in, only
+with Julian's OK, and `svc power stayon false` puts it back (it was 0).
 
 Note **release, not debug**: `assembleDebug` produces an APK with no
 `index.android.bundle` in it, which loads JS from the Metro dev server and dies
