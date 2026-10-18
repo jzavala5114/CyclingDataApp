@@ -1,4 +1,4 @@
-// npm run eval:selection -- [presses]
+// npm run eval:selection -- [presses] [--record <file> | --replay <file>]
 //
 // The app's press-and-hold logic run over real answers from the live
 // GET /segments/path. The gate tests pin the logic on synthetic paths; this
@@ -22,26 +22,49 @@
 //              phone asks, joins on with no step in height
 //   flip       its first 800m flips onto the other direction's lines of the
 //              same streets
+//   hold       the controller, driven as the screen drives it over this
+//              answer and the lines the map draws, let go part way along a
+//              long drawn piece: the tip it shows is hit-tested as the
+//              selection; held through the faded line under it, the tip and
+//              the middle of each piece already selected carry the selection
+//              on and ask nothing; held 25m ahead on the same line, it joins
+//              straight along it. Asks the server nothing more.
+//
+// --record <file> saves every answer; --replay <file> answers from such a
+// file and sends nothing, so a deliberately broken copy of the code can be
+// judged without asking the server again.
 // PASS: every check holds on every press, and at least 90% of flips succeed
 // (a flip can fail honestly, where the other way has no connection the
 // server will draw). Latency from this PC is reported, not judged.
+import fs from "node:fs";
 import * as turf from "@turf/turf";
 import { MAX_AVOID, pathQuery, type PathRequest } from "../src/services/api";
 import { flipSelection } from "../src/services/flipSelection";
+import { buildColoredLineFeatures } from "../src/services/gradientRendering";
+import { SELECTION_HIT_LAYERS, SELECTION_LAYER, hitFromFeatures, metresPerPoint, type RenderedFeature } from "../src/services/holdGesture";
 import {
   appendPath,
   cutAt,
   fromResponse,
+  growingFeature,
   pointOnPath,
   selectionFeatures,
   selectionSegmentIds,
   selectionStats,
   type Selection,
+  type SelectionFeature,
 } from "../src/services/pathSelection";
+import { SelectionController, type Hit } from "../src/services/selectionController";
 import { API_BASE_URL } from "../src/config";
+import type { LineString } from "geojson";
 import type { PathResponse, SegmentWithGradients } from "../src/types";
 
-const PRESSES = Number(process.argv[2] ?? 16);
+const args = process.argv.slice(2);
+const flag = (name: string) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
+const PRESSES = Number(args.find((a) => /^d+$/.test(a)) ?? 16);
+const RECORD = flag("--record");
+const REPLAY = flag("--replay");
+const recorded: Record<string, unknown> = REPLAY ? JSON.parse(fs.readFileSync(REPLAY, "utf8")) : {};
 const FLIP_M = 800;
 const FLIP_PASS_SHARE = 0.9;
 
@@ -65,16 +88,22 @@ function seeded(seed: number) {
 
 const timings: number[] = [];
 async function get<T>(path: string): Promise<T> {
+  if (REPLAY) {
+    if (!(path in recorded)) throw new Error(`not in the recording: ${path.slice(0, 100)}`);
+    return recorded[path] as T;
+  }
   const started = performance.now();
   const res = await fetch(`${API_BASE_URL}${path}`);
   const text = await res.text();
   if (path.startsWith("/segments/path")) timings.push(performance.now() - started);
   if (!res.ok) throw new Error(`${path.slice(0, 80)}: HTTP ${res.status} ${text.slice(0, 200)}`);
-  return JSON.parse(text) as T;
+  const parsed = JSON.parse(text) as T;
+  if (RECORD) recorded[path] = parsed;
+  return parsed;
 }
 const fetchPath = (request: PathRequest) => get<PathResponse>(pathQuery(request));
 
-type Check = "tiles" | "heights" | "card" | "cuts" | "features" | "limit" | "flip";
+type Check = "tiles" | "heights" | "card" | "cuts" | "features" | "limit" | "flip" | "hold";
 const failures: Array<{ press: string; check: Check; detail: string }> = [];
 const fail = (press: string, check: Check, detail: string) => failures.push({ press, check, detail });
 
@@ -200,6 +229,163 @@ async function checkFlip(press: string, selection: Selection) {
   }
 }
 
+// A finger finds a line this far off: the screen tests a box 22 points either
+// side of the touch (HIT_PT in MapScreen.tsx), about 10m at zoom 17 here.
+const HIT_BOX_M = 22 * metresPerPoint(17, 38.83);
+// As queryRenderedFeatures hands them to the screen: plain features, their properties untyped.
+const asRendered = (features: ReadonlyArray<{ geometry: LineString; properties: object }>) => features as unknown as RenderedFeature[];
+
+// The controller with the screen's clock and frames faked, and a server that
+// hands it this press's real answer and records anything else it is asked.
+function driven(answer: PathResponse) {
+  let now = 0;
+  let frames: Array<(t: number) => void> = [];
+  const timers: Array<{ at: number; run: () => void; done: boolean }> = [];
+  const asked: PathRequest[] = [];
+  const controller = new SelectionController({
+    fetchPath: (request) => {
+      asked.push(request);
+      return asked.length === 1 ? Promise.resolve(answer) : new Promise<PathResponse>(() => undefined);
+    },
+    now: () => now,
+    frame: (step) => {
+      frames.push(step);
+      return () => {
+        frames = frames.filter((f) => f !== step);
+      };
+    },
+    later: (run, ms) => {
+      const timer = { at: now + ms, run, done: false };
+      timers.push(timer);
+      return () => {
+        timer.done = true;
+      };
+    },
+    fit: () => undefined,
+  });
+  const advance = async (ms: number) => {
+    const end = now + ms;
+    while (now < end) {
+      now = Math.min(end, now + 16);
+      for (const timer of timers) {
+        if (!timer.done && timer.at <= now) {
+          timer.done = true;
+          timer.run();
+        }
+      }
+      const due = frames;
+      frames = [];
+      for (const step of due) step(now);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+  };
+  const holdAt = async (hit: Hit) => {
+    const id = controller.touchStarted();
+    controller.touchResolved(id, hit);
+    await advance(400);
+    controller.longPressed();
+  };
+  return { controller, asked, advance, holdAt };
+}
+
+async function checkHold(
+  press: string,
+  answer: PathResponse,
+  start: Hit,
+  segments: Map<number, SegmentWithGradients>,
+  base: RenderedFeature[],
+): Promise<string> {
+  const before = failures.length;
+  const drawnLine = (segmentId: number, direction: string) =>
+    !!segments.get(segmentId)?.directionalLines.some((l) => l.direction === direction && l.colorStops.length > 0);
+  const long = fromResponse(answer)
+    .pieces.map((piece, index) => ({ piece, index }))
+    .filter(({ piece }) => piece.source === "line" && piece.lengthM >= 80 && drawnLine(piece.segmentId, piece.direction));
+  if (long.length === 0) return "; hold: no drawn piece of 80m";
+  const { piece, index } = long.reduce((a, b) => (b.piece.lengthM > a.piece.lengthM ? b : a));
+
+  // Hold the pressed line, take the real answer, grow 40% of the way along that piece, let go.
+  const d = driven(answer);
+  await d.holdAt(start);
+  const target = piece.atM + 0.4 * piece.lengthM;
+  for (let i = 0; i < 20000 && d.controller.getSnapshot().grownM < target; i++) await d.advance(16);
+  d.controller.touchEnded();
+  const snap = d.controller.getSnapshot();
+  const selection = snap.selection;
+  if (!selection || snap.preview || snap.grownM < target) {
+    fail(press, "hold", `growth stopped at ${snap.grownM.toFixed(0)}m, short of ${target.toFixed(0)}m`);
+    return "; hold FAILED";
+  }
+  const tipM = snap.grownM;
+  const tip = pointOnPath(selection, tipM)!;
+  const finger = (m: number): [number, number] => {
+    const at = pointOnPath(selection, m)!;
+    return [at.lon, at.lat];
+  };
+  // What the screen's query returns at a finger: the base lines, and the
+  // selection's features from the layers it names.
+  const queried = (at: [number, number], withSelection: boolean): RenderedFeature[] => {
+    const current = d.controller.getSnapshot();
+    const grown = current.features.filter((f) => f.properties.endM <= current.grownM + 0.001);
+    const growing = growingFeature(current.features, current.grownM);
+    const byLayer: Record<string, SelectionFeature[]> = {
+      [SELECTION_LAYER.line]: grown.filter((f) => !f.properties.noData),
+      [SELECTION_LAYER.gap]: grown.filter((f) => f.properties.noData),
+      [SELECTION_LAYER.growingLine]: growing && !growing.properties.noData ? [growing] : [],
+      [SELECTION_LAYER.growingGap]: growing && growing.properties.noData ? [growing] : [],
+    };
+    const drawn = [...base, ...asRendered(withSelection ? SELECTION_HIT_LAYERS.flatMap((id) => byLayer[id] ?? []) : [])];
+    return drawn.filter(
+      (f) => turf.pointToLineDistance(turf.point(at), turf.lineString((f.geometry as LineString).coordinates), { units: "meters" }) <= HIT_BOX_M,
+    );
+  };
+  const hitAt = (at: [number, number], withSelection: boolean): Hit =>
+    hitFromFeatures(queried(at, withSelection), at, 17, segments, () => undefined);
+
+  // The tip the rider sees is the selection to a touch.
+  if (hitAt(finger(tipM - 3), true).piece === null) fail(press, "hold", `the tip at ${tipM.toFixed(0)}m is not hit-tested as the selection`);
+
+  // Through the faded line under it, the tip and the middle of each piece
+  // already selected carry the selection on, asking nothing.
+  const points = [
+    tipM - 3,
+    ...selection.pieces
+      .filter((p, i) => i < index && p.source === "line" && p.lengthM >= 30 && drawnLine(p.segmentId, p.direction))
+      .slice(0, 5)
+      .map((p) => p.atM + p.lengthM / 2),
+  ];
+  let tried = 0;
+  for (const m of points) {
+    const at = pointOnPath(selection, m)!;
+    const hit = hitAt(finger(m), false);
+    // Where another line lies nearer the finger, the finger is on that line: not the case under test.
+    if (!hit.line || hit.line.segment.id !== at.segmentId || hit.line.drawing.direction !== at.direction) continue;
+    tried += 1;
+    const asked = d.asked.length;
+    await d.holdAt(hit);
+    const mode = d.controller.getSnapshot().mode;
+    if (d.asked.length !== asked || mode !== "holding") {
+      const did = d.asked.length !== asked ? "asked the server" : `went ${mode}`;
+      fail(press, "hold", `held at ${m.toFixed(0)}m on ${at.segmentId}:${at.direction} through the line under it, it ${did} rather than carrying on`);
+    }
+    d.controller.touchEnded();
+  }
+  if (tried === 0) fail(press, "hold", "no point on the selection found its own line under it");
+
+  // Held 25m ahead of the tip on the same line, it joins straight along it.
+  const ahead = hitAt(finger(tipM + 25), false);
+  if (ahead.line?.segment.id === tip.segmentId && ahead.line.drawing.direction === tip.direction) {
+    const asked = d.asked.length;
+    await d.holdAt(ahead);
+    const request = d.asked[asked];
+    const straight =
+      !!request?.to && request.from.segmentId === tip.segmentId && request.to.segmentId === tip.segmentId && request.to.atM! > request.from.atM! + 15;
+    if (!straight) fail(press, "hold", `held 25m ahead of the tip, it asked ${JSON.stringify(request ?? null).slice(0, 160)}`);
+    d.controller.touchEnded();
+  }
+  return failures.length === before ? `; hold ok, ${tried} of ${points.length} carried on` : "; hold FAILED";
+}
+
 // The package is CommonJS (no "type": "module"), so the run is a function, not top-level awaits.
 async function main() {
   const health = await get<{ builtAt: string }>("/health");
@@ -207,9 +393,11 @@ async function main() {
 
   const random = seeded(17);
   const presses: Array<{ area: string; segment: SegmentWithGradients; line: SegmentWithGradients["directionalLines"][number] }> = [];
+  const drawnIn = new Map<string, { segments: Map<number, SegmentWithGradients>; base: RenderedFeature[] }>();
   for (const area of AREAS) {
     const [minLon, minLat, maxLon, maxLat] = area.box;
     const { segments } = await get<{ segments: SegmentWithGradients[] }>(`/segments?minLon=${minLon}&minLat=${minLat}&maxLon=${maxLon}&maxLat=${maxLat}`);
+    drawnIn.set(area.name, { segments: new Map(segments.map((s) => [s.id, s])), base: asRendered(buildColoredLineFeatures(segments).features) });
     const lines = segments
       .sort((a, b) => a.id - b.id)
       .flatMap((segment) => segment.directionalLines.filter((l) => l.colorStops.length > 0).map((line) => ({ area: area.name, segment, line })));
@@ -242,12 +430,15 @@ async function main() {
     checkFeatures(press, selection);
     const limit = await checkLimit(press, selection);
     const flip = await checkFlip(press, selection);
+    const { segments: drawnSegments, base } = drawnIn.get(area)!;
+    const start: Hit = { lonLat: mid, zoom: 17, line: { segment, drawing: line }, piece: null, branch: null };
+    const held = await checkHold(press, response, start, drawnSegments, base);
     flips += 1;
     if (flip.ok) flipsOk += 1;
     const stats = selectionStats(selection, selection.lengthM);
     console.log(
       `${failures.length === before ? "ok  " : "FAIL"} ${press.padEnd(24)} ${String(response.pieces.length).padStart(3)} pieces ${(response.lengthM / 1000).toFixed(2)}km ` +
-        `${response.stop.reason}${limit}, climb ${stats.climbM.toFixed(1)}m, no data ${stats.noDataM.toFixed(0)}m; ${flip.note}`,
+        `${response.stop.reason}${limit}, climb ${stats.climbM.toFixed(1)}m, no data ${stats.noDataM.toFixed(0)}m; ${flip.note}${held}`,
     );
   }
 
@@ -256,6 +447,7 @@ async function main() {
   console.log(`\nlatency from this PC over ${sorted.length} path requests: median ${(pct(0.5) / 1000).toFixed(2)}s, p95 ${(pct(0.95) / 1000).toFixed(2)}s`);
   console.log(`flips: ${flipsOk} of ${flips} onto the same streets`);
   for (const f of failures) console.log(`  ${f.check.padEnd(8)} ${f.press}: ${f.detail}`);
+  if (RECORD) fs.writeFileSync(RECORD, JSON.stringify(recorded));
   const pass = failures.length === 0 && flips > 0 && flipsOk / flips >= FLIP_PASS_SHARE;
   console.log(pass ? "PASS" : `FAIL: ${failures.length} check(s) failed, flips ${flipsOk}/${flips}`);
   return pass;
