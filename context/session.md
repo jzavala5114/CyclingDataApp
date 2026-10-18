@@ -45,7 +45,8 @@ in this order (details under
   waiting, the first press after a pause of about 6 minutes or more takes
   0.8 to 0.85s on the server (1.16s from this PC), and the first downtown
   press is often 1.4 to 1.9s (4 of 6 since the move): the database's first
-  statements after quiet run slow. Evidence, the hypothesis and the
+  statements after quiet run slow, because the database (the free plan's
+  Nano compute, 0.5GB of RAM) keeps about 400MB in swap. Evidence and the
   decision under "2. **App**", "Next, in order", step 1.
 - **Then whether the card's numbers are right**: a check against something
   independent, which nothing does yet.
@@ -480,13 +481,20 @@ cutting the path at a grown distance.
           statement touches 26,069 buffers when quiet (101ms: a full scan of
           46,271 segments for the family join, and 262 overlapping map-index
           probes giving 20,947 rows for 1,609 families), the trail's 5,481
-          (25ms). Hypothesis, unverified: the database server pages idle
-          memory out (Supabase's small instance) and the first statements
-          after quiet fault it back in. Supabase's dashboard (Reports,
-          Database: memory and swap) would settle it.
-        - **Decision for Julian:** look at that graph first (a minute, free).
-          If it shows swap: a bigger Supabase compute (costs money, fixes the
-          cause), or a keep-warm statement every 2 to 3 minutes touching the
+          (25ms). Supabase's dashboard (Observability, Database, the last 3
+          hours on 2026-10-18) shows why: the database runs on the free
+          plan's Nano compute (`t3a.nano`, 0.5GB of RAM) with about 400MB in
+          swap in every sample, and 1.19GB of memory committed, near its
+          limit of about 1.3GB, while the CPU sits about 98% idle. So the
+          first statements after quiet read their pages back from swap, and
+          the CPU is not it. The page faults themselves are not observed:
+          the dashboard's per-minute disk charts are too coarse to show a
+          one-second burst.
+        - **Decision for Julian:** a bigger Supabase compute (the Pro plan;
+          costs money monthly; fixes the cause for every route, and the
+          memory limit; Micro's 1GB may still swap a little against 1.19GB
+          committed, Small's 2GB should not; per Supabase's plans it also
+          brings daily backups, which the project has none of), or a keep-warm statement every 2 to 3 minutes touching the
           route's pages (cheap, treats the symptom, a deploy), or a smaller
           working set for the downtown statement (the family join through
           `segments_way_start_end_idx`, distinct grid cells for the probes;
@@ -740,7 +748,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 33 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature ("Press and hold on a segment, designed 2026-10-17"): phase 1, the server, is live; phase 2, the app, shipped 2026-10-18; the lag mostly fixed and live (the backend in `us-west2`, a trace on every request, four connections kept); the rest, the database going cold during quiet, waits on Julian's look at Supabase's memory graph; then whether the numbers are right |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature ("Press and hold on a segment, designed 2026-10-17"): phase 1, the server, is live; phase 2, the app, shipped 2026-10-18; the lag mostly fixed and live (the backend in `us-west2`, a trace on every request, four connections kept); the rest, the database (free Nano compute, 0.5GB) living in swap, waits on Julian's choice of fix; then whether the numbers are right |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
