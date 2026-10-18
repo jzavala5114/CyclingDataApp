@@ -40,8 +40,12 @@ import type { Direction, Segment } from "../types/index.js";
 //    singletrack the DEM samples a centreline the rider was not on.
 //
 // Exits 1 unless the rule as shipped picks the way rides went more often than
-// the least turn does. Shown to fail: with DEFAULT_RULES set to the baseline's
-// ["least"], the two tie and the eval exits 1.
+// the least turn does AND more often than the same rule without its history.
+// The second half is what judges Julian's history rule: without it the eval
+// passed with the history rule deleted, because names and turns alone beat the
+// least turn (608 against 548 of 810 forks through ride 89; cold review,
+// 2026-10-17). Shown to fail both ways: with DEFAULT_RULES set to ["least"],
+// or to ["name", "turn", "only"].
 
 // Segments within this many degrees (about 330m north-south) of any drawn
 // line: everything growth can reach, since it never runs more than 150m from
@@ -209,17 +213,24 @@ const candidatesFor = (g: PathGraph, segmentId: number, direction: Direction) =>
 };
 
 let notTouching = 0;
+let turnedAround = 0;
+let otherWay = 0;
 let noChoice = 0;
 const cases: Array<{ sessionId: number; from: { segmentId: number; direction: Direction }; to: string; candidates: Candidate[] }> = [];
 for (const t of transitions) {
   const candidates = candidatesFor(graph, t.from.segmentId, t.from.direction);
-  if (!candidates.some((c) => c.key === lineKey(t.to))) notTouching++;
-  else if (candidates.length < 2) noChoice++;
+  if (!candidates.some((c) => c.key === lineKey(t.to))) {
+    if (t.to.segmentId === t.from.segmentId) turnedAround++;
+    else if (candidates.some((c) => c.segmentId === t.to.segmentId)) otherWay++;
+    else notTouching++;
+  } else if (candidates.length < 2) noChoice++;
   else cases.push({ sessionId: t.sessionId, from: t.from, to: lineKey(t.to), candidates });
 }
 console.log(
   `\n1. FORKS RIDDEN: ${cases.length} of ${transitions.length} transitions are at a fork of two ways or more;` +
-    ` ${noChoice} had one way on, ${notTouching} do not touch (a dropped run between them)`,
+    ` ${noChoice} had one way on. Not offered by the graph: ${turnedAround} turn round on the same segment,` +
+    ` ${otherWay} go on into a neighbour the other way from the end it touches,` +
+    ` ${notTouching} go to a line that does not touch (a dropped run between them)`,
 );
 const score = (rules: readonly RuleName[]) => {
   let correct = 0;
@@ -349,9 +360,9 @@ if (named) {
 const shipped = scores.get("history first (shipped)")!;
 const baseline = scores.get("least turn always")!;
 const noHistory = scores.get("no history")!;
-const pass = shipped.correct > baseline.correct;
+const pass = shipped.correct > baseline.correct && shipped.correct > noHistory.correct;
 console.log(
-  `\n${pass ? "PASS" : "FAIL"}: history first picks the way a ride went at ${shipped.correct} of ${cases.length} forks,` +
-    ` the least turn at ${baseline.correct}; without history ${noHistory.correct}`,
+  `\n${pass ? "PASS" : "FAIL"}: history first picks the way a ride went at ${shipped.correct} of ${cases.length} forks;` +
+    ` it must beat the least turn (${baseline.correct}) and the same rule without history (${noHistory.correct})`,
 );
 process.exit(pass ? 0 : 1);

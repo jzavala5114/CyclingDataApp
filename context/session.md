@@ -22,12 +22,14 @@ map: `npm run verify-barometer` in `backend/`, read-only, about 20k. A pass is
 `alive`; "HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED" says how to read
 the rest. No ride has landed since.
 
-**Then the feature: press and hold on a segment, designed 2026-10-17** (its
-section after the numbered items). Julian chose it over the census and settled
-its four open questions; nothing is built. Two phases, server then app, each
-started only on his go-ahead, about 450k together. Item 1, the zero-run census
-(read-only, about 40k), can run any time, and it also sizes the gaps the
-feature has to bridge. Items 2 to 5 follow.
+**Then the feature: press and hold on a segment** (its section after the
+numbered items). Julian chose it over the census and settled its four open
+questions on 2026-10-17. **Phase 1, the server, is built and reviewed on
+`path-route`, NOT deployed**: merging it deploys, and it waits on Julian's
+go-ahead and one question of his (the section says which). Phase 2, the app and
+an APK, follows, about 250k. Item 1, the zero-run census (read-only, about
+40k), can run any time, and it also sizes the gaps the feature has to bridge.
+Items 2 to 5 follow.
 
 **Re-estimate anything large before starting it**: the last large read-only
 tasks ran 2 to 3 times over budget (STATE, "How work is sized"), and option A's
@@ -97,11 +99,35 @@ its call to `mergeRuns` fails nothing.
 colour bands of 2026-10-14 but not option A, whose Parts 5 and 6 Julian
 deferred on 2026-10-17; its artifact page lags by both.)
 
-### Designed 2026-10-17, not built: press and hold on a segment
+### Press and hold on a segment, designed 2026-10-17
 
-Design settled with Julian on 2026-10-17; nothing is built. It replaces the
-placeholder of 2026-10-14, whose two facts still hold: each drawn piece knows
-its street, and the band edges live only in `SLOPE_STOPS`.
+Design settled with Julian on 2026-10-17. It replaces the placeholder of
+2026-10-14, whose two facts still hold: each drawn piece knows its street, and
+the band edges live only in `SLOPE_STOPS`.
+
+**Phase 1, the server: built and reviewed 2026-10-17 on `path-route`, NOT
+deployed.** `GET /segments/path` and its core (`pathGrowth.ts`, `pathData.ts`,
+`pathResponse.ts`); the map's line drawing extracted, not changed
+(`drawnExtent`, `offsetTravelSlice`, `drawLine`): all 751 drawn segments hash
+identical to `main`'s, and `eval:mixing` finds all 751 arriving as drawn.
+`npm run eval:path` through ride 89: at 810 forks rides took, each ride left
+out of its own history, the rule picks the way the ride went 85.3% of the time,
+against 75.1% with no history and 67.7% for the least turn. Grown from every
+drawn line, 0.5% of the ground has no data and 1.4% reads the other
+direction's; the 5 m snap takes dead ends from 292 to 168 of 958 (counted
+before the review's fix below, which moved 145 stops back to their own
+reasons). The route end to end in-process from this PC, 20 presses: median
+326 ms, p95 543 ms, 54 KB, loading only the network near drawn lines (loading
+the whole 2 km box took 0.3 to 2.2 s by itself). 504 backend tests.
+**One cold critic: FAIL**, 176k tokens, one blocking finding and four
+should-fix, each reproduced and fixed, and each fix shown by the critic's own
+reproduction: trimming the unmeasured tail of a path had overwritten its stop
+with `gap` on 145 of 958 growths (54 forks lost their branches, 2 limits read
+as final), and now the stop keeps its reason and says how far ahead it lies
+(`aheadM`); the eval passed with the history rule deleted, and now must also
+beat the rule without history; five one-line mutants survived the tests, and
+none does now. No second round, on Julian's say. **Waiting on Julian: the
+deploy, and whether the turn rule's refinement stands** (after the table).
 
 **What it does.** Long-press a drawn line: a selection starts under the finger
 and flows ahead in that line's direction of travel while the finger stays down;
@@ -121,6 +147,14 @@ streets; the close button (or Android back) clears it.
 | the highlight | **same colours, wider, white casing, every other line faded** to about 35% | colour is grade here; brightening a colour moves it toward its neighbouring band |
 | tapping a selected line | **trim from it to the end**, after a preview and one confirm | a wrong branch is several lines long, and a hole in the middle leaves no single distance or climb |
 
+**A refinement of the fork rule, pending Julian's OK.** As built, the turn rule
+takes a branch with data before one without, then the least turn, both within
+the 60 degrees: a drawn branch at 45 degrees beats an undrawn one straight on.
+Through ride 89 that rule decides 49 of the 810 forks ridden, picks
+differently from the plain least turn at 4, and is right at all 4 (34 right
+against 30). Kept because it measured better; undoing it is one line,
+`byData` to `byTurn` in `pickNext`.
+
 **The card.** Street names in order ("Ridge Trail -> Ladders"); distance in ft
 below half a mile (2,640 ft), else mi to two decimals; climb and descent in ft;
 average grade (net change over distance); the steepest 100 m (330 ft); a height
@@ -133,11 +167,18 @@ off; the compass moves below the card.
 **Where the work lives.**
 - **Server: a new route, `GET /segments/path`**, additive, so an older APK never
   calls it. In: the pressed line (segment id, direction, distance along it),
-  optionally a line to connect to. Out: the path as steps (drawn pieces with
-  the same offset geometry `/segments` sends, gap pieces on the centreline),
-  a profile every 15 m (distance along the path, height, slope, colour, rides),
-  the band table built from `SLOPE_STOPS` so the app holds no second copy,
-  and why growth stopped (end, fork, gap, loop, limit). It belongs on the
+  optionally a line to connect to. Out: the path as pieces, each with the
+  offset geometry `/segments` draws for it, on its travelled side; the profile
+  as `spans`, the exact stretches the map colours, each with its slope,
+  colour, rides, rise, and height above the path's start; the band table built
+  from `SLOPE_STOPS` so the app holds no second copy; and why growth stopped
+  (end, fork with each branch's data and first 30 m, gap, loop, limit), with
+  `aheadM`, how far past the selection's end that lies on unmeasured ground.
+  Built differently from this paragraph's first draft, and why: spans rather
+  than samples every 15 m, so nothing is resampled; heights relative to the
+  start, summed from the slopes, because the means' levels differ ride to
+  ride; and pieces with no data on the travelled side rather than the
+  centreline, so the highlight does not jog 4 m sideways at every gap. It belongs on the
   server because the phone receives only drawn segments, and bridging a gap
   needs the undrawn ones, the ride order and the pass rows.
 - **The graph is `buildEndAdjacency`** (`segmentMatcher.ts`) over canonical
@@ -189,7 +230,10 @@ off; the compass moves below the card.
 step 0 of the build, before any app code:
 - Leave-one-ride-out: at every fork a ride passed, whether the rule picks the
   branch that ride took. Reported for history-first, name-first and
-  straightest-only. **Passes when history-first beats straightest-only.**
+  straightest-only. **Passes when history-first beats straightest-only and
+  the same rule without history.** The second half was added after the
+  review: without it the eval passed with the history rule deleted, since names
+  and turns alone beat the least turn (608 against 548 of 810).
 - Growth started from every drawn line: stops counted by reason, and bridged
   metres per 10 km grown, a measure of gaps from the rider's side to compare
   after the census.
@@ -209,7 +253,20 @@ cutting the path at a grown distance.
 **Phases, each on Julian's go-ahead.**
 1. **Server**, about 200k: the eval's step 0, then the route, its tests and
    the eval, one cold critic, deploy (additive; verified by `builtAt`, live
-   `/segments` hashing unchanged).
+   `/segments` hashing unchanged). **Built and reviewed 2026-10-17 for about
+   330k, the critic alone 176k; the deploy waits on Julian.** The deploy check
+   is a scratch script (`verify-path-live.mts`, baseline taken at `builtAt
+   2026-10-17T14:28:03.555Z`, ride 89): four `/segments` viewports must hash
+   unchanged, no ride may land in between, and a press on Ladders 19475 must
+   come back as a path. Run against the old server it failed, as it must.
+   **Stated limits, from the review:** a connection is not held to the 150 m
+   budget (it is the rider's own request to cross a gap) and near its 2 km cap
+   can miss a way that exists; it can only cross ground within about 215 m of
+   a drawn line, the loader's reach; the network and the line data are read in
+   separate statements, so a ride merged between them leaves a piece
+   estimated until the next request; `avoid` takes at most 500 ids; and the
+   eval's read-only guard rides on pg's deprecated query queueing, as
+   `eval:mixing`'s does.
 2. **App**, about 250k: the touch spike, then selection, card, trim, flip,
    back, a first-run hint ("Hold a line to measure it"), tests, one cold
    critic, the APK. The `RING_CAPACITY` comment fix rides along. CLAUDE.md
@@ -298,8 +355,9 @@ fix), saved selections, a climb finder.
 `refresh-architecture-doc`, `session-notes-compact`, `darker-red-bands`,
 `state-after-colours`, `mixing-artefact-notes`, `option-a-plan`,
 `option-a-state`, `per-pass-slopes` and `option-a-live` are merged and safe
-to delete. Nothing is in flight: no open branch, no uncommitted work, no
-running job.
+to delete, and so is `press-hold-plan`. **In flight: `path-route`, pushed,
+NOT merged**: phase 1 of press and hold, built and reviewed; merging it
+deploys, and it waits on Julian. No uncommitted work, no running job.
 Last code change `26f4620` (2026-10-17): option A, each pass's own slope,
 which changes what the map draws and adds `segment_pass_buckets` (17,634
 rows) beside the model, whose means did not move. Before it, `a7c6a85`
@@ -311,7 +369,7 @@ ahead of Railway's** (measured 2026-10-11 against the HTTP `Date` header), so
 a fresh `builtAt` can read earlier than the local push time without being a
 stale build. Live model **746 segments / 953 lines** at the int8 deploy, which
 changed nothing in it: the whole `/segments` response hashes the same as
-before, ids now numbers. **463 backend tests, 56 app tests**; `mobile/`
+before, ids now numbers. **504 backend tests on `path-route` (463 on main), 56 app tests**; `mobile/`
 has a gate lane. **45 usable rides** counted on 2026-10-05. Rides 85 to 88 are
 graded `alive` (2026-10-10). 88 landed that afternoon, so 51 sessions hold
 34,965 fixes; the timestamp measurement earlier the same day saw 50 and
@@ -400,7 +458,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 31 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature, designed 2026-10-17 ("Designed 2026-10-17, not built"), phase 1 on Julian's go-ahead (about 200k) |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature ("Press and hold on a segment, designed 2026-10-17"): phase 1 is built on `path-route` and waits on Julian's go-ahead to deploy; phase 2, the app, about 250k |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 

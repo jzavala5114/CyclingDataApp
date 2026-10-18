@@ -64,6 +64,7 @@ const fullCoverage = (segment: Segment, direction: Direction) => ({
 interface Rows {
   segments?: Segment[];
   coverage?: ReturnType<typeof fullCoverage>[];
+  buckets?: ElevationBucket[];
 }
 
 function fakeDatabase(t: TestContext, rows: Rows = {}) {
@@ -74,7 +75,7 @@ function fakeDatabase(t: TestContext, rows: Rows = {}) {
     fullCoverage(segmentB, "forward"),
   ];
   const ids = new Set(segments.map((s) => s.id));
-  const drawnBuckets = bucketRows.filter((b) => ids.has(b.segmentId));
+  const drawnBuckets = (rows.buckets ?? bucketRows).filter((b) => ids.has(b.segmentId));
   const asked: string[] = [];
   t.mock.method(pool, "query", (async (text: string) => {
     if (/with drawn as/.test(text)) return asked.push("segments"), { rows: segments };
@@ -136,9 +137,24 @@ interface PathBody {
     rides: number;
     lastRiddenAt: string | null;
   }>;
-  spans: Array<{ atM: number; lengthM: number; slopePct: number; color: string; source: string }>;
+  spans: Array<{
+    atM: number;
+    lengthM: number;
+    slopePct: number;
+    color: string;
+    source: string;
+    piece: number;
+    heightM: number;
+    riseM: number;
+    rides: number;
+  }>;
   lengthM: number;
-  stop: { reason: string; atM: number; branches: unknown[] };
+  stop: {
+    reason: string;
+    atM: number;
+    aheadM: number;
+    branches: Array<{ segmentId: number; direction: Direction; source: string; geometry: GeoJSON.LineString }>;
+  };
   bands: Array<{ maxSlopePct: number | null; color: string }>;
 }
 
@@ -194,6 +210,17 @@ test("a press grows ahead from the pressed point, in numbers the phone can use",
   assert.ok(near(atM, body.lengthM, 1e-6));
   assert.ok(body.spans.every((s) => near(s.slopePct, 4, 1e-6)), JSON.stringify(body.spans.map((s) => s.slopePct)));
   assert.equal(body.bands.at(-1)!.maxSlopePct, null);
+  // The profile: heights from the start, each the sum of the rises before it,
+  // and each span carrying its piece's rides.
+  let heightM = 0;
+  for (const span of body.spans) {
+    assert.ok(near(span.heightM, heightM, 1e-9));
+    assert.ok(near(span.riseM, (span.slopePct * span.lengthM) / 100, 1e-9));
+    assert.equal(span.rides, body.pieces[span.piece]!.rides);
+    heightM += span.riseM;
+  }
+  assert.ok(near(heightM, (4 * body.lengthM) / 100, 1e-6), "climbs 4% all the way");
+  assert.equal(body.stop.aheadM, 0);
 });
 
 test("each piece is the map's own line: GET /segments draws exactly that geometry, both directions", async (t) => {
@@ -321,4 +348,97 @@ test("growth stops at a segment the selection already holds", async (t) => {
   const { body } = await get({ segmentId: 70001, direction: "forward", lon: LON, lat: 38.82, avoid: "70002" });
   assert.deepEqual(body.pieces.map((p) => p.segmentId), [70001]);
   assert.equal(body.stop.reason, "loop");
+});
+
+// Segments in metres east (x) and north (y) of the trail's start, for layouts
+// the two-piece trail above cannot make.
+const P = ([x, y]: [number, number]) => [LON + x / 86_700, 38.82 + y / 111_320];
+function made(id: string, points: Array<[number, number]>, nodes: [string, string]): Segment {
+  const coordinates = points.map(P);
+  let lengthM = 0;
+  for (let i = 1; i < points.length; i++) {
+    lengthM += Math.hypot(points[i]![0] - points[i - 1]![0], points[i]![1] - points[i - 1]![1]);
+  }
+  return {
+    ...segmentA,
+    id: int8(id),
+    osmWayId: int8(id),
+    streetName: null,
+    startNodeId: int8(nodes[0]),
+    endNodeId: int8(nodes[1]),
+    geom: { type: "LineString", coordinates },
+    lengthM,
+  };
+}
+const drawnAll = (segments: Segment[]) => ({
+  segments,
+  buckets: segments.flatMap((s) => buckets(s, "forward", 0)),
+  coverage: segments.map((s) => fullCoverage(s, "forward")),
+});
+
+test("growth stops at a junction near the edge of the loaded box: limit, for the phone to ask again", async (t) => {
+  // 2.5 km straight north from the press, past the 2 km box, then on.
+  const far = made("71001", [[0, 0], [0, 2500]], ["13000000001", "13000000002"]);
+  const beyond = made("71002", [[0, 2500], [0, 2600]], ["13000000002", "13000000003"]);
+  fakeDatabase(t, drawnAll([far, beyond]));
+  const { body } = await get({ segmentId: 71001, direction: "forward", lon: P([0, 0])[0]!, lat: P([0, 0])[1]! });
+  assert.deepEqual(body.pieces.map((p) => p.segmentId), [71001]);
+  assert.equal(body.stop.reason, "limit");
+});
+
+test("growth after a connection treats the connection's own segments as already selected", async (t) => {
+  // The selection ends 30 m up S1; the rider holds S3, beyond S2. On from S3,
+  // S4 comes back round to S1's end, where the gentlest way on is back down
+  // S1: ground the connection has just covered.
+  const s1 = made("72001", [[0, 0], [0, 100]], ["14000000200", "14000000201"]);
+  const s2 = made("72002", [[0, 100], [0, 200]], ["14000000201", "14000000202"]);
+  const s3 = made("72003", [[0, 200], [100, 200]], ["14000000202", "14000000203"]);
+  const s4 = made("72004", [[100, 200], [0, 100]], ["14000000203", "14000000201"]);
+  fakeDatabase(t, drawnAll([s1, s2, s3, s4]));
+  const { body } = await get({
+    segmentId: 72001,
+    direction: "forward",
+    lon: P([0, 30])[0]!,
+    lat: P([0, 30])[1]!,
+    atM: 30,
+    toSegmentId: 72003,
+    toDirection: "forward",
+    toLon: P([50, 200])[0]!,
+    toLat: P([50, 200])[1]!,
+  });
+  assert.deepEqual(
+    body.pieces.map((p) => String(p.segmentId) + (p.direction === "forward" ? "f" : "b")),
+    ["72001f", "72002f", "72003f", "72003f", "72004f"],
+  );
+  assert.equal(body.stop.reason, "loop");
+});
+
+test("at a fork the branches come with their data and the first 30 m of each, drawn where the phone marks them", async (t) => {
+  const trunk = made("73001", [[0, 0], [0, 100]], ["15000000001", "15000000002"]);
+  const east = made("73002", [[0, 100], [100, 100]], ["15000000002", "15000000003"]);
+  const west = made("73003", [[0, 100], [-100, 100]], ["15000000002", "15000000004"]);
+  const rows = drawnAll([trunk, east]);
+  fakeDatabase(t, { ...rows, segments: [trunk, east, west] });
+  const { body } = await get({ segmentId: 73001, direction: "forward", lon: P([0, 0])[0]!, lat: P([0, 0])[1]! });
+  assert.equal(body.stop.reason, "fork");
+  assert.deepEqual(
+    body.stop.branches.map((b) => [b.segmentId, b.direction, b.source]),
+    [
+      [73002, "forward", "line"],
+      [73003, "forward", "none"],
+    ],
+  );
+  for (const branch of body.stop.branches) {
+    const coords = branch.geometry.coordinates;
+    assert.ok(coords.length >= 2);
+    // Starts at the junction, 4 m to the right of travel: for the eastward
+    // branch that is south of its centreline, for the westward one north.
+    const [lon0, lat0] = coords[0]!;
+    assert.ok(Math.abs(lon0! - LON) < 8 / 86_700, "starts at the junction: " + lon0);
+    const north = (lat0! - P([0, 100])[1]!) * 111_320;
+    assert.ok(branch.segmentId === 73002 ? north < -3 : north > 3, "on its side: " + north.toFixed(1) + " m");
+    // About 30 m long.
+    const [lon1] = coords.at(-1)!;
+    assert.ok(near(Math.abs(lon1! - lon0!) * 86_700, 30, 1.5), "30 m of it");
+  }
 });

@@ -7,8 +7,7 @@ import type { Direction, ElevationBucket, Segment } from "../types/index.js";
 // ahead in its direction of travel, choosing a branch at each fork, until it
 // runs out of road, hits a fork it cannot call, or reaches ground nobody has
 // measured for too long. The design and Julian's four decisions behind it are
-// in context/session.md, "Designed 2026-10-17, not built: press and hold on a
-// segment".
+// in context/session.md, "Press and hold on a segment, designed 2026-10-17".
 //
 // Everything here is pure: the route and `npm run eval:path` load the graph
 // (pathData.ts) and hand it in, so the eval measures exactly the code the
@@ -336,6 +335,11 @@ export interface PathStop {
   reason: StopReason;
   /** At a fork: the lines the rider can hold to go on. */
   branches: Candidate[];
+  /**
+   * How far past the selection's end growth went, on ground with no data,
+   * before it stopped: the fork, the dead end or the limit lies this far ahead.
+   */
+  aheadM: number;
 }
 
 export interface GrownPath {
@@ -365,8 +369,17 @@ const lengthOf = (pieces: readonly PathPiece[]) => {
 // twice), or at the length limit or the loaded area's edge (`limit`).
 //
 // A selection never ends on ground nobody measured: trailing no-data pieces
-// are dropped, and the stop then reads `gap`, because that is what the rider
-// sees past the end.
+// are dropped, since a stretch with no height at its far end has nothing to
+// estimate its slope from. The stop keeps its own reason and branches, and
+// `aheadM` says how far ahead of the selection's end it lies. A fork 40m past
+// the last data is still a fork the rider can hold a branch of (the hold
+// connects across those 40m), and a limit is still a limit, so the phone asks
+// again from the tip rather than taking it for the end.
+//
+// Growth never steps back onto the segment it has just left. The 5m snap can
+// offer it: at the far end of a segment shorter than the snap, the end of the
+// street it came from lies within reach, and would be entered backward, a
+// U-turn reported as a loop instead of the fork that is really there.
 export function growPath(graph: PathGraph, start: PathPoint, options: GrowOptions = {}): GrownPath {
   const maxM = options.maxM ?? MAX_PATH_M;
   const pieces: PathPiece[] = [];
@@ -377,7 +390,8 @@ export function growPath(graph: PathGraph, start: PathPoint, options: GrowOption
   let segment = graph.segments.get(line.segmentId);
   let enterM = segment ? Math.max(0, Math.min(segment.lengthM, start.atM)) : 0;
   let rule: PieceRule | null = options.startRule === undefined ? "start" : options.startRule;
-  let stop: PathStop = { reason: "end", branches: [] };
+  let stop: Omit<PathStop, "aheadM"> = { reason: "end", branches: [] };
+  let previousSegmentId: number | null = null;
 
   grow: while (segment) {
     seen.add(segment.id);
@@ -411,7 +425,7 @@ export function growPath(graph: PathGraph, start: PathPoint, options: GrowOption
       stop = { reason: "limit", branches: [] };
       break;
     }
-    const candidates = candidatesAt(graph, line);
+    const candidates = candidatesAt(graph, line).filter((c) => c.segmentId !== previousSegmentId);
     const picked = pickNext(graph, line, candidates, options);
     if (!picked) {
       stop = { reason: candidates.length > 0 ? "fork" : "end", branches: candidates };
@@ -421,19 +435,19 @@ export function growPath(graph: PathGraph, start: PathPoint, options: GrowOption
       stop = { reason: "loop", branches: [] };
       break;
     }
+    previousSegmentId = line.segmentId;
     line = { segmentId: picked.candidate.segmentId, direction: picked.candidate.direction };
     segment = graph.segments.get(line.segmentId);
     enterM = 0;
     rule = picked.rule;
   }
 
-  let trimmed = false;
+  let aheadM = 0;
   while (pieces.length > 0 && pieces[pieces.length - 1]!.source === "none") {
-    pieces.pop();
-    trimmed = true;
+    const dropped = pieces.pop()!;
+    aheadM += dropped.toM - dropped.fromM;
   }
-  if (trimmed) stop = { reason: "gap", branches: [] };
-  return { pieces, lengthM: lengthOf(pieces), stop };
+  return { pieces, lengthM: lengthOf(pieces), stop: { ...stop, aheadM } };
 }
 
 // Pieces for a run of lines, each covering [fromM, toM] of its segment, split
@@ -509,6 +523,15 @@ class MinHeap {
 // line the rider holds beyond its end, or how a hold behind its start reaches
 // it. A metre with no data costs NO_DATA_COST. Null when there is no way within
 // `maxM` metres of path.
+//
+// Two stated limits. MAX_NO_DATA_M does not apply: a connection is the
+// rider's own request to cross a gap, and NO_DATA_COST is what keeps it off
+// unmeasured ground where measured ground will do. And the search keeps one
+// label per line, its cheapest, while capping length, so near the cap it can
+// miss a way that exists: a dearer but shorter way into some line, the only one
+// that could still reach the target within `maxM`, is dropped for the cheaper
+// one. At 2km of cap and the few hundred metres a held line lies from a
+// selection's end, that is not a case a rider meets.
 export function connectPath(
   graph: PathGraph,
   from: PathPoint,
@@ -593,6 +616,8 @@ export interface PathSpan {
   slopePct: number;
   color: string;
   source: Source;
+  /** The index of the piece it lies on. */
+  piece: number;
 }
 
 /** What the path needs of a line with data: how the map draws it, and its buckets sorted by distance. */
@@ -657,7 +682,7 @@ export function pathSpans(
   lines: ReadonlyMap<string, LineData>,
 ): PathSpan[] {
   const twinRef = (p: LineRef) => ({ segmentId: p.segmentId, direction: oppositeOf(p.direction) });
-  const spansOf = (piece: PathPiece): PathSpan[] | null => {
+  const spansOf = (piece: PathPiece, index: number): PathSpan[] | null => {
     const segment = graph.segments.get(piece.segmentId)!;
     let ranges: Array<{ fromM: number; toM: number; slopePct: number }>;
     if (piece.source === "line") {
@@ -684,6 +709,7 @@ export function pathSpans(
         slopePct: r.slopePct,
         color: colorForSlope(r.slopePct),
         source: piece.source,
+        piece: index,
       });
     }
     return spans;
@@ -700,7 +726,7 @@ export function pathSpans(
     return null;
   };
 
-  const measured = pieces.map(spansOf);
+  const measured = pieces.map((piece, index) => spansOf(piece, index));
   const spans: PathSpan[] = [];
   for (let i = 0; i < pieces.length; ) {
     const own = measured[i];
@@ -716,13 +742,15 @@ export function pathSpans(
     const after = j < pieces.length ? endHeight(pieces[j]!, "from") : null;
     const runM = pieces.slice(i, j).reduce((sum, p) => sum + (p.toM - p.fromM), 0);
     const slopePct = before !== null && after !== null && runM > 0 ? clampSlope(((after - before) / runM) * 100) : 0;
-    for (const piece of pieces.slice(i, j)) {
+    for (let k = i; k < j; k++) {
+      const piece = pieces[k]!;
       spans.push({
         atM: piece.atM,
         lengthM: piece.toM - piece.fromM,
         slopePct,
         color: colorForSlope(slopePct),
         source: "none",
+        piece: k,
       });
     }
     i = j;

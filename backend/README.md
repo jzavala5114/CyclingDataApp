@@ -59,7 +59,8 @@ database and write nothing.
 `npm run eval:path` scores the fork rule of `GET /segments/path`
 leave-one-ride-out: at every fork a stored ride passed, does the rule pick
 the way that ride went, judged on the other rides' history? It exits 1
-unless the rule as shipped beats the least turn, and also reports where
+unless the rule as shipped beats both the least turn and the same rule
+without its history, and also reports where
 growth from every drawn line stops, what the 5 m snap buys, the route's
 latency end to end in-process, and Ladders and Gold Camp Road against the
 terrain model.
@@ -135,7 +136,7 @@ Two cautions when comparing runs:
 - `POST /sessions/:id/samples` — upload a batch of `{ recordedAt, lat, lon, elevationM, elevationSource, altitudeAccuracyM, headingDeg, speedMps, accuracyM }`. `elevationSource` is `"barometer"` or `"gps"`; it and `altitudeAccuracyM` are optional, so an older build of the app still uploads successfully and its samples land unlabelled.
 - `POST /sessions/:id/end` — end the session; map-matches its samples to nearby segments and merges them into the running elevation model
 - `GET /segments?minLon=&minLat=&maxLon=&maxLat=` — segments in a viewport, each with `directionalLines` (offset gradient geometry + color stops) ready for MapLibre
-- `GET /segments/path?segmentId=&direction=&lon=&lat=[&atM=][&toSegmentId=&toDirection=&toLon=&toLat=[&toAtM=]][&grow=false][&avoid=id,id]`: the path a press-and-hold selection grows along, ahead from the pressed line in its own direction of travel: `pieces` (each with the map's own offset geometry in travel order, its data `source`, the `rule` that took it, and the rides behind it), `spans` (the slope of every stretch, as the map colours it), `stop` (why it ends: `end`, `fork` with its `branches`, `gap`, `loop`, `limit`, or for a connection `joined` / `unreachable`), and the colour `bands`. With a `to` point it first connects to it. A bad parameter is a 400. See `src/services/pathResponse.ts` for every field and `src/routes/segments.ts` for the three kinds of request.
+- `GET /segments/path?segmentId=&direction=&lon=&lat=[&atM=][&toSegmentId=&toDirection=&toLon=&toLat=[&toAtM=]][&grow=false][&avoid=id,id]`: the path a press-and-hold selection grows along, ahead from the pressed line in its own direction of travel: `pieces` (each with the map's own offset geometry in travel order, its data `source`, the `rule` that took it, and the rides behind it), `spans` (the slope of every stretch as the map colours it, with its height above the path's start, its rise and its rides), `stop` (why it ends: `end`, `fork` with its `branches` and the first 30 m of each, `gap`, `loop`, `limit`, or for a connection `joined` / `unreachable`; `aheadM` is how far past the selection's end, on ground with no data, that lies), and the colour `bands`. With a `to` point it first connects to it. A bad parameter is a 400. See `src/services/pathResponse.ts` for every field and `src/routes/segments.ts` for the three kinds of request.
 
 See `src/services/segmentMatcher.ts`, `elevationAggregator.ts`, and
 `gradientBuilder.ts` for the core algorithms, and `src/db/schema.sql` for the

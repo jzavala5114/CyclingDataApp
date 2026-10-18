@@ -269,15 +269,75 @@ test("growth crosses up to 150 m with no data, and stops at the start of a longe
   assert.equal(grown.stop.reason, "gap");
 });
 
-test("a selection never ends on ground nobody measured: a dead end with no data is trimmed", () => {
+test("a selection never ends on ground nobody measured, but the stop keeps its reason: a dead end 100 m on", () => {
   const segments = [A, straightOn];
   const grown = growPath(
     buildPathGraph({ segments, extents: extentsFor(segments, [[1, F]]), transitions: [] }),
     { segmentId: 1, direction: F, atM: 0 },
   );
   assert.equal(route(grown.pieces), "1f");
-  assert.equal(grown.stop.reason, "gap");
+  assert.equal(grown.stop.reason, "end");
+  assert.ok(Math.abs(grown.stop.aheadM - 100) < 0.5, `ahead ${grown.stop.aheadM}`);
   assert.ok(Math.abs(grown.lengthM - 100) < 0.5);
+});
+
+test("a fork 40 m past the last data is still a fork, with its branches to hold", () => {
+  const hole = seg(12, [[0, 100], [0, 140]], [11, 12]);
+  const east = seg(13, [[0, 140], [100, 140]], [12, 13]);
+  const west = seg(14, [[0, 140], [-100, 140]], [12, 14]);
+  const segments = [A, hole, east, west];
+  const grown = growPath(
+    buildPathGraph({ segments, extents: extentsFor(segments, [[1, F], [13, F], [14, F]]), transitions: [] }),
+    { segmentId: 1, direction: F, atM: 0 },
+  );
+  assert.equal(route(grown.pieces), "1f");
+  assert.equal(grown.stop.reason, "fork");
+  assert.deepEqual(grown.stop.branches.map((b) => b.segmentId), [13, 14]);
+  assert.ok(Math.abs(grown.stop.aheadM - 40) < 0.5, `ahead ${grown.stop.aheadM}`);
+});
+
+test("a limit reached on ground with no data stays a limit, so the phone asks again", () => {
+  const hole = seg(12, [[0, 100], [0, 200]], [11, 12]);
+  const after = seg(13, [[0, 200], [0, 300]], [12, 13]);
+  const segments = [A, hole, after];
+  const grown = growPath(
+    buildPathGraph({ segments, extents: extentsFor(segments, [[1, F], [13, F]]), transitions: [] }),
+    { segmentId: 1, direction: F, atM: 0 },
+    { maxM: 150 },
+  );
+  assert.equal(route(grown.pieces), "1f");
+  assert.equal(grown.stop.reason, "limit");
+  assert.ok(Math.abs(grown.stop.aheadM - 50) < 0.5, `ahead ${grown.stop.aheadM}`);
+});
+
+test("the 150 m budget is for one stretch: two holes of 100 m with data between are both crossed", () => {
+  const hole1 = seg(12, [[0, 100], [0, 200]], [11, 12]);
+  const mid = seg(13, [[0, 200], [0, 300]], [12, 13]);
+  const hole2 = seg(14, [[0, 300], [0, 400]], [13, 14]);
+  const end = seg(15, [[0, 400], [0, 500]], [14, 15]);
+  const segments = [A, hole1, mid, hole2, end];
+  const grown = growPath(
+    buildPathGraph({ segments, extents: extentsFor(segments, [[1, F], [13, F], [15, F]]), transitions: [] }),
+    { segmentId: 1, direction: F, atM: 0 },
+  );
+  assert.equal(route(grown.pieces), "1f 12f 13f 14f 15f");
+});
+
+test("growth never steps back onto the segment it just left, even where the 5 m snap offers it", () => {
+  // A 3 m stub at the end of Main St: its far end lies 3 m from Main St's own
+  // end, so the snap offers Main St again, backward. The real choice is the
+  // fork onto Oak Ave.
+  const main = seg(1, [[0, 0], [0, 100]], [10, 11], { name: "Main St" });
+  const stub = seg(2, [[0, 100], [0, 103]], [11, 40], { name: "Main St" });
+  const east = seg(3, [[0, 103], [100, 103]], [40, 41], { name: "Oak Ave" });
+  const west = seg(4, [[0, 103], [-100, 103]], [40, 42], { name: "Oak Ave" });
+  const segments = [main, stub, east, west];
+  const graph = buildPathGraph({ segments, extents: extentsFor(segments, [[1, F], [2, F], [3, F], [4, F]]), transitions: [] });
+  assert.ok(candidatesAt(graph, { segmentId: 2, direction: F }).some((c) => c.segmentId === 1), "the snap does offer it");
+  const grown = growPath(graph, { segmentId: 1, direction: F, atM: 0 });
+  assert.equal(route(grown.pieces), "1f 2f");
+  assert.equal(grown.stop.reason, "fork");
+  assert.deepEqual(grown.stop.branches.map((b) => b.segmentId), [3, 4]);
 });
 
 test("a partly drawn line splits into its ground with data and without, and the other direction's data counts", () => {
@@ -380,6 +440,23 @@ test("ground ridden only the other way reads that direction's slope, negated", (
   for (const s of twinSpans) assert.ok(Math.abs(s.slopePct + 6) < 1e-6, `slope ${s.slopePct}`);
 });
 
+test("the other direction's slopes are laid onto this line end for end, not just negated", () => {
+  // Ridden only southward: flat for its first 150 m that way, then climbing
+  // 8%. Northward that is a fall of 8% first, then flat.
+  const long = seg(16, [[0, 100], [0, 400]], [11, 16]);
+  const segments = [A, long];
+  const lines = new Map([
+    [lineKey({ segmentId: 1, direction: F }), lineData(A, F, () => 1900)],
+    [lineKey({ segmentId: 16, direction: B }), lineData(long, B, (m) => 1900 + (m < 150 ? 0 : (m - 150) * 0.08))],
+  ]);
+  const graph = buildPathGraph({ segments, extents: extentsFor(segments, [[1, F], [16, B]]), transitions: [] });
+  const twin = pathSpans(graph, growPath(graph, { segmentId: 1, direction: F, atM: 0 }).pieces, lines).filter(
+    (s) => s.source === "twin",
+  );
+  assert.ok(Math.abs(twin[0]!.slopePct + 8) < 1e-6, `first ${twin[0]!.slopePct}`);
+  assert.ok(Math.abs(twin.at(-1)!.slopePct) < 1e-6, `last ${twin.at(-1)!.slopePct}`);
+});
+
 test("a stretch with no data gets one slope, estimated from the heights at its two ends", () => {
   const hole = seg(12, [[0, 100], [0, 200]], [11, 12]);
   const after = seg(13, [[0, 200], [0, 300]], [12, 13]);
@@ -417,6 +494,10 @@ test("connectPath: the cheapest way to a held line, preferring measured ground, 
   assert.ok(Math.abs(pieces.at(-1)!.toM - 20) < 1e-9);
   // Out of reach within 200 m of path: no connection.
   assert.equal(connectPath(graph, { segmentId: 1, direction: F, atM: 50 }, { segmentId: 33, direction: F, atM: 20 }, 200), null);
+  // The last leg counts too: 270 m straight on, but the limit is 260, so the
+  // cheaper detour is out of reach as well and nothing connects.
+  assert.equal(connectPath(graph, { segmentId: 1, direction: F, atM: 50 }, { segmentId: 33, direction: F, atM: 20 }, 260), null);
+  assert.notEqual(connectPath(graph, { segmentId: 1, direction: F, atM: 50 }, { segmentId: 33, direction: F, atM: 20 }, 370), null);
   // Further along the same line: straight there.
   assert.equal(
     route(connectPath(graph, { segmentId: 1, direction: F, atM: 10 }, { segmentId: 1, direction: F, atM: 90 })!),

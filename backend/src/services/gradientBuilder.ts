@@ -216,7 +216,9 @@ export function drawnExtent(
   const toTravelM = coverage
     ? Math.min(lengthM, coverage.coveredToM)
     : Math.min(lengthM, lastBucketM + HALF_BUCKET_M);
-  return toTravelM - fromTravelM > 0 ? { fromTravelM, toTravelM } : null;
+  // The rejection the inline code made before this was extracted, `<= 0`, so
+  // even a NaN extent goes the same way it always did.
+  return toTravelM - fromTravelM <= 0 ? null : { fromTravelM, toTravelM };
 }
 
 // The stretch from `fromTravelM` to `toTravelM` (metres along `direction`) of

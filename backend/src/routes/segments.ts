@@ -96,8 +96,8 @@ segmentsRouter.get("/", asyncRoute(async (req, res) => {
 }));
 
 // GET /segments/path: the path a press-and-hold selection grows along. The
-// design is context/session.md, "Designed 2026-10-17, not built: press and
-// hold on a segment"; services/pathGrowth.ts grows it, and
+// design is context/session.md, "Press and hold on a segment, designed 2026-10-17";
+// services/pathGrowth.ts grows it, and
 // services/pathResponse.ts says what each field means.
 //
 // Three requests, by what they name:
@@ -113,6 +113,12 @@ segmentsRouter.get("/", asyncRoute(async (req, res) => {
 // lines only (loadPathSegments). Growth stops with `limit` at a junction within
 // PATH_EDGE_M of that box's edge, where a branch may not have been loaded, and
 // the phone asks again from the tip.
+//
+// Two stated limits. The network and each line's data are read in separate
+// statements, not one snapshot, so a ride merged between them can leave a
+// piece the extents call drawn with no line data yet; it is then estimated like
+// ground with no data, and the next request has it. And `avoid` takes at most
+// MAX_AVOID ids: past that the phone sends the segments nearest the end.
 const PATH_BOX_M = 2000;
 const PATH_EDGE_M = 100;
 const MAX_AVOID = 500;
@@ -202,19 +208,21 @@ segmentsRouter.get("/path", asyncRoute(async (req, res) => {
 
   const avoid = q.avoid ? q.avoid.split(",").map(Number) : [];
   let pieces: PathPiece[] = [];
-  let reason: PathEnd;
-  let branches: readonly Candidate[] = [];
+  let stop: { reason: PathEnd; branches: readonly Candidate[]; aheadM: number } = {
+    reason: "unreachable",
+    branches: [],
+    aheadM: 0,
+  };
   if (!to) {
     const grown = growPath(graph, from, { avoid });
-    ({ pieces } = grown);
-    ({ reason, branches } = grown.stop);
+    ({ pieces, stop } = grown);
   } else {
     const connector = connectPath(graph, from, to);
     if (connector === null) {
-      reason = "unreachable";
+      stop = { reason: "unreachable", branches: [], aheadM: 0 };
     } else if (q.grow === "false") {
       pieces = connector;
-      reason = "joined";
+      stop = { reason: "joined", branches: [], aheadM: 0 };
     } else {
       // On from the held point, the connection's own segments counting as
       // already selected; its first piece carries no rule, its segment having
@@ -223,7 +231,7 @@ segmentsRouter.get("/path", asyncRoute(async (req, res) => {
       const connectorM = last ? last.atM + (last.toM - last.fromM) : 0;
       const grown = growPath(graph, to, { avoid: [...avoid, ...connector.map((p) => p.segmentId)], startRule: null });
       pieces = [...connector, ...grown.pieces.map((p) => ({ ...p, atM: p.atM + connectorM }))];
-      ({ reason, branches } = grown.stop);
+      ({ stop } = grown);
     }
   }
 
@@ -231,5 +239,5 @@ segmentsRouter.get("/path", asyncRoute(async (req, res) => {
     pieces.length > 0
       ? await loadLineData(pool, graph.segments, pieces.map((p) => p.segmentId))
       : { lines: new Map(), rides: new Map() };
-  res.json(pathResponse(graph, pieces, reason, branches, lines, rides));
+  res.json(pathResponse(graph, pieces, stop, lines, rides));
 }));
