@@ -35,15 +35,18 @@ it on 2026-10-18: "pretty amazing so far", the functionality "feels great";
 he sees the lag, and has no way to tell whether the stats are right.** Next,
 in this order (details under
 "2. **App**" in the feature's section):
-- **The lag: mostly fixed and live (2026-10-18), one review finding open.**
-  The backend moved from Railway's Amsterdam region to `us-west2`
-  (California, about 25ms from its database in Oregon), and the pool keeps
-  idle connections 10 minutes (`bab6a91`, builtAt 2026-10-18T17:11:56.708Z).
-  A press from this PC: warm 1.4s to 0.4s, after 40s quiet 3.0s to 0.5s; on
-  the server, warm 1.17s to about 0.25s. Answers unchanged. Open: 3 of 11
-  presses after quiet still took 0.76 to 1.0s on the server, and a first
-  press downtown 1.4 to 1.6s. Details and the resume steps under "2.
-  **App**", "Next, in order", step 1.
+- **The lag: mostly fixed and live (2026-10-18); what is left is the
+  database going cold during quiet, waiting on Julian.** Live as `93563c1c`
+  (`9a0058a`, builtAt 2026-10-18T18:51:27.630Z): the backend in `us-west2`,
+  a trace on every request, four connections kept. A press from this PC:
+  warm 1.4s to about 0.45s, after 40s quiet 3.0s to about 0.47s. On the
+  server: warm median 1.17s to 0.22s, after 40s quiet 0.25 to 0.36s (14 of 14
+  on the two traced deployments). Answers unchanged. Left: with connections
+  waiting, the first press after a pause of about 6 minutes or more takes
+  0.8 to 0.85s on the server (1.16s from this PC), and the first downtown
+  press is often 1.4 to 1.9s (4 of 6 since the move): the database's first
+  statements after quiet run slow. Evidence, the hypothesis and the
+  decision under "2. **App**", "Next, in order", step 1.
 - **Then whether the card's numbers are right**: a check against something
   independent, which nothing does yet.
 
@@ -410,61 +413,87 @@ cutting the path at a grown distance.
      and the tip hold through the device's own query (the eval rebuilds the
      query from the layer list).
    - **Next, in order.**
-     1. **The lag: mostly fixed, live since 2026-10-18 17:13 UTC.**
-        - **Cause:** the backend ran in Railway's Amsterdam region (never
-          chosen), about 150ms from its database in Oregon. The database's
-          own work is about 50ms of a request; the rest was round trips and
-          about 0.7MB moved (`npm run time:path`, read-only).
-        - **Done, on Julian's go-ahead:** the region moved to `us-west2`
-          (Railway GraphQL `serviceInstanceUpdate`, `multiRegionConfig
-          {"us-west2": {"numReplicas": 1}}`, then `deploymentRedeploy` with
-          `usePreviousImageTag`, deployment `71bdbb69`; a same-image move
-          does not change builtAt, so it was verified by the deployment's
-          region and status). Then `bab6a91` merged and deployed
-          (`a2fef8a2`, builtAt 2026-10-18T17:11:56.708Z): the pool keeps idle
-          connections 10 minutes (was 30s), keepalive every 10s, an `error`
-          listener.
-        - **Measured:** `eval:latency` from this PC, warm median 1404ms to
-          398ms, after 40s quiet 2994ms to 449, 483 and 507ms (PASS). Server
-          time (access log, 83 requests): warm median 243ms (was 1170ms);
-          after 30s or more of quiet, n=11: eight at 263 to 294ms, and 762,
-          796 and 1023ms. `eval:selection` PASS, its 16 press summaries
-          identical to a run before both changes.
-        - **The cold review: FAIL** (119k). F1, blocking: the server-side
-          after-quiet line ("at most 600ms") is not met, 3 of 11 over; the
-          slow mode is unexplained and not tied to the length of the quiet;
-          the server's time runs to the response's `close` (`index.ts:32`),
-          so database and delivery to Railway's edge are mixed in one number.
-          Also a first press downtown takes 1.4 to 1.6s on the server every
-          run (perhaps the 617KB network query on a cold database cache;
-          unproven). F2, blocking: `eval:latency` passes a broken server: it
-          never checks the warm requests' status, and gates the quiet case on
-          a median of 3 where its first version judged one sample; reproduced
-          with a local stub. F3: no test pins `keepAliveInitialDelayMillis`
-          (a mutant deleting it survives; without it the first probe waits
-          the OS default, 2 hours). F4: the per-statement EXPLAIN figures came
-          from a first version of `time:path` that the query census rejects
-          (dynamic SQL); its output is kept, its code is not. Unverified:
-          Supavisor's session pool size, and how fast production's keepalive
-          notices a dead connection. The review and its reproductions are in
-          the scratchpad of session `e24d4bb5`, `lag/critique/`.
-        - **Branch `path-lag-fix`** at `09d6d37`, pushed, NOT merged
-          (merging deploys: it touches `backend/`): the eval's kept-alive
-          connection and median of 3, the revision F2 faults.
-        - **To resume:** `git switch path-lag-fix && git rebase origin/main`.
-          Fix F2 (assert status 200 on every request; judge every quiet
-          sample, the slowest, against 1200ms) and F3 (assert the delay is at
-          most 30_000). Then attribute F1 with a trace before fixing it: in
-          the /path handler, the pool's idle and total counts on arrival, the
-          connections opened during the request, and when the database stages
-          end against the response's close, in the access log line and a
-          `Server-Timing` header the eval can read. Candidates once
-          attributed: gzip the responses (87KB on a trail) if it is delivery;
-          keep the ride order (266KB on every request) in memory if it is the
-          database stages. Each is a deploy, on Julian's go-ahead, verified by
-          builtAt with /health only during the rollout; then `eval:latency`,
-          the access-log split (`lag/split-access-log.mjs` in that
-          scratchpad), `eval:selection`, and the review's reproductions.
+     1. **The lag: mostly fixed, live 2026-10-18; the rest waits on Julian.**
+        - **Cause, found in three passes.** (a) The backend ran in Railway's
+          Amsterdam region (never chosen), about 150ms from its database in
+          Oregon. (b) The pool closed idle connections after 30s. (c) Found by
+          the request trace: the database's first statements after a quiet
+          spell run slow (below).
+        - **Done, three deploys, each on Julian's go-ahead.** The region moved
+          to `us-west2` (Railway GraphQL `serviceInstanceUpdate`,
+          `multiRegionConfig {"us-west2": {"numReplicas": 1}}`, then
+          `deploymentRedeploy` with `usePreviousImageTag`, deployment
+          `71bdbb69`; a same-image move keeps builtAt, so it was verified by
+          region and status). `bab6a91` (`a2fef8a2`): keepalive, idle
+          connections kept 10 minutes, an `error` listener. `ff76d26`
+          (`698f2cac`): a trace on every request (`routes/requestTrace.ts`):
+          the pool as the request found it (idle/total/waiting), the
+          connections it opened, each stage's span from arrival, and when the
+          answer was handed over, appended to the access log line
+          (`routes/accessLog.ts`) and sent by GET /segments/path as a
+          `Server-Timing` header that `eval:latency` prints per press. `npm
+          run split:access-log -- <file>` reads a `railway logs
+          <deploymentId> --json` file back (run the CLI from `backend/`,
+          the folder linked to the service). `9a0058a` (`93563c1c`, builtAt
+          2026-10-18T18:51:27.630Z): the pool keeps `min: 4`, opened as the
+          server starts (`db/warmPool.ts`; its log line "database: opened 4
+          connection(s) in 208ms").
+        - **Measured on `93563c1c`** (57 requests; `eval:latency` PASS, its
+          verdict now: every request 200, warm median at most 1000ms, every
+          press after 40s quiet at most 1200ms): from this PC, warm median
+          456ms, after 40s quiet 464, 620 and 457ms. On the server, warm
+          median 222ms (n=50, was 1170ms), after 40s quiet 262 to 281ms; on
+          `698f2cac`, 11 of 11 after 40s within 251 to 356ms. Delivery to
+          Railway's proxy 0 to 3ms, so gzip would not move the server's time.
+          `eval:selection` PASS, its 16 press summaries identical to a run
+          before all three changes (compared line by line), 43 path requests
+          at a median 0.36s, p95 0.47s from this PC.
+        - **The review's findings, acted on.** F2 fixed (`judge()` in
+          `evalLatency.ts`; the review's own TLS stub, rebuilt: the old eval
+          PASS, the new one FAIL naming all six warm 500s and the 6009ms
+          press). F3 fixed (`keepAliveInitialDelayMillis` pinned above 0 and
+          at most 30s). F4 fixed (`timePath.ts` says its EXPLAIN figure was a
+          one-off). F1 attributed, below. 24 mutants over the two commits, 24
+          killed.
+        - **What is left: the database goes cold during quiet.** With four
+          connections waiting and none opened, three presses on `93563c1c`
+          were slow: the container's first (963ms on the server), the first
+          downtown (1947ms, `network` 1837ms), and one after 11 minutes with
+          no request (852ms: rideOrder 448, network 581, lines 192, against
+          about 45 to 140ms each warm). On the traced deployments every press
+          after 40s was fast; 6.4 and 11 minutes were not (796ms on
+          `a2fef8a2`, 852ms here). Before the trace, `a2fef8a2` also had two
+          slow presses after 40 to 50s (1023, 762ms), unexplained. `9a0058a`
+          kept the connections as designed (4 of 4 waiting after 11 minutes)
+          but did not keep that press fast: opening the four took 208ms at
+          once, and the rest of a cold stage is the database's first
+          statements, so its commit message's "a new connection cost 400 to
+          850ms" counts those statements too. Its gain is the connect, on the
+          first press after 10 minutes. Evidence it is the database server,
+          not a session: pg_stat_statements (read-only) shows the network
+          statement's execution from 5.7 to 1911ms with 0 blocks read in 571
+          calls, the whole database (77MB) inside 224MB of shared_buffers,
+          JIT off. On four fresh sessions (`lag/f1/per-session.mts`),
+          EXPLAIN ANALYZE of the downtown statement ran 1233ms on the first
+          session's first run, then 98 and 96ms, and 94 to 109ms on every
+          other session, one of them as new as the first. The downtown
+          statement touches 26,069 buffers when quiet (101ms: a full scan of
+          46,271 segments for the family join, and 262 overlapping map-index
+          probes giving 20,947 rows for 1,609 families), the trail's 5,481
+          (25ms). Hypothesis, unverified: the database server pages idle
+          memory out (Supabase's small instance) and the first statements
+          after quiet fault it back in. Supabase's dashboard (Reports,
+          Database: memory and swap) would settle it.
+        - **Decision for Julian:** look at that graph first (a minute, free).
+          If it shows swap: a bigger Supabase compute (costs money, fixes the
+          cause), or a keep-warm statement every 2 to 3 minutes touching the
+          route's pages (cheap, treats the symptom, a deploy), or a smaller
+          working set for the downtown statement (the family join through
+          `segments_way_start_end_idx`, distinct grid cells for the probes;
+          each changes what the route reads, so `eval:selection --record`
+          then `--replay` must show the same answers; about 60 to 100k with
+          a deploy). Every measurement is in the scratchpad of session
+          `e24d4bb5`, `lag/f1/`.
      2. **The numbers against the ground.** A read-only eval: for selections on
         stretches with a known answer, the card's net change and climb against
         the terrain model, and against a reference Julian trusts (a climb's
@@ -585,16 +614,20 @@ fix), saved selections, a climb finder.
 `state-after-colours`, `mixing-artefact-notes`, `option-a-plan`,
 `option-a-state`, `per-pass-slopes` and `option-a-live` are merged and safe
 to delete, and so are `press-hold-plan`, `path-route`, `path-route-live`,
-`notes-after-phase1` and `press-hold-app`.
-**In flight: `path-lag-fix`** at `09d6d37`, pushed, NOT merged: the lag's
-follow-up (the review's F1 to F4; "2. **App**", "Next", step 1). The lag's main
-fix is live: the backend in `us-west2`, and the pool (`bab6a91`, builtAt
-2026-10-18T17:11:56.708Z). No running job.
+`notes-after-phase1`, `press-hold-app`, `apk-install-notes`, `lag-notes`,
+`path-lag-fix` and `lag-trace-notes`.
+**Nothing in flight.** `path-lag-fix` is merged (`9a0058a`) and live as
+`93563c1c` (builtAt 2026-10-18T18:51:27.630Z); the lag's last case waits on
+Julian ("2. **App**", "Next", step 1). No running job.
 The phone runs the release APK built from `d7204c3` (installed 2026-10-18 at
 02:00).
-Last code change `bab6a91` (2026-10-18): the database pool keeps idle
-connections 10 minutes, with keepalive and an error listener; deployed, with
-the backend moved to `us-west2` the same day. Before it, `d7204c3`
+Last code change `9a0058a` (2026-10-18): the pool keeps four connections
+through any pause, opened as the server starts; deployed. Before it, `ff76d26`
+(2026-10-18): a trace on every request, `eval:latency` judging every request,
+and `split:access-log`; deployed. Before it, `bab6a91` (2026-10-18): the
+database pool keeps idle connections 10 minutes, with keepalive and an error
+listener; deployed, with the backend moved to `us-west2` the same day. Before
+it, `d7204c3`
 (2026-10-18): phase 2 of press and hold, the app
 half, merged with its two reviews' fixes; app only, so nothing deployed.
 Before it, `5ccbc35` (2026-10-17): `GET /segments/path`, phase 1 of
@@ -707,7 +740,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 33 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature ("Press and hold on a segment, designed 2026-10-17"): phase 1, the server, is live; phase 2, the app, shipped 2026-10-18; the lag mostly fixed and live (the backend moved to `us-west2`, the pool kept warm), one review finding open on `path-lag-fix`; then whether the numbers are right |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature ("Press and hold on a segment, designed 2026-10-17"): phase 1, the server, is live; phase 2, the app, shipped 2026-10-18; the lag mostly fixed and live (the backend in `us-west2`, a trace on every request, four connections kept); the rest, the database going cold during quiet, waits on Julian's look at Supabase's memory graph; then whether the numbers are right |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
