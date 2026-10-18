@@ -1,5 +1,5 @@
 import { API_BASE_URL } from "../config";
-import type { SegmentWithGradients, TrackedSample } from "../types";
+import type { Direction, PathResponse, SegmentWithGradients, TrackedSample } from "../types";
 
 // fetch has no default timeout, so a request that stalls -- which on a bike,
 // on mobile data, handing between towers, is routine -- hangs forever. A ride
@@ -10,9 +10,23 @@ const DEFAULT_TIMEOUT_MS = 20000;
 // much longer than a plain upload before being given up on.
 const END_SESSION_TIMEOUT_MS = 120000;
 
+/** A request its caller called off: not a failure, and nothing to tell the rider. */
+export class RequestCancelled extends Error {
+  constructor(path: string) {
+    super(`${path} was cancelled`);
+    this.name = "RequestCancelled";
+  }
+}
+
 async function request<T>(path: string, init?: RequestInit, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // A caller's own signal (a press that turned out to be a pan) aborts the
+  // same controller, so `signal` below stays the one thing fetch is given.
+  const cancel = init?.signal;
+  const onCancel = () => controller.abort();
+  if (cancel?.aborted) controller.abort();
+  cancel?.addEventListener("abort", onCancel);
   try {
     // `...init` goes first so a caller can never overwrite `signal` and switch
     // the timeout off by accident, and so headers merge rather than replace.
@@ -30,12 +44,14 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs = DEFAULT_
     // usual `name === "AbortError"` test never fired and every timeout reached
     // the user as the raw "fetch failed: Fetch request has been canceled".
     // `signal.aborted` is ours and is guaranteed by the spec once abort() runs.
+    if (cancel?.aborted) throw new RequestCancelled(path);
     if (controller.signal.aborted || (err instanceof Error && err.name === "AbortError")) {
       throw new Error(`${path} timed out after ${Math.round(timeoutMs / 1000)}s`);
     }
     throw err;
   } finally {
     clearTimeout(timer);
+    cancel?.removeEventListener("abort", onCancel);
   }
 }
 
@@ -119,4 +135,58 @@ export function fetchSegments(bbox: Bbox): Promise<{ segments: SegmentWithGradie
     maxLat: String(bbox.maxLat),
   });
   return request(`/segments?${params}`);
+}
+
+// Measured live on 2026-10-17: 2.2s warm and 5.6s cold for a press downtown,
+// 1.5s on Ladders. A selection waits on this with the rider's finger down, so
+// it gets less than the default: past 15s the card says so rather than spin.
+const PATH_TIMEOUT_MS = 15000;
+// The route's own cap on `avoid` (MAX_AVOID in backend/src/routes/segments.ts).
+export const MAX_AVOID = 500;
+
+/** A point on a line: the segment, the direction travelled, and where. */
+export interface PathPoint {
+  segmentId: number;
+  direction: Direction;
+  lon: number;
+  lat: number;
+  /** Metres along the segment in its direction of travel. Without it the server projects lon/lat onto the line's drawn stretch. */
+  atM?: number;
+}
+
+// The three requests GET /segments/path takes (backend/src/routes/segments.ts):
+// a press names only `from`; holding a line past the selection's end names the
+// end as `from` and the held line as `to`; holding one behind its start names
+// the held line as `from`, the start as `to`, and `grow: false`.
+export interface PathRequest {
+  from: PathPoint;
+  to?: PathPoint;
+  grow?: boolean;
+  /** The selection's segments, so growth stops rather than run back into it. The last MAX_AVOID are sent, the ones nearest the end. */
+  avoid?: readonly number[];
+}
+
+export function pathQuery({ from, to, grow, avoid }: PathRequest): string {
+  const params = new URLSearchParams({
+    segmentId: String(from.segmentId),
+    direction: from.direction,
+    lon: String(from.lon),
+    lat: String(from.lat),
+  });
+  if (from.atM !== undefined) params.set("atM", String(from.atM));
+  if (to) {
+    params.set("toSegmentId", String(to.segmentId));
+    params.set("toDirection", to.direction);
+    params.set("toLon", String(to.lon));
+    params.set("toLat", String(to.lat));
+    if (to.atM !== undefined) params.set("toAtM", String(to.atM));
+  }
+  if (grow === false) params.set("grow", "false");
+  const ids = avoid ? [...new Set(avoid)].slice(-MAX_AVOID) : [];
+  if (ids.length > 0) params.set("avoid", ids.join(","));
+  return `/segments/path?${params}`;
+}
+
+export function fetchPath(path: PathRequest, signal?: AbortSignal): Promise<PathResponse> {
+  return request(pathQuery(path), { signal }, PATH_TIMEOUT_MS);
 }

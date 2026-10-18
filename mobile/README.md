@@ -64,3 +64,51 @@ prompt — go to Settings → Apps → CyclingDataApp → Permissions → Locati
 - `src/services/gradientRendering.ts` — turns a segment's per-direction color
   stops into short colored `LineLayer` features for MapLibre
 - `src/services/api.ts` — talks to the backend
+
+## Press and hold on a line
+
+Hold any coloured line to measure it. A selection starts under your finger
+and grows ahead in that line's direction of travel (each line sits on the
+right-hand side of the street for its direction) for as long as the finger
+stays down; lift it to stop. The card at the top shows the streets, the
+distance (feet under half a mile, miles from there), the climb and descent,
+the average grade, the steepest 330 ft, a height profile in the map's own
+colours with each band's share of the distance, how many rides the numbers
+are built from, and what to do next.
+
+- **Hold the selection** to carry it on from where you let go.
+- **Hold another line near the end** to join it: the gap between is bridged
+  at once, and growth carries on from the line you held. Near the start, it
+  leads into the selection instead.
+- **At a fork** growth stops and marks the ways on; hold the one you want.
+- **Tap the selection** to remove that piece and everything after it, after
+  one confirm.
+- **⇄** turns it round: the same streets, on the other direction's lines,
+  with that direction's own rides.
+- **×** or Android back clears it.
+
+The design, and why each choice was made, is in `../context/session.md`,
+"Press and hold on a segment, designed 2026-10-17"; the server half is
+`GET /segments/path` (`../backend/README.md`).
+
+Where it lives:
+
+- `src/services/selectionController.ts`: the hold as a state machine with no
+  React and no map in it; the screen feeds it touches and draws its snapshots
+- `src/services/pathSelection.ts`: joining, cutting and adding up a path; the
+  card's numbers; the map's features
+- `src/services/holdGesture.ts`: which line the finger is on, where along it,
+  the stand-in drawn while the server answers, and growth speed
+- `src/services/flipSelection.ts`: the flip, checked street by street
+- `src/services/selectionStatus.ts`: the card's line saying what to do next
+- `src/components/SelectionLayers.tsx` and `src/components/SelectionCard.tsx`:
+  the selection on the map, and the card
+
+Checking it:
+
+- `npm test` runs the gate tests, synthetic paths and every gesture's flow
+  against a fake clock and a fake server.
+- `npm run eval:selection` runs the same logic over real answers from the
+  live server, read-only, and passes only if every answer tiles, adds up and
+  cuts cleanly and at least 90% of flips land on the same streets. It sends
+  about 45 requests; don't run it while the backend is deploying.

@@ -26,8 +26,11 @@ the rest. No ride has landed since.
 numbered items). Julian chose it over the census and settled its four open
 questions on 2026-10-17. **Phase 1, the server, shipped 2026-10-17**
 (`5ccbc35`, `builtAt 2026-10-18T01:40:59.257Z`): `GET /segments/path` is live, and nothing
-calls it until the app does. **Next is phase 2, the app and an APK**, about
-250k, which starts with the touch spike. Item 1, the zero-run census (read-only, about
+calls it until the app does. **Phase 2, the app, is built but paused
+unreviewed** (2026-10-17, Julian's session limit): branch `press-hold-app`,
+pushed, NOT merged; its APK is on the phone. What is left, in order, is under
+"2. **App**" in the feature's section: one cold critic, its fixes, the final
+APK, merge, notes. Item 1, the zero-run census (read-only, about
 40k), can run any time, and it also sizes the gaps the feature has to bridge.
 Items 2 to 5 follow.
 
@@ -277,7 +280,61 @@ cutting the path at a grown distance.
    estimated until the next request; `avoid` takes at most 500 ids; and the
    eval's read-only guard rides on pg's deprecated query queueing, as
    `eval:mixing`'s does.
-2. **App**, about 250k: the touch spike, then selection, card, trim, flip,
+2. **App: built 2026-10-17 on `press-hold-app` (pushed, not merged), paused
+   at Julian's session limit before its review.** About 430k so far against a
+   710k re-estimate.
+   - **Touch spike: PASS.** Injected touches on the Pixel 10 Pro: MapLibre's
+     `onLongPress` at about 400ms, then `onTouchEnd` on the wrapper `View`
+     when the finger lifts (+2502ms on a 2.5s hold), no `onPress` after a long
+     press, and with `dragPan` off from the long press a drag does not move the
+     map. `queryRenderedFeatures` in a 44-point box takes 9 to 16ms and returns
+     both lines of a street, 17 points apart at zoom 17. Not yet tried with a
+     real finger.
+   - **Built:** `selectionController.ts` (the hold as a state machine, no React),
+     `pathSelection.ts` (joins, cuts, the card's numbers, map features, units),
+     `holdGesture.ts` (line pick, travel metres, preview, speed, hit priority),
+     `flipSelection.ts`, `selectionStatus.ts`, `SelectionLayers.tsx`,
+     `SelectionCard.tsx`, the wiring in `MapScreen.tsx`, `fetchPath` with
+     caller cancellation in `api.ts`. The `RING_CAPACITY` comment is fixed.
+     How each choice works is in `mobile/README.md`, "Press and hold on a line".
+   - **Choices made in building, for the review to judge:** the server is asked
+     150ms after finger-down if the finger stays put, not at once, so taps and
+     pans cost it nothing; a hold within 250m of the selection's end connects to
+     it (within 250m of its start, it leads in), further away it starts afresh;
+     the flip asks connections along the other direction's lines in chunks
+     under 1,800m and checks each answer's streets, splitting a chunk that
+     comes back on others; a trim ends the selection with a `cut` stop, which
+     never grows; the steepest 330 ft skips windows over a quarter estimated;
+     street names covering under 20m of a selection (junction links) stay out
+     of its title.
+   - **Checks:** 114 app tests (58 new); 10 of 11 code mutants killed, the
+     survivor equivalent (`<` against `<=` at exactly 2,640 ft). `npm run
+     eval:selection` (new, read-only, 16 live presses): PASS, every answer
+     tiles, adds up and cuts cleanly, and 16 of 16 flips land on the same
+     streets; it fails with heights not carried across a join, and with the
+     flip's street check removed, where 2 of the 16 real flips took a shortcut
+     (trail 13136, downtown 9270). Its first run checked each map feature's
+     metres against the path's and failed 34 trail features by design: round a
+     switchback the line drawn 4m aside is metres longer, so it now checks
+     shares of each piece.
+   - **On the phone, driven over adb:** hold, release, hold the selection to
+     carry on, the camera following the tip, tap to trim and confirm, flip,
+     Android back, hold a line near the end to join it, the first-run hint.
+     Not seen on the phone: leading in from near the start, a fork's branches.
+   - **Found on the phone and open: the first answer is slow.** Holds waited 3
+     to 5 seconds at the end of the pressed line for the server, against a
+     median 1.15 to 1.38s from this PC with the server warm. Suspected: the
+     pool closes idle connections after 30s (`idleTimeoutMillis` in
+     `backend/src/db/pool.ts`), so a press after a pause opens fresh
+     connections to the database. Unmeasured; a server change and a deploy, so
+     Julian's call. A one-line trace of each answer's time on the phone would
+     settle it first.
+   - **Left, in order:** one cold critic on the mobile diff (judged against this
+     section; attack the controller's races first, then the arithmetic, the
+     contract, the screen wiring, and whether tests and eval can fail), about
+     180k; its fixes; the final APK; merge; these notes. The first critic was
+     stopped before it read any code.
+   As first planned, about 250k: the touch spike, then selection, card, trim, flip,
    back, a first-run hint ("Hold a line to measure it"), tests, one cold
    critic, the APK. The `RING_CAPACITY` comment fix rides along. CLAUDE.md
    asks for a variant tournament on a new feature; the proposal, for token
@@ -392,7 +449,10 @@ fix), saved selections, a climb finder.
 `option-a-state`, `per-pass-slopes` and `option-a-live` are merged and safe
 to delete, and so are `press-hold-plan`, `path-route`, `path-route-live` and
 `notes-after-phase1`.
-Nothing is in flight: no open branch, no uncommitted work, no running job.
+**In flight: `press-hold-app`**, pushed, NOT merged: phase 2 of press and
+hold, built and tested, not yet reviewed. Its release APK is installed on the
+phone (built 2026-10-17 from that branch); merging it changes no server code,
+so nothing deploys. No running job.
 Last code change `5ccbc35` (2026-10-17): `GET /segments/path`, phase 1 of
 press and hold. Additive: nothing calls it until the app's phase 2, and the
 map's line drawing moved into helpers without changing a byte. Before it,
@@ -503,7 +563,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 33 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature ("Press and hold on a segment, designed 2026-10-17"): phase 1, the server, is live; next is phase 2, the app and an APK, about 250k |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature ("Press and hold on a segment, designed 2026-10-17"): phase 1, the server, is live; phase 2, the app, is built on `press-hold-app` and waits on its cold critic |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 

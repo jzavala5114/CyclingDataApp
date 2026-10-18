@@ -20,9 +20,9 @@ import expo.modules.kotlin.modules.ModuleDefinition
 // batches its own locations across the same suspend -- so the older locations in
 // that batch would be asking for readings that had just been evicted.
 //
-// 4096 covers a full flush with headroom, and is about 2.7 minutes of history at
-// the 5Hz this module asks for. Two primitive arrays, roughly 64KB, which is
-// nothing against the reason for having it.
+// 4096 covers a full flush with headroom, and is about 13.7 minutes of history
+// at the 5Hz this module asks for (4096 / 5 = 819s). Two primitive arrays,
+// roughly 64KB, which is nothing against the reason for having it.
 private const val RING_CAPACITY = 4096
 
 // Guard rails on the sampling period. Below 20ms (50Hz) a pressure sensor is

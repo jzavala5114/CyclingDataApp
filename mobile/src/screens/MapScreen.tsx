@@ -1,5 +1,17 @@
-import { useCallback, useRef, useState } from "react";
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  BackHandler,
+  Dimensions,
+  type GestureResponderEvent,
+  Pressable,
+  StatusBar as NativeStatusBar,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   Camera,
   type CameraRef,
@@ -8,6 +20,7 @@ import {
   type LngLatBounds,
   // Aliased: the unqualified name shadows the global Map constructor.
   Map as MapView,
+  type MapRef,
   UserLocation,
   useCurrentPosition,
 } from "@maplibre/maplibre-react-native";
@@ -15,6 +28,7 @@ import {
   type Bbox,
   deleteSession,
   endSession,
+  fetchPath,
   fetchSegments,
   startSession,
   uploadSamplesInChunks,
@@ -24,10 +38,40 @@ import { buildColoredLineFeatures } from "../services/gradientRendering";
 import { useTrackingSession } from "../hooks/useTrackingSession";
 import { describeBarometer, verdictFor } from "../services/barometerHealth";
 import { dropBufferedSamples, readBufferedSamples } from "../services/backgroundLocationTask";
+import { hitFromFeatures } from "../services/holdGesture";
+import { pointOnPath } from "../services/pathSelection";
+import { SelectionController } from "../services/selectionController";
+import { SELECTION_HIT_LAYERS, SelectionLayers } from "../components/SelectionLayers";
+import { SelectionCard } from "../components/SelectionCard";
 import { MAP_STYLE_URL } from "../config";
 import type { SegmentWithGradients, TrackedSample } from "../types";
 
 const INITIAL_CENTER: [number, number] = [-104.8199104, 38.8266852];
+
+// Press and hold on a line (context/session.md, "Press and hold on a segment,
+// designed 2026-10-17"). The finger is tested against a box this many points
+// either side of it: the two lines of a street sit 17 points apart at zoom 17.
+const HIT_PT = 22;
+// A finger that moves further than this before the long press is panning.
+const MOVE_SLOP_PT = 10;
+// Every other line fades to this while something is selected.
+const FADED_OPACITY = 0.35;
+// Letting go frames at least this much ground, so a short selection is not
+// framed at street-furniture zoom.
+const MIN_FRAME_M = 160;
+// While a selection grows, the camera follows its tip once it is this close
+// to the edge of the screen, as a share of the screen.
+const FOLLOW_EDGE_SHARE = 0.18;
+const HINT_SEEN_KEY = "pressHoldHintSeen";
+
+// Grows bounds to at least `minM` on each side's span, about their middle.
+function framedBounds([west, south, east, north]: [number, number, number, number], minM: number) {
+  const midLat = (south + north) / 2;
+  const halfLat = Math.max((north - south) / 2, minM / 2 / 111_320);
+  const halfLon = Math.max((east - west) / 2, minM / 2 / (111_320 * Math.cos((midLat * Math.PI) / 180)));
+  const midLon = (west + east) / 2;
+  return [midLon - halfLon, midLat - halfLat, midLon + halfLon, midLat + halfLat] as LngLatBounds;
+}
 
 // Fetch a bit beyond the visible bounds so panning doesn't immediately expose
 // blank streets, and don't refetch until the view has actually moved somewhere
@@ -73,6 +117,154 @@ export function MapScreen() {
     discardBuffered,
   } = useTrackingSession();
   const currentPosition = useCurrentPosition();
+
+  // ---- Press and hold ----
+  const mapRef = useRef<MapRef>(null);
+  const zoomRef = useRef(16);
+  const viewRef = useRef<LngLatBounds | null>(null);
+  const cardBottomRef = useRef(0);
+  const [cardBottom, setCardBottom] = useState(0);
+  const [hintSeen, setHintSeen] = useState(true);
+  const segmentsById = useMemo(() => new Map(segments.map((s) => [s.id, s])), [segments]);
+  const segmentsRef = useRef(segmentsById);
+  segmentsRef.current = segmentsById;
+  const topInset = (NativeStatusBar.currentHeight ?? 24) + 8;
+
+  // The controller outlives every render; what it calls back into is read
+  // through refs, so it always reaches the current camera and state.
+  const fitRef = useRef<(bounds: [number, number, number, number]) => void>(() => {});
+  fitRef.current = (bounds) => {
+    setIsFollowing(false);
+    cameraRef.current?.fitBounds(framedBounds(bounds, MIN_FRAME_M), {
+      // Clear of the card above, and of Recenter and Start Tracking below.
+      padding: { top: cardBottomRef.current + 24, bottom: 200, left: 44, right: 44 },
+      duration: 600,
+    });
+  };
+  const [controller] = useState(
+    () =>
+      new SelectionController({
+        fetchPath,
+        // One clock for both: a frame's time and `now` are compared.
+        now: () => performance.now(),
+        frame: (step) => {
+          const id = requestAnimationFrame(() => step(performance.now()));
+          return () => cancelAnimationFrame(id);
+        },
+        later: (run, ms) => {
+          const id = setTimeout(run, ms);
+          return () => clearTimeout(id);
+        },
+        fit: (bounds) => fitRef.current(bounds),
+        onFirstHold: () => {
+          setHintSeen(true);
+          AsyncStorage.setItem(HINT_SEEN_KEY, "1").catch((err) => console.warn("failed to save the hint", err));
+        },
+      }),
+  );
+  const selectionMode = useSyncExternalStore(controller.subscribe, controller.getMode);
+
+  useEffect(() => {
+    AsyncStorage.getItem(HINT_SEEN_KEY)
+      .then((seen) => setHintSeen(seen !== null))
+      .catch(() => setHintSeen(false));
+  }, []);
+
+  // Android back closes the trim question, then the selection, before the app.
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => controller.back());
+    return () => subscription.remove();
+  }, [controller]);
+
+  // A hold takes the camera off the rider, so it cannot jump mid-selection;
+  // and while the selection grows, the camera keeps its tip on screen.
+  useEffect(() => {
+    if (selectionMode !== "holding") return;
+    setIsFollowing(false);
+    let lastMoveAt = 0;
+    return controller.subscribe(() => {
+      const { selection, grownM, mode } = controller.getSnapshot();
+      const view = viewRef.current;
+      if (mode !== "holding" || !selection || !view || Date.now() - lastMoveAt < 500) return;
+      const tip = pointOnPath(selection, grownM);
+      if (!tip) return;
+      const [west, south, east, north] = view;
+      const { height } = Dimensions.get("window");
+      const top = north - ((cardBottomRef.current / height) + FOLLOW_EDGE_SHARE) * (north - south);
+      const inside =
+        tip.lon > west + FOLLOW_EDGE_SHARE * (east - west) &&
+        tip.lon < east - FOLLOW_EDGE_SHARE * (east - west) &&
+        tip.lat > south + FOLLOW_EDGE_SHARE * (north - south) &&
+        tip.lat < top;
+      if (inside) return;
+      lastMoveAt = Date.now();
+      cameraRef.current?.easeTo({ center: [tip.lon, tip.lat], duration: 450 });
+    });
+  }, [selectionMode, controller]);
+
+  // What the finger is on: the lines in a box around it, and where it is.
+  const resolveHit = useCallback(
+    async (x: number, y: number) => {
+      const map = mapRef.current;
+      if (!map) throw new Error("the map is not ready");
+      const [lngLat, features] = await Promise.all([
+        map.unproject([x, y]),
+        map.queryRenderedFeatures(
+          [
+            [x - HIT_PT, y - HIT_PT],
+            [x + HIT_PT, y + HIT_PT],
+          ],
+          { layers: ["gradient-lines-layer", ...SELECTION_HIT_LAYERS] },
+        ),
+      ]);
+      return hitFromFeatures(features, [lngLat[0], lngLat[1]], zoomRef.current, segmentsRef.current, (index) =>
+        controller.getSnapshot().selection?.stop.branches[index],
+      );
+    },
+    [controller],
+  );
+
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
+  const handleTouchStart = useCallback(
+    (e: GestureResponderEvent) => {
+      // A second finger is a pinch, not a hold.
+      if (e.nativeEvent.touches.length > 1) {
+        touchStart.current = null;
+        controller.touchMoved();
+        return;
+      }
+      const { locationX: x, locationY: y } = e.nativeEvent;
+      touchStart.current = { x, y };
+      const id = controller.touchStarted();
+      resolveHit(x, y)
+        .then((hit) => controller.touchResolved(id, hit))
+        .catch((err) => console.warn("could not tell what was under the finger", err));
+    },
+    [controller, resolveHit],
+  );
+  const handleTouchMove = useCallback(
+    (e: GestureResponderEvent) => {
+      const start = touchStart.current;
+      if (!start) return;
+      const dx = e.nativeEvent.locationX - start.x;
+      const dy = e.nativeEvent.locationY - start.y;
+      if (e.nativeEvent.touches.length > 1 || dx * dx + dy * dy > MOVE_SLOP_PT * MOVE_SLOP_PT) controller.touchMoved();
+    },
+    [controller],
+  );
+  const handleTouchEnd = useCallback(
+    (e: GestureResponderEvent) => {
+      // Another finger lifting is not this one.
+      if (e.nativeEvent.touches.length > 0) return;
+      touchStart.current = null;
+      controller.touchEnded();
+    },
+    [controller],
+  );
+  const handleTouchCancel = useCallback(() => {
+    touchStart.current = null;
+    controller.touchEnded();
+  }, [controller]);
 
   // Shown only while tracking, and coloured only when something is wrong, so
   // the ordinary case is one quiet line and the failure case is not.
@@ -330,7 +522,9 @@ export function MapScreen() {
     }
   }, [currentPosition]);
 
-  const gradientFeatures = buildColoredLineFeatures(segments);
+  // Memoized: a growing selection re-renders the screen's map children, and
+  // re-slicing every line on the map each time would cost more than the frame.
+  const gradientFeatures = useMemo(() => buildColoredLineFeatures(segments), [segments]);
   const liveTrackFeature = {
     type: "Feature" as const,
     properties: {},
@@ -342,12 +536,34 @@ export function MapScreen() {
 
   return (
     <View style={styles.container}>
+      {/* MapLibre has no event for a finger lifting, so the hold reads the raw
+          touches around the map (the touch spike of 2026-10-17 showed they
+          still arrive after its long press). */}
+      <View
+        style={styles.map}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={handleTouchCancel}
+      >
       <MapView
+        ref={mapRef}
         style={styles.map}
         mapStyle={MAP_STYLE_URL}
-        onRegionDidChange={(event) =>
-          handleRegionDidChange(event.nativeEvent.bounds, event.nativeEvent.userInteraction)
-        }
+        // Held, the finger grows the selection; it must not drag the map too.
+        dragPan={selectionMode !== "holding"}
+        compassPosition={selectionMode !== "idle" && cardBottom > 0 ? { top: cardBottom + 8, right: 10 } : undefined}
+        onLongPress={() => controller.longPressed()}
+        onPress={() => controller.tapMap()}
+        onRegionIsChanging={(event) => {
+          zoomRef.current = event.nativeEvent.zoom;
+          viewRef.current = event.nativeEvent.bounds;
+        }}
+        onRegionDidChange={(event) => {
+          zoomRef.current = event.nativeEvent.zoom;
+          viewRef.current = event.nativeEvent.bounds;
+          handleRegionDidChange(event.nativeEvent.bounds, event.nativeEvent.userInteraction);
+        }}
       >
         <Camera
           ref={cameraRef}
@@ -362,9 +578,15 @@ export function MapScreen() {
             id="gradient-lines-layer"
             type="line"
             layout={{ "line-cap": "round" }}
-            paint={{ "line-color": ["get", "color"], "line-width": 4 }}
+            paint={{
+              "line-color": ["get", "color"],
+              "line-width": 4,
+              "line-opacity": selectionMode === "idle" ? 1 : FADED_OPACITY,
+            }}
           />
         </GeoJSONSource>
+
+        <SelectionLayers controller={controller} />
 
         {samples.length > 1 && (
           <GeoJSONSource id="live-track" data={liveTrackFeature}>
@@ -376,6 +598,21 @@ export function MapScreen() {
           </GeoJSONSource>
         )}
       </MapView>
+      </View>
+
+      {selectionMode === "idle" && !hintSeen && (
+        <View style={[styles.hint, { top: topInset + 4 }]} pointerEvents="none">
+          <Text style={styles.hintText}>Hold a line to measure it</Text>
+        </View>
+      )}
+      <SelectionCard
+        controller={controller}
+        top={topInset}
+        onHeight={(bottom) => {
+          cardBottomRef.current = bottom;
+          if (Math.abs(bottom - cardBottom) > 1) setCardBottom(bottom);
+        }}
+      />
 
       {!isFollowing && (
         <Pressable style={styles.recenterButton} onPress={handleRecenter}>
@@ -472,4 +709,13 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   resumeButtonText: { color: "white", fontSize: 15, fontWeight: "600" },
+  hint: {
+    position: "absolute",
+    alignSelf: "center",
+    backgroundColor: "rgba(17,24,39,0.82)",
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 999,
+  },
+  hintText: { color: "white", fontSize: 14, fontWeight: "600" },
 });

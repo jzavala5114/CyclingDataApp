@@ -5,6 +5,8 @@ import type { SegmentWithGradients } from "../types";
 export interface ColoredLineProperties {
   color: string;
   streetName: string | null;
+  segmentId: number;
+  direction: "forward" | "backward";
 }
 
 // Slices each directional gradient line into short, solid-color pieces at
@@ -36,6 +38,8 @@ export function buildColoredLineFeatures(
           turf.feature(piece.geometry, {
             color: stops[i].color,
             streetName: segment.streetName,
+            segmentId: segment.id,
+            direction: line.direction,
           }),
         );
       }

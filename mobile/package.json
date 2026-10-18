@@ -29,7 +29,8 @@
     "web": "expo start --web",
     "test": "tsx --test src/**/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "mutate:barometer": "node scripts/mutate-barometer.mjs"
+    "mutate:barometer": "node scripts/mutate-barometer.mjs",
+    "eval:selection": "tsx scripts/evalSelection.ts"
   },
   "private": true
 }
