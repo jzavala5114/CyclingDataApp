@@ -35,10 +35,14 @@ it on 2026-10-18: "pretty amazing so far", the functionality "feels great";
 he sees the lag, and has no way to tell whether the stats are right.** Next,
 in this order (details under
 "2. **App**" in the feature's section):
-- **The lag: measured, not fixed.** The server's own access log shows a press
-  after 30s or more of quiet taking a median 2.84s on the server against
-  1.17s warm, the step at the database pool's 30s idle timeout. The fix is a
-  server change and a deploy, on Julian's go-ahead.
+- **The lag: cause found, fix built, NOT deployed** (branch `path-lag-fix`,
+  pushed, not merged; paused 2026-10-18 at Julian's session limit). The
+  backend runs in Railway's Amsterdam region (`multiRegionConfig {"ams": ...}`,
+  never chosen on purpose) and its database in AWS Oregon, about 150ms apart:
+  every query, transfer and new connection crosses the Atlantic. Next:
+  Julian's go-ahead to move the service to `us-west2` (California, about 25ms
+  from the database), then merge the pool change. Details under "2. **App**",
+  "Next, in order", step 1.
 - **Then whether the card's numbers are right**: a check against something
   independent, which nothing does yet.
 
@@ -405,15 +409,40 @@ cutting the path at a grown distance.
      and the tip hold through the device's own query (the eval rebuilds the
      query from the layer list).
    - **Next, in order.**
-     1. **The lag.** Measured above; next, time the route's stages on a cold
-        and a warm connection (a read-only script against the same pooler:
-        connect, first query, each of the route's queries), to split the cold
-        1.7s and see where the warm 1.17s goes. The candidates: a
-        `pool.on("error")` listener first in any case, then a longer
-        `idleTimeoutMillis` (two containers overlap during a deploy, 2 x max
-        10 connections, within the pooler's cap), or a warm connection kept,
-        or the app warming the server when it opens; and the 304 on app open.
-        A server change and a deploy, on Julian's go-ahead.
+     1. **The lag** (branch `path-lag-fix`, pushed, not merged). Measured
+        from this PC with `npm run time:path` (new, read-only; EXPLAIN
+        ANALYZE detail in the scratchpad of session `e24d4bb5`,
+        `lag/time-path-1.out.txt`): the database's own work is about 50ms of
+        a request; the rest is round trips and about 0.7MB moved (the ride
+        order, every ride's transitions, 266KB on every request; the network
+        around the press, 284KB on a trail, 617KB downtown). The backend is in
+        Railway's Amsterdam region, about 150ms from the database in Oregon
+        (this PC: 43ms), which predicts production's numbers: about 1.2s
+        warm, and 2.9s cold with four new connections at about six round trips
+        each. Built on the branch: the pool keeps idle connections 10 minutes
+        (was 30s), with TCP keepalive every 10s and an `error` listener
+        (before, a dropped idle connection would have crashed the server); no
+        client-side query timeout, since scripts run 15-minute statements.
+        Two tests in `db/pool.test.ts`, each failing on its mutant (no
+        listener, 30s, keepalive off); backend gate 506 pass. `npm run
+        eval:latency` (new; GETs only, checks builtAt before and after) holds
+        the budget, frozen before any change: from this PC, warm median
+        1000ms and 1200ms after 40s quiet; in the access log, 500ms warm and
+        600ms after quiet. Baseline before any change: FAIL, warm median
+        1404ms, first 3142ms, after 40s quiet 2994ms.
+        **To resume, on Julian's go-ahead, since both touch production:**
+        (a) move the service to `us-west2` (Railway GraphQL
+        `serviceInstanceUpdate` with `multiRegionConfig {"us-west2":
+        {"numReplicas": 1}}`; `us-west1` Oregon and `us-west2-aws` are
+        deprecated; no volume is attached). It redeploys the current image, so
+        verify by the deployment's region in `railway status --json` and the
+        timings, not builtAt; then `eval:latency`. (b) Merge `path-lag-fix`
+        (a deploy: verify by builtAt, /health only during the rollout), then
+        `eval:latency`, the access log's server times against the budget,
+        `eval:path` and `eval:selection`, and one narrow cold critic on the
+        numbers and the pool change. If downtown is still slow, its 617KB
+        network payload is next (coordinate precision, or the network kept in
+        memory).
      2. **The numbers against the ground.** A read-only eval: for selections on
         stretches with a known answer, the card's net change and climb against
         the terrain model, and against a reference Julian trusts (a climb's
@@ -535,7 +564,9 @@ fix), saved selections, a climb finder.
 `option-a-state`, `per-pass-slopes` and `option-a-live` are merged and safe
 to delete, and so are `press-hold-plan`, `path-route`, `path-route-live`,
 `notes-after-phase1` and `press-hold-app`.
-Nothing is in flight: no open branch, no uncommitted work, no running job.
+**In flight: `path-lag-fix`**, pushed, NOT merged: the lag's fix (the pool
+change, `time:path`, `eval:latency`), waiting on Julian's go-ahead for the
+region move and the deploy. No running job.
 The phone runs the release APK built from `d7204c3` (installed 2026-10-18 at
 02:00).
 Last code change `d7204c3` (2026-10-18): phase 2 of press and hold, the app
@@ -650,7 +681,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 33 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature ("Press and hold on a segment, designed 2026-10-17"): phase 1, the server, is live; phase 2, the app, shipped 2026-10-18; next the lag (measured, not fixed), then whether the numbers are right |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature ("Press and hold on a segment, designed 2026-10-17"): phase 1, the server, is live; phase 2, the app, shipped 2026-10-18; next the lag (cause found: the backend runs in Amsterdam; fix on `path-lag-fix`, waiting on Julian's go-ahead), then whether the numbers are right |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 

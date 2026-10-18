@@ -61,10 +61,30 @@ class CheckedPool extends Pool {
 // way to tell a slow network from a wedged server -- which is exactly the
 // ambiguity that made "Couldn't start tracking" impossible to read. Failing
 // fast turns an invisible hang into an error with a cause attached.
+//
+// Idle connections stay open 10 minutes. A new one costs five or six round
+// trips (TCP, TLS, the pooler's auth) before its first query, and a path
+// request opens up to four at once: measured 2026-10-18 from the access log, a
+// press after 30s or more of quiet (the old idle timeout) took a median
+// 2840ms on the server against 1170ms warm, and minutes between presses are
+// ordinary. Keepalive probes every 10s keep a waiting connection's route open
+// through NATs, and an idle connection that dies anyway leaves the pool with a
+// line in the log (the listener below). No client-side query timeout: scripts
+// sharing this pool run statements for up to 15 minutes on purpose.
 export const pool = new CheckedPool({
   connectionString: process.env.DATABASE_URL,
   connectionTimeoutMillis: 10_000,
-  idleTimeoutMillis: 30_000,
+  idleTimeoutMillis: 10 * 60_000,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10_000,
   statement_timeout: 60_000,
   max: 10,
+});
+
+// pg-pool hands an idle connection's error to the pool, and an 'error' event
+// with no listener throws: in the server, an uncaught exception, so the
+// pooler restarting would take the backend down. The pool has already dropped
+// the connection; the next query opens a new one.
+pool.on("error", (err) => {
+  console.error(`database: an idle connection failed and left the pool: ${err.message}`);
 });

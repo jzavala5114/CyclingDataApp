@@ -401,3 +401,27 @@ test("...and that check finds each escape when one is there", () => {
   assert.deepEqual(escapes(`import pg from "pg";\nconst parse = pg.types.getTypeParser(20);\nconst entry = pg[key];\nlet client: pg.ClientBase;`), []);
   assert.deepEqual(escapes(`connection.parse({ name: "", text: "select 1", types: [] }, false);`), []);
 });
+
+// -- idle connections: kept, kept alive, and dropped safely -------------------
+
+test("AN IDLE CONNECTION THAT FAILS leaves the pool with a line in the log, and does not take the server down", (t) => {
+  // pg-pool hands an idle client's error to the pool, and an 'error' event
+  // with no listener throws: an uncaught exception, the backend down. With
+  // connections kept for minutes, a restart of the pooler is enough.
+  const logged: string[] = [];
+  t.mock.method(console, "error", (...args: unknown[]) => {
+    logged.push(args.join(" "));
+  });
+  assert.doesNotThrow(() => pool.emit("error", new Error("Connection terminated unexpectedly")));
+  assert.match(logged.join("\n"), /idle connection failed.*Connection terminated unexpectedly/);
+});
+
+test("IDLE CONNECTIONS OUTLAST A RIDER'S PAUSE between presses, and are kept alive while they wait", () => {
+  // Measured 2026-10-18 from the access log: a path request after 30s or more
+  // of quiet (the old idle timeout) took a median 2840ms on the server against
+  // 1170ms warm. Minutes between presses are ordinary.
+  assert.ok(pool.options.idleTimeoutMillis! >= 5 * 60_000, `idle connections close after ${pool.options.idleTimeoutMillis}ms`);
+  assert.equal(pool.options.keepAlive, true, "keepalive probes hold a waiting connection's route open");
+  // A client-side query timeout would cut the scripts' long statements short.
+  assert.equal((pool.options as { query_timeout?: number }).query_timeout, undefined);
+});

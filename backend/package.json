@@ -12,6 +12,8 @@
     "eval:quality": "tsx src/scripts/evalModelQuality.ts",
     "eval:mixing": "tsx src/scripts/evalMixing.ts",
     "eval:path": "tsx src/scripts/evalPath.ts",
+    "time:path": "tsx src/scripts/timePath.ts",
+    "eval:latency": "tsx src/scripts/evalLatency.ts",
     "eval:smoothing": "tsx src/scripts/evalSmoothingLag.ts",
     "eval:linker": "tsx src/scripts/evalLinkerFold.ts",
     "rebuild-model": "tsx src/scripts/rebuildModel.ts",
