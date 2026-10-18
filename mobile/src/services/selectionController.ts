@@ -162,9 +162,9 @@ export class SelectionController {
   // The one request whose answer the controller is waiting on, `busy` says
   // which: a hold's, more path past a limit, or a flip's.
   private inflight: AbortController | null = null;
-  // Set when the rider lets go or flips, cleared when a finger next comes
-  // down: an answer that lands later frames the camera only if the rider has
-  // not touched the map in the meantime, so it never jumps under a pan.
+  // Set when the rider lets go or flips, cleared when they pan or pinch the
+  // map: an answer that lands later frames the camera only if the rider has
+  // not moved the map in the meantime, so it never jumps under a pan.
   private fitWhenAnswered = false;
 
   private holdStartedAt = 0;
@@ -247,7 +247,6 @@ export class SelectionController {
   /** A single finger came down on the map. */
   touchStarted(): number {
     this.dropTouch();
-    this.fitWhenAnswered = false;
     this.touchCount += 1;
     this.touch = {
       id: this.touchCount,
@@ -290,7 +289,10 @@ export class SelectionController {
   /** The finger moved past the slop before the long press: a pan, not a hold. */
   touchMoved() {
     const touch = this.touch;
-    if (!touch || touch.longPressed) return;
+    if (touch?.longPressed) return;
+    // A pan or a pinch: the rider is moving the map, so an answer that lands
+    // later leaves the camera where they put it. A tap leaves it free to frame.
+    this.fitWhenAnswered = false;
     this.dropTouch();
   }
 
@@ -592,8 +594,8 @@ export class SelectionController {
     }
 
     if (answer.stop.reason === "unreachable") {
-      // No way from the selection to the held line: the hold starts a new
-      // selection there instead, as the design asks.
+      // No way from the selection to the held line: still held, the hold
+      // starts a new selection there instead, as the design asks.
       this.restartAsNew(touch, intent.hit, stillHolding);
       return;
     }
@@ -628,7 +630,9 @@ export class SelectionController {
   }
 
   private restartAsNew(touch: Touch, hit: Hit, stillHolding: boolean) {
-    if (!hit.line) {
+    // Let go before the answer, the rider grew nothing new: the selection
+    // stays as it was, and the card says why. A branch is no line to start on.
+    if (!stillHolding || !hit.line) {
       this.busy = null;
       this.error = "No way from the selection to that line";
       this.emit();
@@ -644,7 +648,6 @@ export class SelectionController {
     touch.asked = null;
     this.ask(touch);
     this.beginHold(touch);
-    if (!stillHolding) this.release();
   }
 
   // More path from the tip, asked while the finger is down and growth has

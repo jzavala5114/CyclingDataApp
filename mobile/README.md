@@ -79,7 +79,11 @@ are built from, and what to do next.
 - **Hold the selection** to carry it on from where you let go.
 - **Hold another line near the end** to join it: the gap between is bridged
   at once, and growth carries on from the line you held. Near the start, it
-  leads into the selection instead.
+  leads into the selection instead. With no way to the line from the end,
+  holding on starts a new selection there; let go first, and the selection
+  stays as it was and the card says so. The other way along a street is
+  another line: holding it beside the selection joins it, never carries the
+  selection on.
 - **At a fork** growth stops and marks the ways on; hold the one you want.
 - **Tap the selection** to remove that piece and everything after it, after
   one confirm. While the card shows a spinner a tap does nothing: the
@@ -91,8 +95,8 @@ are built from, and what to do next.
 One answer is awaited at a time. A new hold that asks the server, a trim, a
 flip or × calls off whatever the card was waiting on, and an answer that
 arrives for something since replaced is dropped. An answer that lands after
-you have touched the map again fills in the numbers but leaves the camera
-where you put it.
+you have panned or pinched the map fills in the numbers but leaves the camera
+where you put it; a tap leaves it free to frame the selection.
 
 The design, and why each choice was made, is in `../context/session.md`,
 "Press and hold on a segment, designed 2026-10-17"; the server half is

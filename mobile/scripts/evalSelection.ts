@@ -13,7 +13,8 @@
 //   tiles      pieces and spans run end to end from 0 to the path's length
 //   heights    each span starts as high as the last one ended, the first at 0
 //   card       climb less descent is the net; the band shares and the
-//              unmeasured share make the whole distance
+//              unmeasured share make the whole distance; each band holds
+//              the distance of the spans in its colour
 //   cuts       a cut at five points tiles to the cut, and ends as high as the
 //              uncut profile is there
 //   features   the map's features cover the path with no gap or overlap, each
@@ -27,8 +28,10 @@
 //              long drawn piece: the tip it shows is hit-tested as the
 //              selection; held through the faded line under it, the tip and
 //              the middle of each piece already selected carry the selection
-//              on and ask nothing; held 25m ahead on the same line, it joins
-//              straight along it. Asks the server nothing more.
+//              on, growing and asking nothing; held 25m ahead on the same
+//              line, it joins straight along it; held on the street's other
+//              line beside a segment selected end to end, it asks. Asks the
+//              server nothing more.
 //
 // --record <file> saves every answer; --replay <file> answers from such a
 // file and sends nothing, so a deliberately broken copy of the code can be
@@ -156,6 +159,18 @@ function checkCard(press: string, selection: Selection) {
   for (const [name, value] of Object.entries({ climb: stats.climbM, descent: stats.descentM, net: stats.netM })) {
     if (!Number.isFinite(value)) fail(press, "card", `${name} is ${value}`);
   }
+  // Each band's distance, summed straight from the spans by their colour (the
+  // server colours a span from the same table the bands come from): the colour
+  // key, worked independently of the code under test. The identities above
+  // hold whichever band a span lands in; this does not.
+  const byColour = new Map<string, number>();
+  for (const span of selection.spans) if (span.source !== "none") byColour.set(span.color, (byColour.get(span.color) ?? 0) + span.lengthM);
+  for (const band of stats.bands) {
+    const spansM = byColour.get(band.color) ?? 0;
+    if (!near(band.lengthM, spansM, 0.01)) fail(press, "card", `the ${band.color} band holds ${band.lengthM.toFixed(1)}m, its spans ${spansM.toFixed(1)}m`);
+    byColour.delete(band.color);
+  }
+  for (const [colour, m] of byColour) fail(press, "card", `${m.toFixed(1)}m of spans coloured ${colour}, no band's colour`);
 }
 
 function checkCuts(press: string, selection: Selection) {
@@ -303,13 +318,19 @@ async function checkHold(
     .filter(({ piece }) => piece.source === "line" && piece.lengthM >= 80 && drawnLine(piece.segmentId, piece.direction));
   if (long.length === 0) return "; hold: no drawn piece of 80m";
   const { piece, index } = long.reduce((a, b) => (b.piece.lengthM > a.piece.lengthM ? b : a));
-
-  // Hold the pressed line, take the real answer, grow 40% of the way along that piece, let go.
-  const d = driven(answer);
-  await d.holdAt(start);
   const target = piece.atM + 0.4 * piece.lengthM;
-  for (let i = 0; i < 20000 && d.controller.getSnapshot().grownM < target; i++) await d.advance(16);
-  d.controller.touchEnded();
+
+  // Hold the pressed line, take the real answer, grow 40% of the way along
+  // that piece, let go. Each run of checks below gets its own controller let
+  // go the same way, so one check's requests cannot colour another's.
+  const letGo = async () => {
+    const d = driven(answer);
+    await d.holdAt(start);
+    for (let i = 0; i < 20000 && d.controller.getSnapshot().grownM < target; i++) await d.advance(16);
+    d.controller.touchEnded();
+    return d;
+  };
+  const d = await letGo();
   const snap = d.controller.getSnapshot();
   const selection = snap.selection;
   if (!selection || snap.preview || snap.grownM < target) {
@@ -324,8 +345,8 @@ async function checkHold(
   };
   // What the screen's query returns at a finger: the base lines, and the
   // selection's features from the layers it names.
-  const queried = (at: [number, number], withSelection: boolean): RenderedFeature[] => {
-    const current = d.controller.getSnapshot();
+  const queried = (c: ReturnType<typeof driven>, at: [number, number], withSelection: boolean): RenderedFeature[] => {
+    const current = c.controller.getSnapshot();
     const grown = current.features.filter((f) => f.properties.endM <= current.grownM + 0.001);
     const growing = growingFeature(current.features, current.grownM);
     const byLayer: Record<string, SelectionFeature[]> = {
@@ -339,14 +360,52 @@ async function checkHold(
       (f) => turf.pointToLineDistance(turf.point(at), turf.lineString((f.geometry as LineString).coordinates), { units: "meters" }) <= HIT_BOX_M,
     );
   };
-  const hitAt = (at: [number, number], withSelection: boolean): Hit =>
-    hitFromFeatures(queried(at, withSelection), at, 17, segments, () => undefined);
+  const hitAt = (c: ReturnType<typeof driven>, at: [number, number], withSelection: boolean): Hit =>
+    hitFromFeatures(queried(c, at, withSelection), at, 17, segments, () => undefined);
+  const onLine = (hit: Hit, segmentId: number, direction: string) => hit.line?.segment.id === segmentId && hit.line.drawing.direction === direction;
 
   // The tip the rider sees is the selection to a touch.
-  if (hitAt(finger(tipM - 3), true).piece === null) fail(press, "hold", `the tip at ${tipM.toFixed(0)}m is not hit-tested as the selection`);
+  if (hitAt(d, finger(tipM - 3), true).piece === null) fail(press, "hold", `the tip at ${tipM.toFixed(0)}m is not hit-tested as the selection`);
+
+  // Held 25m ahead of the tip on the same line, it joins straight along it.
+  const ahead = hitAt(d, finger(tipM + 25), false);
+  if (onLine(ahead, tip.segmentId, tip.direction)) {
+    const asked = d.asked.length;
+    await d.holdAt(ahead);
+    const request = d.asked[asked];
+    const straight =
+      !!request?.to && request.from.segmentId === tip.segmentId && request.to.segmentId === tip.segmentId && request.to.atM! > request.from.atM! + 15;
+    if (!straight) fail(press, "hold", `held 25m ahead of the tip, it asked ${JSON.stringify(request ?? null).slice(0, 160)}`);
+    d.controller.touchEnded();
+  }
+
+  // Held on the street's other line, beside a segment already selected end to
+  // end, it asks the server: the other way along a street is another line,
+  // not the selection. At the middle of a whole segment the two lines' travel
+  // metres meet, so a rule that forgot direction would swallow the hold there.
+  let otherAsked = 0;
+  const wholeSegments = selection.pieces.filter((p, i) => {
+    const segment = segments.get(p.segmentId);
+    return i < index && p.lengthM >= 30 && !!segment && p.fromM <= 1 && p.toM >= segment.lengthM - 1;
+  });
+  for (const p of wholeSegments.slice(0, 3)) {
+    const other = segments.get(p.segmentId)!.directionalLines.find((l) => l.direction !== p.direction && l.colorStops.length > 0);
+    if (!other || selection.pieces.some((q) => q.segmentId === p.segmentId && q.direction !== p.direction)) continue;
+    const beside = turf.nearestPointOnLine(turf.lineString(other.geometry.coordinates), turf.point(finger(p.atM + p.lengthM / 2))).geometry
+      .coordinates as [number, number];
+    const hit = hitAt(d, beside, true);
+    if (!onLine(hit, p.segmentId, other.direction)) continue;
+    const asked = d.asked.length;
+    await d.holdAt(hit);
+    if (d.asked.length > asked) otherAsked += 1;
+    else fail(press, "hold", `held on ${p.segmentId}:${other.direction} beside the selection, it was taken for the selection`);
+    d.controller.touchEnded();
+  }
 
   // Through the faded line under it, the tip and the middle of each piece
-  // already selected carry the selection on, asking nothing.
+  // already selected carry the selection on: growth runs on from the tip, and
+  // nothing is asked.
+  const e = await letGo();
   const points = [
     tipM - 3,
     ...selection.pieces
@@ -357,33 +416,24 @@ async function checkHold(
   let tried = 0;
   for (const m of points) {
     const at = pointOnPath(selection, m)!;
-    const hit = hitAt(finger(m), false);
+    const hit = hitAt(e, finger(m), false);
     // Where another line lies nearer the finger, the finger is on that line: not the case under test.
-    if (!hit.line || hit.line.segment.id !== at.segmentId || hit.line.drawing.direction !== at.direction) continue;
+    if (!onLine(hit, at.segmentId, at.direction)) continue;
     tried += 1;
-    const asked = d.asked.length;
-    await d.holdAt(hit);
-    const mode = d.controller.getSnapshot().mode;
-    if (d.asked.length !== asked || mode !== "holding") {
-      const did = d.asked.length !== asked ? "asked the server" : `went ${mode}`;
+    const asked = e.asked.length;
+    const grownBefore = e.controller.getSnapshot().grownM;
+    await e.holdAt(hit);
+    await e.advance(100);
+    const now = e.controller.getSnapshot();
+    if (e.asked.length !== asked || now.mode !== "holding" || now.grownM < grownBefore + 1) {
+      const did =
+        e.asked.length !== asked ? "asked the server" : now.mode !== "holding" ? `went ${now.mode}` : `grew ${(now.grownM - grownBefore).toFixed(1)}m`;
       fail(press, "hold", `held at ${m.toFixed(0)}m on ${at.segmentId}:${at.direction} through the line under it, it ${did} rather than carrying on`);
     }
-    d.controller.touchEnded();
+    e.controller.touchEnded();
   }
   if (tried === 0) fail(press, "hold", "no point on the selection found its own line under it");
-
-  // Held 25m ahead of the tip on the same line, it joins straight along it.
-  const ahead = hitAt(finger(tipM + 25), false);
-  if (ahead.line?.segment.id === tip.segmentId && ahead.line.drawing.direction === tip.direction) {
-    const asked = d.asked.length;
-    await d.holdAt(ahead);
-    const request = d.asked[asked];
-    const straight =
-      !!request?.to && request.from.segmentId === tip.segmentId && request.to.segmentId === tip.segmentId && request.to.atM! > request.from.atM! + 15;
-    if (!straight) fail(press, "hold", `held 25m ahead of the tip, it asked ${JSON.stringify(request ?? null).slice(0, 160)}`);
-    d.controller.touchEnded();
-  }
-  return failures.length === before ? `; hold ok, ${tried} of ${points.length} carried on` : "; hold FAILED";
+  return failures.length === before ? `; hold ok, ${tried} of ${points.length} carried on${otherAsked ? `, the other line asks (${otherAsked})` : ""}` : "; hold FAILED";
 }
 
 // The package is CommonJS (no "type": "module"), so the run is a function, not top-level awaits.

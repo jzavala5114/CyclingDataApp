@@ -685,7 +685,7 @@ test("an answer that lands between the finger coming down and the long press: th
   assert.ok(again.to!.atM! > again.from.atM!, "ahead along the held line");
 });
 
-test("an answer that lands after the rider has touched the map again does not move the camera", async () => {
+test("an answer that lands after the rider has moved the map does not move the camera", async () => {
   const r = rig();
   await hold(r, hitOn(first, 10));
   await r.advance(300);
@@ -720,4 +720,52 @@ test("holding the selection while a flip or a connection is on its way grows not
   await r.advance(300);
   assert.equal(r.snap().grownM, grown);
   assert.equal(r.snap().busy, "flip");
+});
+
+// ---- Found by the second cold review, 2026-10-18 ----
+
+test("a held line with no way to it, answered after the rider let go, leaves the selection as it was and says why", async () => {
+  const r = rig();
+  const grown = await shownSelection(r);
+  const before = r.snap().selection;
+  await hold(r, hitOn(street(21, 10 + grown + 50, 200), 10 + grown + 80));
+  r.controller.touchEnded();
+  await r.answer(1, { pieces: [], spans: [], lengthM: 0, stop: { reason: "unreachable", atM: 0, aheadM: 0, branches: [] }, bands: [] });
+  const snap = r.snap();
+  assert.equal(r.asked.length, 2, "no new selection is asked for: the rider grew none");
+  assert.equal(snap.selection, before);
+  assert.equal(snap.grownM, grown);
+  assert.deepEqual([snap.mode, snap.busy, snap.preview], ["shown", null, false]);
+  assert.equal(snap.error, "No way from the selection to that line");
+});
+
+test("a hold on the other line of a two-way street, beside the selection, is a hold on that line", async () => {
+  const r = rig();
+  const grown = await shownSelection(r);
+  // Street 1's backward line, 8m from the selected forward line, inside the stretch selected.
+  await hold(r, hitOn(first, 10 + grown - 20, "backward"));
+  assert.equal(r.asked.length, 2, "it asks the server, rather than carrying the selection on");
+  assert.deepEqual([r.asked[1]!.request.to!.segmentId, r.asked[1]!.request.to!.direction], [1, "backward"]);
+  assert.equal(r.snap().busy, "connect");
+});
+
+test("a plain tap while the answer is on its way still lets it frame the selection", async () => {
+  const r = rig();
+  await hold(r, hitOn(first, 10));
+  await r.advance(300);
+  r.controller.touchEnded();
+  r.controller.touchStarted();
+  r.controller.touchEnded();
+  await r.answer(0, pressAnswer());
+  assert.equal(r.fits.length, 1, "framed once the numbers are in");
+});
+
+test("closing with the trim question open closes the question too, so Android back is the system's again", async () => {
+  const r = rig();
+  await shownSelection(r);
+  r.controller.tapSelection(0);
+  assert.equal(r.snap().trimFrom, 0);
+  r.controller.clear();
+  assert.equal(r.snap().trimFrom, null);
+  assert.equal(r.controller.back(), false);
 });
