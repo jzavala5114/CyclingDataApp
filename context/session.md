@@ -95,9 +95,15 @@ one commute is about 182k rows for a 100-segment viewport (synthetic, 0.9 s on
 PGlite); when the table nears 100k rows or /segments slows, fit the slopes at
 merge time instead. And `processSession` has no gate test of its own: deleting
 its call to `mergeRuns` fails nothing.
+The read-only guard in the eval scripts, `pool.on("connect", (c) => void
+c.query("set default_transaction_read_only = on"))`, works only because pg
+queues a query sent while another runs: pg 8 warns that this is deprecated and
+pg 9 removes it (cold review of 2026-10-17). `evalMixing.ts` and `evalPath.ts`
+use it; give the guard a form that waits before any pg upgrade.
 (`context/architecture.html` lags: it has the 3rd edition of 2026-10-11 and the
 colour bands of 2026-10-14 but not option A, whose Parts 5 and 6 Julian
-deferred on 2026-10-17; its artifact page lags by both.)
+deferred on 2026-10-17, nor press and hold's `GET /segments/path`, shipped the
+same day; its artifact page lags by all three.)
 
 ### Press and hold on a segment, designed 2026-10-17
 
@@ -276,6 +282,29 @@ cutting the path at a grown distance.
    critic, the APK. The `RING_CAPACITY` comment fix rides along. CLAUDE.md
    asks for a variant tournament on a new feature; the proposal, for token
    cost, is one only for the card layout, two variants, or none on his say.
+   **What phase 1 hands it (2026-10-17):**
+   - **Julian's phone must be connected for the touch spike**, the first step:
+     it settles whether `onTouchEnd` on a wrapper `View` arrives after
+     MapLibre's long press, and so whether hold-to-grow can be built at all.
+   - **Ask at finger-down, not when the long press registers.** Live, the
+     route answers in a median of 1.5 s warm (2.0 s cold) against 0.22 s for
+     `/health` from this PC, about 1.3 s of it the server's round trips to the
+     database. Ask on touch-down and animate along the pressed line, which the
+     phone already holds, until the path arrives.
+   - **Reading the answer**, every field documented in
+     `backend/src/services/pathResponse.ts`: draw `pieces[].geometry`, already
+     in travel order on the line's own side; the card's climb and descent sum
+     `spans[].riseM`, the profile plots `spans[].heightM` (metres above the
+     path's start), and "built from" reads `spans[].rides`; the colour key is
+     `bands`. On `limit` ask again from the tip; on `fork` mark
+     `stop.branches` from their own 30 m `geometry` (an undrawn branch has no
+     line on the map) and say how far ahead the fork lies from `stop.aheadM`.
+   - **The three requests.** A press sends the pressed line and point. A hold
+     past the end sends the end as `segmentId`, `direction` and `atM`, with
+     the held line as `toSegmentId`, `toDirection`, `toLon` and `toLat`. A
+     hold behind the start sends the held line, with the start as the `to`
+     point, `toAtM` and `grow=false`. Send the selection's segments as
+     `avoid`, at most 500. An `unreachable` answer starts a new selection.
 
 **Later, not in v1.** A one-direction mode (Julian's arrow buttons): one line
 per street in a chosen direction, which also halves the clutter, since the
@@ -345,6 +374,8 @@ fix), saved selections, a climb finder.
 | the traversal gate | **Swept with a 15 m witness 2026-10-11, keep 25 / 0.7.** Most runs a lower span admits are ridden, but the new lines are worth 72-306 m and turn on next-door duplicate paint | old NEXT item 4, `npm run eval:gate` |
 | `TANGENT_WINDOW_M` | **Keep 10.** 14 m wins 298-407 m at ride level but drops 80 m of real lines and draws no new ground | old NEXT item 4 |
 | the colour bands | **Climbs step at 0, 3, 6, 9 and 12%, the darkest open-ended, separate and not blended** (2026-10-14). A 15% step would colour 220 m on 7 trail lines, mostly noise; a blend would show the 0.8-point slope error as flicker | STATE, "The colour bands" |
+| the press-and-hold fork rule | **Ride history, then the same street name, then the least turn within 60 degrees with measured ground first, else stop** (Julian, 2026-10-17; the measured-ground refinement approved the same day). Leave-one-ride-out through ride 89: right at 85.3% of 810 ridden forks, against 75.1% with no history and 67.7% for the least turn | "Press and hold on a segment, designed 2026-10-17" |
+| joining ends within 5 m for a selection | **Yes for the path's graph (`PATH_SNAP_M`), still 0 for the matcher** (2026-10-17). It takes dead ends from 292 to 168 of 958 growths; for the matcher an invented edge draws paint, for a selection it costs one hop the rider can trim | the same section |
 | the slope a piece is drawn with | **Each pass's own slope** (2026-10-17, option A): the mean of each pass's least-squares slope over the window, weighted by its bucket count, from passes covering two buckets or more, clamped after; the means' slope only where a window's passes are not all on file. Pooled least squares tied and lost on a rule set before the first run | "CLOSED 2026-10-16 and -17" |
 
 ## OPEN: genuinely undecided, do not treat as closed
@@ -359,7 +390,8 @@ fix), saved selections, a climb finder.
 `refresh-architecture-doc`, `session-notes-compact`, `darker-red-bands`,
 `state-after-colours`, `mixing-artefact-notes`, `option-a-plan`,
 `option-a-state`, `per-pass-slopes` and `option-a-live` are merged and safe
-to delete, and so are `press-hold-plan`, `path-route` and `path-route-live`.
+to delete, and so are `press-hold-plan`, `path-route`, `path-route-live` and
+`notes-after-phase1`.
 Nothing is in flight: no open branch, no uncommitted work, no running job.
 Last code change `5ccbc35` (2026-10-17): `GET /segments/path`, phase 1 of
 press and hold. Additive: nothing calls it until the app's phase 2, and the
@@ -453,7 +485,14 @@ missed. A cold critic reads the whole artifact (about 1k tokens per KB, plus its
 own exploring); republishing an artifact in place means Reading every line of
 the live page first, in chunks under 25k (about 70k for 200 KB); and live counts
 move mid-task, so pin them to a named ride. Check the running total at every
-phase boundary against 1.5 times the estimate.
+phase boundary against 1.5 times the estimate. **Calibrated 2026-10-17:** press
+and hold's phase 1 was noted at 200k, re-estimated to about 400k before it
+started (the last cold critic alone had cost 181k), and cost about 520k: step 0
+(the tested core and the eval's first run) 155k against 120k, then the route,
+faster loading, the review's fixes and the deploy about 190k, plus 176k for one
+cold critic on a 2,500-line diff. Re-estimating before starting, and stopping
+at the checkpoint between the two, kept each stage within 1.5 times its own
+estimate.
 
 Where to start depends on what you came for:
 
@@ -461,7 +500,7 @@ Where to start depends on what you came for:
 |---|---|
 | know what the app is and how a ride becomes a coloured line | `context/architecture.html` (3rd edition, the full walkthrough, written for feature designers too), then "What it is", "Layout", "Data flow" here |
 | design a feature | `context/architecture.html` Part 6: what each kind of change costs, the limits every feature inherits, ideas already tried, open problems |
-| change anything in the backend | "Bugs already paid for" — 31 failure modes, each one paid for once already |
+| change anything in the backend | "Bugs already paid for" — 33 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
 | pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature ("Press and hold on a segment, designed 2026-10-17"): phase 1, the server, is live; next is phase 2, the app and an APK, about 250k |
@@ -1244,6 +1283,29 @@ Keep these in mind before "simplifying" anything.
     claimed. **Now:** both use a share (`NEXT_DOOR_SHARE`), and restoring
     either `> 0` fails tests. **Rule: a verdict that a single observation can
     flip needs a share or a count behind it, never mere existence.**
+
+32. **Tidying a result overwrote why it ended.** `growPath` drops the
+    unmeasured tail of a path, so a selection never ends where nobody rode,
+    and its first version then replaced the stop with `gap`. A fork 40 m past
+    the last data lost the branches the rider was meant to hold, and a
+    `limit` there read as final, so the phone would never have asked again
+    from the tip: **145 of 958 growths through ride 89 stopped for the wrong
+    reason (54 forks, 2 limits)** with all 22 core tests green, caught by the
+    cold review running an untrimmed copy on live data. Fixed in `5ccbc35`:
+    the stop keeps its reason and branches, and `aheadM` says how far ahead
+    it lies. **Rule: a step that changes what a result holds must not change
+    why it ended; carry the reason through, and add a field for the distance
+    between the two.**
+
+33. **The eval judging the history rule passed with the history rule
+    deleted.** `eval:path` passed when "history first" beat the least turn,
+    the design's own wording, but names and turns alone beat the least turn
+    (608 against 548 of 810 forks), so `DEFAULT_RULES` without `"history"`
+    still printed PASS: the house defect again, a check that cannot fail on
+    the change it exists to catch. Fixed in `5ccbc35`: it must also beat the
+    same rule without history, and with history removed it exits 1. **Rule:
+    an eval of one part must be shown to fail with that part removed, not
+    only with everything swapped for a baseline.**
 
 ## Trails the importer was silently throwing away
 
