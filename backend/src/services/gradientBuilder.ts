@@ -37,6 +37,16 @@ export function colorForSlope(slopePct: number): string {
   return SLOPE_STOPS.find((stop) => slopePct <= stop.maxSlopePct)!.color;
 }
 
+// The bands as data, for a client that labels them, so the app never holds a
+// second copy of the table above. The open-ended top band's edge is null:
+// JSON has no Infinity.
+export function slopeBands(): Array<{ maxSlopePct: number | null; color: string }> {
+  return SLOPE_STOPS.map(({ maxSlopePct, color }) => ({
+    maxSlopePct: Number.isFinite(maxSlopePct) ? maxSlopePct : null,
+    color,
+  }));
+}
+
 // Buckets either side of the one being coloured that are folded into its
 // slope estimate. A 15m bucket with ~0.15m of barometer noise gives roughly
 // 1% of slope error from a plain difference of two points -- comparable to
@@ -50,7 +60,7 @@ const SLOPE_WINDOW = 2;
 // reading rather than terrain.
 const MAX_PLAUSIBLE_SLOPE_PCT = 25;
 
-const clampSlope = (slopePct: number) =>
+export const clampSlope = (slopePct: number) =>
   Math.max(-MAX_PLAUSIBLE_SLOPE_PCT, Math.min(MAX_PLAUSIBLE_SLOPE_PCT, slopePct));
 
 // The buckets folded into the slope of the piece after `index`: SLOPE_WINDOW
@@ -178,101 +188,172 @@ export interface DirectionalGradientLine {
   colorStops: Array<{ distanceFraction: number; color: string }>;
 }
 
-// Builds one offset, color-stopped line per direction for a segment. The two
-// directions are offset to opposite sides of the centerline (in meters, via
-// turf.lineOffset) so both are visible at once, and each direction's color
-// stops are computed independently from its own elevation buckets -- so
-// reversing direction on the same street naturally swaps which line (and
-// which gradient) applies.
+// The stretch of one direction's line that gets drawn, in metres along its
+// direction of travel, or null when that stretch is empty.
 //
+// Only draw the ground the ride actually covered. Painting the whole segment
+// from partial coverage invented road: a rider who clipped 45m of a 129m
+// footway beside East Fountain Boulevard got the full 129m drawn, 80m of it
+// heading off into a park they never entered.
+//
+// Use the recorded extent where there is one. Falling back to the bucket
+// positions understates coverage at the head by up to half a bucket, because a
+// bucket sits at the centre of the ground it averages -- that left a ~7.5m hole
+// at the start of most lines and read as a dashed route. The fallback only
+// applies to rides recorded before coverage was tracked; a rebuild removes it.
+//
+// Exported because the press-and-hold path (pathGrowth.ts) has to agree with
+// the map about where every line starts and stops.
+export function drawnExtent(
+  lengthM: number,
+  firstBucketM: number,
+  lastBucketM: number,
+  coverage?: SegmentCoverage,
+): { fromTravelM: number; toTravelM: number } | null {
+  const fromTravelM = coverage
+    ? Math.max(0, coverage.coveredFromM)
+    : Math.max(0, firstBucketM - HALF_BUCKET_M);
+  const toTravelM = coverage
+    ? Math.min(lengthM, coverage.coveredToM)
+    : Math.min(lengthM, lastBucketM + HALF_BUCKET_M);
+  return toTravelM - fromTravelM > 0 ? { fromTravelM, toTravelM } : null;
+}
+
+// The stretch from `fromTravelM` to `toTravelM` (metres along `direction`) of
+// the line drawn for that direction: offset to its side of the centreline, in
+// the geometry's forward order. Offsetting a curve changes its length
+// slightly, so travel distances are rescaled onto the offset line rather than
+// used directly.
+export function offsetTravelSlice(
+  segment: Segment,
+  direction: Direction,
+  fromTravelM: number,
+  toTravelM: number,
+): GeoJSON.LineString {
+  const centerline = turf.lineString(segment.geom.coordinates);
+  const offsetSide = direction === "forward" ? OFFSET_M : -OFFSET_M;
+  const offsetLine = turf.lineOffset(centerline, offsetSide, { units: "meters" });
+  const offsetLengthM = turf.length(offsetLine, { units: "meters" });
+  const scale = segment.lengthM > 0 ? offsetLengthM / segment.lengthM : 1;
+
+  const forwardFromM = direction === "forward" ? fromTravelM : segment.lengthM - toTravelM;
+  const forwardToM = direction === "forward" ? toTravelM : segment.lengthM - fromTravelM;
+  return turf.lineSliceAlong(offsetLine, forwardFromM * scale, forwardToM * scale, {
+    units: "meters",
+  }).geometry;
+}
+
+// One colour stop of a drawn line, with the slope its colour was picked for.
+export interface DrawnStop {
+  distanceFraction: number;
+  color: string;
+  slopePct: number;
+}
+
+// Everything the map draws for one direction of a segment: the drawn extent,
+// its geometry, and its colour stops sorted along the geometry, each carrying
+// its slope. GET /segments sends the stops without the slope.
+export interface LineDrawing {
+  direction: Direction;
+  fromTravelM: number;
+  toTravelM: number;
+  geometry: GeoJSON.LineString;
+  stops: DrawnStop[];
+}
+
 // Two coordinate systems meet here and they run opposite ways for half the
 // data. Bucket distances are measured *along the direction of travel*, so on a
 // backward run distance 0 sits at the segment's far end, while the geometry is
 // always in forward order. Everything below is computed in travel space and
 // converted to a fraction of the drawn line at the last moment.
 //
-// `passesByDirection` holds each pass's own heights, from which the slope is
-// fitted wherever every pass behind a window is on file (see slopeFor). With
-// none, every piece is drawn from the means.
+// `passes` holds each pass's own heights, from which the slope is fitted
+// wherever every pass behind a window is on file (see slopeFor). With none,
+// every piece is drawn from the means. Null when there is nothing to draw.
+export function drawLine(
+  segment: Segment,
+  direction: Direction,
+  buckets: readonly ElevationBucket[],
+  coverage?: SegmentCoverage,
+  passes?: readonly PassBucket[],
+): LineDrawing | null {
+  if (buckets.length === 0) return null;
+  const sorted = [...buckets].sort((a, b) => a.distanceM - b.distanceM);
+
+  const extent = drawnExtent(segment.lengthM, sorted[0].distanceM, sorted[sorted.length - 1].distanceM, coverage);
+  if (extent === null) return null;
+  const { fromTravelM, toTravelM } = extent;
+  const drawnLengthM = toTravelM - fromTravelM;
+  const geometry = offsetTravelSlice(segment, direction, fromTravelM, toTravelM);
+
+  // Position along the *drawn* line. For a backward run the drawn line still
+  // runs forward, so travel distance counts down across it. Bucket centres are
+  // rounded onto a 15m grid and can land just outside the measured extent, so
+  // fractions are clamped rather than trusted.
+  const toFraction = (travelM: number) => {
+    const raw =
+      direction === "forward"
+        ? (travelM - fromTravelM) / drawnLengthM
+        : (toTravelM - travelM) / drawnLengthM;
+    return Math.max(0, Math.min(1, raw));
+  };
+
+  // One colour per gap between buckets, spanning the whole drawn line: the
+  // first runs back to where coverage starts and the last runs on to where it
+  // ends, so there is no unpainted stub at either end.
+  const slopes = pieceSlopesPct(sorted, passes);
+  const spans =
+    sorted.length === 1
+      ? [{ startM: fromTravelM, endM: toTravelM, slopePct: 0 }]
+      : sorted.slice(0, -1).map((bucket, i) => ({
+          startM: i === 0 ? fromTravelM : bucket.distanceM,
+          endM: i === sorted.length - 2 ? toTravelM : sorted[i + 1].distanceM,
+          slopePct: slopes[i],
+        }));
+
+  const stops = spans
+    .map(({ startM, endM, slopePct }) => ({
+      distanceFraction: Math.min(toFraction(startM), toFraction(endM)),
+      color: colorForSlope(slopePct),
+      slopePct,
+    }))
+    .sort((a, b) => a.distanceFraction - b.distanceFraction);
+
+  return { direction, fromTravelM, toTravelM, geometry, stops };
+}
+
+// Builds one offset, color-stopped line per direction for a segment. The two
+// directions are offset to opposite sides of the centerline (in meters, via
+// turf.lineOffset) so both are visible at once, and each direction's color
+// stops are computed independently from its own elevation buckets -- so
+// reversing direction on the same street naturally swaps which line (and
+// which gradient) applies. Each line sits on the right-hand side of its own
+// direction of travel: turf offsets a positive distance to the right.
+//
+// `passesByDirection` holds each pass's own heights; see drawLine.
 export function buildDirectionalGradientLines(
   segment: Segment,
   bucketsByDirection: Record<Direction, ElevationBucket[]>,
   coverageByDirection: Partial<Record<Direction, SegmentCoverage>> = {},
   passesByDirection: Partial<Record<Direction, PassBucket[]>> = {},
 ): DirectionalGradientLine[] {
-  const centerline = turf.lineString(segment.geom.coordinates);
-
-  return (Object.entries(bucketsByDirection) as Array<[Direction, ElevationBucket[]]>)
-    .filter(([, buckets]) => buckets.length > 0)
-    .flatMap(([direction, buckets]) => {
-      const sorted = [...buckets].sort((a, b) => a.distanceM - b.distanceM);
-
-      // Only draw the ground the ride actually covered. Painting the whole
-      // segment from partial coverage invented road: a rider who clipped 45m
-      // of a 129m footway beside East Fountain Boulevard got the full 129m
-      // drawn, 80m of it heading off into a park they never entered.
-      //
-      // Use the recorded extent where there is one. Falling back to the bucket
-      // positions understates coverage at the head by up to half a bucket,
-      // because a bucket sits at the centre of the ground it averages -- that
-      // left a ~7.5m hole at the start of most lines and read as a dashed
-      // route. The fallback only applies to rides recorded before coverage was
-      // tracked; a rebuild removes it.
-      const coverage = coverageByDirection[direction];
-      const fromTravelM = coverage
-        ? Math.max(0, coverage.coveredFromM)
-        : Math.max(0, sorted[0].distanceM - HALF_BUCKET_M);
-      const toTravelM = coverage
-        ? Math.min(segment.lengthM, coverage.coveredToM)
-        : Math.min(segment.lengthM, sorted[sorted.length - 1].distanceM + HALF_BUCKET_M);
-      const drawnLengthM = toTravelM - fromTravelM;
-      if (drawnLengthM <= 0) return [];
-
-      const offsetSide = direction === "forward" ? OFFSET_M : -OFFSET_M;
-      const offsetLine = turf.lineOffset(centerline, offsetSide, { units: "meters" });
-      // Offsetting a curve changes its length slightly, so travel distances
-      // are rescaled onto the offset line rather than used directly.
-      const offsetLengthM = turf.length(offsetLine, { units: "meters" });
-      const scale = segment.lengthM > 0 ? offsetLengthM / segment.lengthM : 1;
-
-      const forwardFromM = direction === "forward" ? fromTravelM : segment.lengthM - toTravelM;
-      const forwardToM = direction === "forward" ? toTravelM : segment.lengthM - fromTravelM;
-      const clipped = turf.lineSliceAlong(offsetLine, forwardFromM * scale, forwardToM * scale, {
-        units: "meters",
-      });
-
-      // Position along the *drawn* line. For a backward run the drawn line
-      // still runs forward, so travel distance counts down across it. Bucket
-      // centres are rounded onto a 15m grid and can land just outside the
-      // measured extent, so fractions are clamped rather than trusted.
-      const toFraction = (travelM: number) => {
-        const raw =
-          direction === "forward"
-            ? (travelM - fromTravelM) / drawnLengthM
-            : (toTravelM - travelM) / drawnLengthM;
-        return Math.max(0, Math.min(1, raw));
-      };
-
-      // One colour per gap between buckets, spanning the whole drawn line: the
-      // first runs back to where coverage starts and the last runs on to where
-      // it ends, so there is no unpainted stub at either end.
-      const slopes = pieceSlopesPct(sorted, passesByDirection[direction]);
-      const spans =
-        sorted.length === 1
-          ? [{ startM: fromTravelM, endM: toTravelM, color: colorForSlope(0) }]
-          : sorted.slice(0, -1).map((bucket, i) => ({
-              startM: i === 0 ? fromTravelM : bucket.distanceM,
-              endM: i === sorted.length - 2 ? toTravelM : sorted[i + 1].distanceM,
-              color: colorForSlope(slopes[i]),
-            }));
-
-      const colorStops = spans
-        .map(({ startM, endM, color }) => ({
-          distanceFraction: Math.min(toFraction(startM), toFraction(endM)),
-          color,
-        }))
-        .sort((a, b) => a.distanceFraction - b.distanceFraction);
-
-      return [{ direction, geometry: clipped.geometry, colorStops }];
-    });
+  return (Object.entries(bucketsByDirection) as Array<[Direction, ElevationBucket[]]>).flatMap(
+    ([direction, buckets]) => {
+      const drawing = drawLine(
+        segment,
+        direction,
+        buckets,
+        coverageByDirection[direction],
+        passesByDirection[direction],
+      );
+      if (drawing === null) return [];
+      return [
+        {
+          direction,
+          geometry: drawing.geometry,
+          colorStops: drawing.stops.map(({ distanceFraction, color }) => ({ distanceFraction, color })),
+        },
+      ];
+    },
+  );
 }
