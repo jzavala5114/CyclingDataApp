@@ -19,6 +19,11 @@
 //              uncut profile is there
 //   features   the map's features cover the path with no gap or overlap, each
 //              the same share of its piece on the map as along the path
+//   scrub      a finger on the card's profile, at 121 points along the whole
+//              path and along it cut part way: the dot within 0.5m of the
+//              line the map draws, at the same share of its piece's drawn
+//              line as of the piece's length, its height the profile's and
+//              its grade its span's, and never past what has grown
 //   limit      a path stopped by its limit, asked again from the tip as the
 //              phone asks, joins on with no step in height
 //   flip       its first 800m flips onto the other direction's lines of the
@@ -57,6 +62,7 @@ import {
   type Selection,
   type SelectionFeature,
 } from "../src/services/pathSelection";
+import { scrubAt } from "../src/services/profileScrub";
 import { SelectionController, type Hit } from "../src/services/selectionController";
 import { API_BASE_URL } from "../src/config";
 import type { LineString } from "geojson";
@@ -106,7 +112,7 @@ async function get<T>(path: string): Promise<T> {
 }
 const fetchPath = (request: PathRequest) => get<PathResponse>(pathQuery(request));
 
-type Check = "tiles" | "heights" | "card" | "cuts" | "features" | "limit" | "flip" | "hold";
+type Check = "tiles" | "heights" | "card" | "cuts" | "features" | "scrub" | "limit" | "flip" | "hold";
 const failures: Array<{ press: string; check: Check; detail: string }> = [];
 const fail = (press: string, check: Check, detail: string) => failures.push({ press, check, detail });
 
@@ -206,6 +212,53 @@ function checkFeatures(press: string, selection: Selection) {
     at = endM;
   }
   if (!near(at, selection.lengthM, 0.01)) fail(press, "features", `features end at ${at.toFixed(2)} of ${selection.lengthM.toFixed(2)}`);
+}
+
+// The profile scrub (services/profileScrub.ts), judged without its code: the
+// dot measured against the drawn line with turf's own distance, its share of
+// its piece recovered by turf's nearest point (the share rule the features
+// above are cut by), the height summed straight from the spans, the span
+// found by a scan.
+const SCRUB_SAMPLES = 120;
+function checkScrub(press: string, selection: Selection) {
+  const drawn = selectionFeatures(selection).map((f) => turf.lineString(f.geometry.coordinates));
+  const grownM = selection.lengthM * 0.61;
+  for (const [label, profile] of [["whole", selection], ["grown part way", cutAt(selection, grownM)]] as const) {
+    for (let i = 0; i <= SCRUB_SAMPLES; i++) {
+      const m = (i / SCRUB_SAMPLES) * profile.lengthM;
+      const where = `${label}, ${m.toFixed(1)}m in`;
+      const point = scrubAt(profile, m);
+      if (!point) return fail(press, "scrub", `${where}: no point`);
+      if (!near(point.atM, m, 1e-9)) return fail(press, "scrub", `${where}: read ${point.atM.toFixed(2)}m`);
+      const dot = turf.point([point.lon, point.lat]);
+      const off = Math.min(...drawn.map((line) => turf.pointToLineDistance(dot, line, { units: "meters" })));
+      if (off > 0.5) return fail(press, "scrub", `${where}: the dot is ${off.toFixed(2)}m off the drawn line`);
+      const piece = profile.pieces.find((p) => m <= p.atM + p.lengthM + 1e-9) ?? profile.pieces[profile.pieces.length - 1]!;
+      const pieceLine = turf.lineString(piece.geometry.coordinates);
+      const pieceDrawnM = turf.length(pieceLine, { units: "meters" });
+      const alongM = turf.nearestPointOnLine(pieceLine, dot, { units: "meters" }).properties.totalDistance;
+      const expectedM = piece.lengthM > 0 ? pieceDrawnM * ((m - piece.atM) / piece.lengthM) : 0;
+      if (!near(alongM, expectedM, 0.5)) {
+        return fail(press, "scrub", `${where}: the dot is ${alongM.toFixed(1)}m along its piece's drawn line, not ${expectedM.toFixed(1)}m`);
+      }
+      if (!near(point.heightM, profileHeight(profile, m), 1e-6)) {
+        return fail(press, "scrub", `${where}: reads ${point.heightM.toFixed(3)}m, the profile says ${profileHeight(profile, m).toFixed(3)}m`);
+      }
+      let span = profile.spans[0];
+      for (const s of profile.spans) if (s.atM <= m) span = s;
+      const grade = !span || span.source === "none" ? null : span.slopePct;
+      if (point.gradePct !== grade) return fail(press, "scrub", `${where}: reads grade ${point.gradePct}, its span ${grade}`);
+    }
+  }
+  // Past what has grown reads the grown end, where the map's growth stops,
+  // and says so: "1.20 mi in" on a selection 1.00 mi long would be wrong.
+  const past = scrubAt(cutAt(selection, grownM), grownM + 50);
+  const end = pointOnPath(selection, grownM);
+  if (!past || !end || turf.distance(turf.point([past.lon, past.lat]), turf.point([end.lon, end.lat]), { units: "meters" }) > 0.5) {
+    fail(press, "scrub", `past the grown part, the dot is not at the grown end`);
+  } else if (!near(past.atM, grownM, 1e-9)) {
+    fail(press, "scrub", `past the grown part, it reads ${past.atM.toFixed(1)}m in of ${grownM.toFixed(1)}m grown`);
+  }
 }
 
 async function checkLimit(press: string, selection: Selection): Promise<string> {
@@ -478,6 +531,7 @@ async function main() {
     checkCard(press, selection);
     checkCuts(press, selection);
     checkFeatures(press, selection);
+    checkScrub(press, selection);
     const limit = await checkLimit(press, selection);
     const flip = await checkFlip(press, selection);
     const { segments: drawnSegments, base } = drawnIn.get(area)!;

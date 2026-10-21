@@ -10,6 +10,7 @@ import {
   type SelectionFeatureProps,
 } from "../services/pathSelection";
 import { SELECTION_LAYER } from "../services/holdGesture";
+import type { ScrubStore } from "../services/profileScrub";
 import type { SelectionController } from "../services/selectionController";
 
 // The selection on the map: the same colours as every other line (colour is
@@ -171,5 +172,29 @@ export function SelectionLayers({ controller }: { controller: SelectionControlle
         />
       </GeoJSONSource>
     </>
+  );
+}
+
+// Where the finger on the card's profile is, on the map (services/profileScrub.ts):
+// dark with a white ring, the growth tip's dot inverted, so the two never read
+// as one. The screen draws it last, above every line. It takes no taps: it is
+// not one of the layers the hold's hit test names, and its source has no onPress.
+export function ScrubDot({ scrub }: { scrub: ScrubStore }) {
+  const point = useSyncExternalStore(scrub.subscribe, scrub.get);
+  const data = useMemo<FeatureCollection<Point>>(
+    () =>
+      point
+        ? { type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "Point", coordinates: [point.lon, point.lat] }, properties: {} }] }
+        : (EMPTY as FeatureCollection<Point>),
+    [point],
+  );
+  return (
+    <GeoJSONSource id="selection-scrub" data={data}>
+      <Layer
+        id="selection-scrub-dot"
+        type="circle"
+        paint={{ "circle-radius": 8, "circle-color": "#111827", "circle-stroke-color": "#ffffff", "circle-stroke-width": 3 }}
+      />
+    </GeoJSONSource>
   );
 }

@@ -41,7 +41,8 @@ import { dropBufferedSamples, readBufferedSamples } from "../services/background
 import { hitFromFeatures } from "../services/holdGesture";
 import { pointOnPath } from "../services/pathSelection";
 import { SelectionController } from "../services/selectionController";
-import { SELECTION_HIT_LAYERS, SelectionLayers } from "../components/SelectionLayers";
+import { createScrubStore } from "../services/profileScrub";
+import { SELECTION_HIT_LAYERS, ScrubDot, SelectionLayers } from "../components/SelectionLayers";
 import { SelectionCard } from "../components/SelectionCard";
 import { MAP_STYLE_URL } from "../config";
 import type { SegmentWithGradients, TrackedSample } from "../types";
@@ -163,6 +164,8 @@ export function MapScreen() {
       }),
   );
   const selectionMode = useSyncExternalStore(controller.subscribe, controller.getMode);
+  // The point a finger on the card's profile picks, shared by the card and the map's dot.
+  const [scrub] = useState(createScrubStore);
 
   useEffect(() => {
     AsyncStorage.getItem(HINT_SEEN_KEY)
@@ -597,6 +600,9 @@ export function MapScreen() {
             />
           </GeoJSONSource>
         )}
+
+        {/* Last, so it is drawn above every line. */}
+        <ScrubDot scrub={scrub} />
       </MapView>
       </View>
 
@@ -607,6 +613,7 @@ export function MapScreen() {
       )}
       <SelectionCard
         controller={controller}
+        scrub={scrub}
         top={topInset}
         onHeight={(bottom) => {
           cardBottomRef.current = bottom;

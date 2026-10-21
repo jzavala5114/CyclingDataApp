@@ -12,12 +12,14 @@ import {
   formatFeet,
   formatGrade,
   formatRideDate,
+  formatRise,
   formatRides,
   fromResponse,
   growingFeature,
   pieceAt,
   pointOnPath,
   prependPath,
+  profileAt,
   profileColumns,
   selectionBounds,
   selectionFeatures,
@@ -303,6 +305,11 @@ test("distances read in feet below half a mile and in miles from it", () => {
 test("heights, grades, bands, dates and rides read as the card prints them", () => {
   assert.equal(formatFeet(125.6), "412 ft");
   assert.equal(formatFeet(-3), "10 ft");
+  // A height from the start, as the profile scrub reads it: signed, and 0 with no sign.
+  assert.equal(formatRise(36.6), "+120 ft");
+  assert.equal(formatRise(-12.2), "−40 ft");
+  assert.equal(formatRise(0.1), "0 ft");
+  assert.equal(formatRise(-0.1), "0 ft");
   assert.equal(formatGrade(3.14), "+3.1%");
   assert.equal(formatGrade(-2), "−2.0%");
   assert.equal(formatGrade(-0.04), "0.0%");
@@ -316,4 +323,12 @@ test("heights, grades, bands, dates and rides read as the card prints them", () 
   assert.equal(formatRides({ min: 4, max: 4 }), "built from 4 rides");
   assert.equal(formatRides({ min: 2, max: 9 }), "built from 2 to 9 rides");
   assert.equal(formatRides({ min: 1, max: 1 }), "built from 1 ride");
+});
+
+test("the profile at a point: the span it falls in and the height there; nothing for no spans", () => {
+  const selection = fromResponse(twoPieces());
+  const at = profileAt(selection.spans, 67.5)!;
+  assert.equal(at.span.slopePct, -2);
+  close(at.heightM, 60 * 0.04 - 7.5 * 0.02);
+  assert.equal(profileAt([], 10), null);
 });

@@ -1,16 +1,28 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from "react-native";
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import {
+  ActivityIndicator,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type GestureResponderEvent,
+  type LayoutChangeEvent,
+} from "react-native";
 import {
   NO_DATA_COLOR,
+  cutAt,
   formatBand,
   formatDistance,
   formatFeet,
   formatGrade,
   formatRideDate,
   formatRides,
+  formatRise,
   profileColumns,
   selectionStats,
+  type ProfileColumn,
 } from "../services/pathSelection";
+import { scrubAt, scrubMetres, type ScrubStore } from "../services/profileScrub";
 import type { SelectionController, Snapshot } from "../services/selectionController";
 import { statusFor } from "../services/selectionStatus";
 
@@ -32,6 +44,7 @@ const PROFILE_HEIGHT = 44;
 const MIN_PROFILE_RANGE_M = 10;
 // Bands under this share of the distance stay in the bar but out of the words.
 const LEGEND_MIN_SHARE = 0.05;
+const CURSOR_WIDTH = 2;
 
 function useSnapshot(controller: SelectionController): Snapshot {
   const [snap, setSnap] = useState(controller.getSnapshot);
@@ -61,12 +74,58 @@ function useSnapshot(controller: SelectionController): Snapshot {
   return snap;
 }
 
+// The profile's bars, which a scrub never redraws.
+const ProfileBars = memo(function ProfileBars({ columns, low, range }: { columns: ProfileColumn[]; low: number; range: number }) {
+  return (
+    <>
+      {columns.map((column, i) => (
+        <View
+          key={i}
+          style={[
+            styles.bar,
+            {
+              height: 3 + ((column.heightM - low) / range) * (PROFILE_HEIGHT - 3),
+              backgroundColor: column.noData ? NO_DATA_COLOR : column.color,
+              opacity: column.noData ? 0.45 : 1,
+            },
+          ]}
+        />
+      ))}
+    </>
+  );
+});
+
+// The line on the profile under the finger.
+function ScrubCursor({ scrub, lengthM, width }: { scrub: ScrubStore; lengthM: number; width: number }) {
+  const point = useSyncExternalStore(scrub.subscribe, scrub.get);
+  if (!point || !(lengthM > 0) || !(width > 0)) return null;
+  const left = Math.max(0, Math.min(width - CURSOR_WIDTH, (point.atM / lengthM) * width - CURSOR_WIDTH / 2));
+  return <View pointerEvents="none" style={[styles.cursor, { left }]} />;
+}
+
+// While a finger is on the profile, the numbers row reads the path under it:
+// how far in, the height from the start, and the grade. Drawn over the
+// totals rather than in place of them, so the card keeps its height.
+function ScrubReadout({ scrub }: { scrub: ScrubStore }) {
+  const point = useSyncExternalStore(scrub.subscribe, scrub.get);
+  if (!point) return null;
+  return (
+    <View pointerEvents="none" style={styles.readout}>
+      <Text style={styles.distance}>{`${formatDistance(point.atM)} in`}</Text>
+      <Text style={styles.figure}>{formatRise(point.heightM)}</Text>
+      <Text style={styles.figure}>{point.gradePct === null ? "no data" : formatGrade(point.gradePct)}</Text>
+    </View>
+  );
+}
+
 export function SelectionCard({
   controller,
+  scrub,
   top,
   onHeight,
 }: {
   controller: SelectionController;
+  scrub: ScrubStore;
   top: number;
   onHeight: (height: number) => void;
 }) {
@@ -77,6 +136,38 @@ export function SelectionCard({
     () => (selection && !preview ? profileColumns(selection, grownM, PROFILE_COLUMNS) : []),
     [selection, preview, grownM],
   );
+  // What the profile draws: the selection cut to what has grown.
+  const profile = useMemo(() => (selection && !preview ? cutAt(selection, grownM) : null), [selection, preview, grownM]);
+
+  // Scrubbing the profile (services/profileScrub.ts). The profile takes the
+  // touch itself (box-only), so a touch's locationX is from its left edge;
+  // the edge's place on the screen is kept from the first touch, so a finger
+  // that slides off the profile still reads the nearest end.
+  const scrubbable = !!profile && profile.lengthM > 0 && columns.length > 0 && mode !== "holding";
+  const latest = useRef({ profile, scrubbable });
+  latest.current = { profile, scrubbable };
+  const edgeX = useRef(0);
+  const widthRef = useRef(0);
+  const [profileWidth, setProfileWidth] = useState(0);
+  // A new answer, a flip, a trim or a close ends a scrub: its point was on the old profile.
+  useEffect(() => () => scrub.set(null), [scrub, profile]);
+  const scrubTo = (pageX: number) => {
+    const { profile: now, scrubbable: can } = latest.current;
+    scrub.set(now && can ? scrubAt(now, scrubMetres(pageX - edgeX.current, widthRef.current, now.lengthM)) : null);
+  };
+  const canScrub = () => latest.current.scrubbable;
+  const keepScrub = () => false;
+  const startScrub = (e: GestureResponderEvent) => {
+    edgeX.current = e.nativeEvent.pageX - e.nativeEvent.locationX;
+    scrubTo(e.nativeEvent.pageX);
+  };
+  const moveScrub = (e: GestureResponderEvent) => scrubTo(e.nativeEvent.pageX);
+  const endScrub = () => scrub.set(null);
+  const measureProfile = (e: LayoutChangeEvent) => {
+    widthRef.current = e.nativeEvent.layout.width;
+    setProfileWidth(e.nativeEvent.layout.width);
+  };
+
   const status = statusFor(snap);
   if (!selection && !snap.error) return null;
 
@@ -116,15 +207,18 @@ export function SelectionCard({
         </View>
 
         {selection && (
-          <View style={styles.numbers}>
-            <Text style={styles.distance}>{formatDistance(stats ? stats.distanceM : grownM)}</Text>
-            {stats && (
-              <>
-                <Text style={styles.figure}>{`↑ ${formatFeet(stats.climbM)}`}</Text>
-                <Text style={styles.figure}>{`↓ ${formatFeet(stats.descentM)}`}</Text>
-                {stats.averageGradePct !== null && <Text style={styles.figure}>{`${formatGrade(stats.averageGradePct)} avg`}</Text>}
-              </>
-            )}
+          <View>
+            <View style={styles.numbers}>
+              <Text style={styles.distance}>{formatDistance(stats ? stats.distanceM : grownM)}</Text>
+              {stats && (
+                <>
+                  <Text style={styles.figure}>{`↑ ${formatFeet(stats.climbM)}`}</Text>
+                  <Text style={styles.figure}>{`↓ ${formatFeet(stats.descentM)}`}</Text>
+                  {stats.averageGradePct !== null && <Text style={styles.figure}>{`${formatGrade(stats.averageGradePct)} avg`}</Text>}
+                </>
+              )}
+            </View>
+            <ScrubReadout scrub={scrub} />
           </View>
         )}
         {stats?.steepest && (
@@ -132,20 +226,21 @@ export function SelectionCard({
         )}
 
         {columns.length > 0 && (
-          <View style={styles.profile} accessibilityLabel="Height profile">
-            {columns.map((column, i) => (
-              <View
-                key={i}
-                style={[
-                  styles.bar,
-                  {
-                    height: 3 + ((column.heightM - low) / range) * (PROFILE_HEIGHT - 3),
-                    backgroundColor: column.noData ? NO_DATA_COLOR : column.color,
-                    opacity: column.noData ? 0.45 : 1,
-                  },
-                ]}
-              />
-            ))}
+          <View
+            style={styles.profile}
+            pointerEvents="box-only"
+            onLayout={measureProfile}
+            onStartShouldSetResponder={canScrub}
+            onMoveShouldSetResponder={canScrub}
+            onResponderTerminationRequest={keepScrub}
+            onResponderGrant={startScrub}
+            onResponderMove={moveScrub}
+            onResponderRelease={endScrub}
+            onResponderTerminate={endScrub}
+            accessibilityLabel="Height profile. Drag along it to see where each point is on the map."
+          >
+            <ProfileBars columns={columns} low={low} range={range} />
+            <ScrubCursor scrub={scrub} lengthM={profile?.lengthM ?? 0} width={profileWidth} />
           </View>
         )}
 
@@ -242,6 +337,19 @@ const styles = StyleSheet.create({
     overflow: "hidden",
   },
   bar: { flex: 1 },
+  cursor: { position: "absolute", top: 0, bottom: 0, width: CURSOR_WIDTH, backgroundColor: "#111827" },
+  readout: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    flexDirection: "row",
+    alignItems: "baseline",
+    columnGap: 14,
+    marginTop: 2,
+    backgroundColor: "white",
+  },
   shareBar: { flexDirection: "row", height: 6, borderRadius: 3, overflow: "hidden", marginTop: 8 },
   legend: { flexDirection: "row", flexWrap: "wrap", columnGap: 10, rowGap: 2, marginTop: 5 },
   legendItem: { flexDirection: "row", alignItems: "center", gap: 4 },

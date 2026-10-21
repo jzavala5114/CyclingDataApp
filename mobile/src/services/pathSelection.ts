@@ -209,10 +209,11 @@ export function bandIndex(bands: readonly SlopeBand[], color: string, slopePct: 
 // The height `x` metres along, above the start: each span's height at its start
 // plus its rise in proportion. Between span starts the height is a straight
 // line, so the profile is exact, not sampled.
-function heightAt(spans: readonly PathSpan[], x: number): number {
+/** The span `x` metres along falls in, and the height there from the start: what the profile draws at `x`. */
+export function profileAt(spans: readonly PathSpan[], x: number): { span: PathSpan; heightM: number } | null {
   let lo = 0;
   let hi = spans.length - 1;
-  if (hi < 0) return 0;
+  if (hi < 0) return null;
   while (lo < hi) {
     const mid = (lo + hi + 1) >> 1;
     if (spans[mid]!.atM <= x) lo = mid;
@@ -220,7 +221,11 @@ function heightAt(spans: readonly PathSpan[], x: number): number {
   }
   const span = spans[lo]!;
   const intoM = Math.max(0, Math.min(span.lengthM, x - span.atM));
-  return span.heightM + (span.lengthM > 0 ? span.riseM * (intoM / span.lengthM) : 0);
+  return { span, heightM: span.heightM + (span.lengthM > 0 ? span.riseM * (intoM / span.lengthM) : 0) };
+}
+
+function heightAt(spans: readonly PathSpan[], x: number): number {
+  return profileAt(spans, x)?.heightM ?? 0;
 }
 
 // The steepest window of `windowM`, by its net grade, uphill or down, among
@@ -480,6 +485,13 @@ export function formatFeet(m: number): string {
 }
 
 const MINUS = "−";
+
+/** A height from the start, with its sign: "+120 ft", "−40 ft", "0 ft". */
+export function formatRise(m: number): string {
+  const text = formatFeet(m);
+  if (text === "0 ft") return text;
+  return `${m > 0 ? "+" : MINUS}${text}`;
+}
 
 /** A grade with its sign: "+3.1%", "−2.0%". */
 export function formatGrade(pct: number): string {
