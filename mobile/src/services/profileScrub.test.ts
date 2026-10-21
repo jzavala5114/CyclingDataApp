@@ -2,7 +2,7 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import * as turf from "@turf/turf";
 import { cutAt, fromResponse, profileColumns, selectionFeatures } from "./pathSelection.js";
-import { createScrubStore, scrubAt, scrubMetres } from "./profileScrub.js";
+import { createScrubGesture, createScrubStore, cursorLeft, scrubAt, scrubMetres, scrubProfile, scrubReadout, type ScrubState } from "./profileScrub.js";
 import { east, makePath } from "./testPaths.js";
 
 // Scrubbing the card's profile: the finger's distance along it, what the path
@@ -134,4 +134,104 @@ test("the store tells each listener of a new point, once, and stops after it lea
   off();
   store.set(null);
   assert.deepEqual(seen, [30, null, 30], "gone after unsubscribing");
+});
+
+test("the profile a scrub reads is the selection cut to what has grown, and nothing while it is a preview", () => {
+  const selection = twoPieces();
+  close(scrubProfile(selection, 70, false)!.lengthM, 70, 1e-9, "grown 70m of 105m");
+  assert.equal(scrubProfile(selection, 105, false), selection, "fully grown is the selection itself");
+  assert.equal(scrubProfile(selection, 70, true), null);
+  assert.equal(scrubProfile(null, 70, false), null);
+});
+
+test("the readout says how far in, the height from the start with its sign, and the grade or no data", () => {
+  const at = (atM: number, heightM: number, gradePct: number | null) => scrubReadout({ atM, heightM, gradePct, lon: 0, lat: 0 });
+  assert.deepEqual(at(478.5, 36.6, 3.14), { distance: "1,570 ft in", height: "+120 ft", grade: "+3.1%" });
+  assert.deepEqual(at(1609.344, -12.2, -2), { distance: "1.00 mi in", height: "−40 ft", grade: "−2.0%" });
+  assert.deepEqual(at(0, 0, null), { distance: "0 ft in", height: "0 ft", grade: "no data" });
+});
+
+test("the cursor sits centred on the point, inside the profile at both ends", () => {
+  const point = (atM: number) => ({ atM, heightM: 0, gradePct: 0, lon: 0, lat: 0 });
+  close(cursorLeft(point(50), 100, 300, 2)!, 149, 1e-9, "half way along 300 wide");
+  close(cursorLeft(point(0), 100, 300, 2)!, 0, 0, "the start");
+  close(cursorLeft(point(100), 100, 300, 2)!, 298, 0, "the end, kept inside");
+  assert.equal(cursorLeft(point(50), 100, 0, 2), null, "before the profile is measured");
+  assert.equal(cursorLeft(point(50), 0, 300, 2), null);
+});
+
+// The gesture, fed responder events as React Native sends them. The profile
+// is 312 wide with its left edge 24 from the screen's: a 360-wide phone.
+const EDGE = 24;
+const WIDTH = 312;
+function scrubbing(state: Partial<ScrubState> = {}) {
+  const store = createScrubStore();
+  const now: ScrubState = { profile: twoPieces(), width: WIDTH, scrubbable: true, ...state };
+  const gesture = createScrubGesture(store, () => now);
+  const atM = () => store.get()?.atM ?? null;
+  const onProfile = (x: number) => ({ pageX: EDGE + x, locationX: x, identifier: 0 });
+  return { store, now, gesture, atM, onProfile };
+}
+const along = (x: number) => (x / WIDTH) * 105;
+
+test("a scrub reads the finger from the profile's own edge, kept from where the touch started", () => {
+  const { gesture, atM, onProfile } = scrubbing();
+  gesture.grant(onProfile(78));
+  close(atM()!, along(78), 1e-9, "the start, from the profile's edge");
+  // A move's locationX is measured against whatever the finger is over: off
+  // the profile it says nothing about the profile. Only pageX is read.
+  gesture.move({ pageX: EDGE + 156, locationX: 3, identifier: 0 });
+  close(atM()!, along(156), 1e-9, "half way, by pageX");
+  gesture.move({ pageX: EDGE + 500, locationX: 7, identifier: 0 });
+  close(atM()!, 105, 1e-9, "slid off the right end reads the end");
+  gesture.move({ pageX: 2, locationX: 2, identifier: 0 });
+  close(atM()!, 0, 1e-9, "slid off the left reads the start");
+});
+
+test("a second finger, on the map or anywhere, does not move the dot", () => {
+  // On Android every finger's moves reach the profile, each with its own id.
+  const { gesture, atM, onProfile } = scrubbing();
+  gesture.grant(onProfile(76));
+  const seen: number[] = [];
+  for (const [a, b] of [[86, 276], [96, 278], [106, 280]]) {
+    gesture.move({ pageX: EDGE + a, locationX: a, identifier: 0 });
+    seen.push(atM()!);
+    gesture.move({ pageX: EDGE + b, locationX: b, identifier: 1 });
+    seen.push(atM()!);
+  }
+  const a = [86, 96, 106].map(along);
+  seen.forEach((m, i) => close(m, a[Math.floor(i / 2)]!, 1e-9, `event ${i}`));
+});
+
+test("lifting, or losing the touch, hides the dot, and nothing moves it until a new touch starts", () => {
+  const { gesture, atM, onProfile } = scrubbing();
+  assert.equal(gesture.canStart(), true);
+  gesture.grant(onProfile(40));
+  assert.equal(gesture.canStart(), false, "one scrub at a time");
+  gesture.end();
+  assert.equal(atM(), null);
+  gesture.move({ pageX: EDGE + 100, locationX: 100, identifier: 0 });
+  assert.equal(atM(), null, "a move after the end is ignored");
+  assert.equal(gesture.canStart(), true);
+  gesture.grant(onProfile(100));
+  close(atM()!, along(100), 1e-9, "a new touch starts again");
+});
+
+test("no scrub while one may not run, and a scrub stops the moment it may not", () => {
+  const blocked = scrubbing({ scrubbable: false });
+  assert.equal(blocked.gesture.canStart(), false);
+  const { gesture, now, atM, onProfile } = scrubbing();
+  gesture.grant(onProfile(50));
+  now.scrubbable = false; // a hold begins growing the selection
+  gesture.move({ pageX: EDGE + 60, locationX: 60, identifier: 0 });
+  assert.equal(atM(), null);
+});
+
+test("a new answer mid-scrub: the next move reads the new profile", () => {
+  const { gesture, now, atM, onProfile } = scrubbing();
+  gesture.grant(onProfile(156));
+  close(atM()!, along(156), 1e-9);
+  now.profile = cutAt(twoPieces(), 52.5);
+  gesture.move({ pageX: EDGE + 156, locationX: 156, identifier: 0 });
+  close(atM()!, 26.25, 1e-9, "half way along the new, shorter profile");
 });

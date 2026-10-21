@@ -10,19 +10,17 @@ import {
 } from "react-native";
 import {
   NO_DATA_COLOR,
-  cutAt,
   formatBand,
   formatDistance,
   formatFeet,
   formatGrade,
   formatRideDate,
   formatRides,
-  formatRise,
   profileColumns,
   selectionStats,
   type ProfileColumn,
 } from "../services/pathSelection";
-import { scrubAt, scrubMetres, type ScrubStore } from "../services/profileScrub";
+import { createScrubGesture, cursorLeft, scrubProfile, scrubReadout, type ScrubStore } from "../services/profileScrub";
 import type { SelectionController, Snapshot } from "../services/selectionController";
 import { statusFor } from "../services/selectionStatus";
 
@@ -98,22 +96,25 @@ const ProfileBars = memo(function ProfileBars({ columns, low, range }: { columns
 // The line on the profile under the finger.
 function ScrubCursor({ scrub, lengthM, width }: { scrub: ScrubStore; lengthM: number; width: number }) {
   const point = useSyncExternalStore(scrub.subscribe, scrub.get);
-  if (!point || !(lengthM > 0) || !(width > 0)) return null;
-  const left = Math.max(0, Math.min(width - CURSOR_WIDTH, (point.atM / lengthM) * width - CURSOR_WIDTH / 2));
+  const left = point ? cursorLeft(point, lengthM, width, CURSOR_WIDTH) : null;
+  if (left === null) return null;
   return <View pointerEvents="none" style={[styles.cursor, { left }]} />;
 }
 
 // While a finger is on the profile, the numbers row reads the path under it:
 // how far in, the height from the start, and the grade. Drawn over the
-// totals rather than in place of them, so the card keeps its height.
+// totals rather than in place of them, so the card keeps its height; one
+// line that shrinks to fit at a large font size rather than run off the card.
 function ScrubReadout({ scrub }: { scrub: ScrubStore }) {
   const point = useSyncExternalStore(scrub.subscribe, scrub.get);
   if (!point) return null;
+  const readout = scrubReadout(point);
   return (
     <View pointerEvents="none" style={styles.readout}>
-      <Text style={styles.distance}>{`${formatDistance(point.atM)} in`}</Text>
-      <Text style={styles.figure}>{formatRise(point.heightM)}</Text>
-      <Text style={styles.figure}>{point.gradePct === null ? "no data" : formatGrade(point.gradePct)}</Text>
+      <Text numberOfLines={1} adjustsFontSizeToFit style={styles.readoutText}>
+        <Text style={styles.distance}>{readout.distance}</Text>
+        <Text style={styles.figure}>{`   ${readout.height}   ${readout.grade}`}</Text>
+      </Text>
     </View>
   );
 }
@@ -136,33 +137,28 @@ export function SelectionCard({
     () => (selection && !preview ? profileColumns(selection, grownM, PROFILE_COLUMNS) : []),
     [selection, preview, grownM],
   );
-  // What the profile draws: the selection cut to what has grown.
-  const profile = useMemo(() => (selection && !preview ? cutAt(selection, grownM) : null), [selection, preview, grownM]);
+  // What the profile draws, and so what a scrub reads.
+  const profile = useMemo(() => scrubProfile(selection, grownM, preview), [selection, preview, grownM]);
 
-  // Scrubbing the profile (services/profileScrub.ts). The profile takes the
-  // touch itself (box-only), so a touch's locationX is from its left edge;
-  // the edge's place on the screen is kept from the first touch, so a finger
-  // that slides off the profile still reads the nearest end.
+  // Scrubbing the profile: the gesture's rules are services/profileScrub.ts's
+  // createScrubGesture; the card only feeds it the responder's events.
   const scrubbable = !!profile && profile.lengthM > 0 && columns.length > 0 && mode !== "holding";
   const latest = useRef({ profile, scrubbable });
   latest.current = { profile, scrubbable };
-  const edgeX = useRef(0);
   const widthRef = useRef(0);
   const [profileWidth, setProfileWidth] = useState(0);
-  // A new answer, a flip, a trim or a close ends a scrub: its point was on the old profile.
+  const [gesture] = useState(() =>
+    createScrubGesture(scrub, () => ({ profile: latest.current.profile, scrubbable: latest.current.scrubbable, width: widthRef.current })),
+  );
+  // A new answer, a flip, a trim or a close hides the point until the finger
+  // next moves, which reads the new profile: the old point was on the old one.
   useEffect(() => () => scrub.set(null), [scrub, profile]);
-  const scrubTo = (pageX: number) => {
-    const { profile: now, scrubbable: can } = latest.current;
-    scrub.set(now && can ? scrubAt(now, scrubMetres(pageX - edgeX.current, widthRef.current, now.lengthM)) : null);
-  };
-  const canScrub = () => latest.current.scrubbable;
+  const canScrub = () => gesture.canStart();
+  const never = () => false;
   const keepScrub = () => false;
-  const startScrub = (e: GestureResponderEvent) => {
-    edgeX.current = e.nativeEvent.pageX - e.nativeEvent.locationX;
-    scrubTo(e.nativeEvent.pageX);
-  };
-  const moveScrub = (e: GestureResponderEvent) => scrubTo(e.nativeEvent.pageX);
-  const endScrub = () => scrub.set(null);
+  const startScrub = (e: GestureResponderEvent) => gesture.grant(e.nativeEvent);
+  const moveScrub = (e: GestureResponderEvent) => gesture.move(e.nativeEvent);
+  const endScrub = () => gesture.end();
   const measureProfile = (e: LayoutChangeEvent) => {
     widthRef.current = e.nativeEvent.layout.width;
     setProfileWidth(e.nativeEvent.layout.width);
@@ -231,7 +227,7 @@ export function SelectionCard({
             pointerEvents="box-only"
             onLayout={measureProfile}
             onStartShouldSetResponder={canScrub}
-            onMoveShouldSetResponder={canScrub}
+            onMoveShouldSetResponder={never}
             onResponderTerminationRequest={keepScrub}
             onResponderGrant={startScrub}
             onResponderMove={moveScrub}
@@ -344,12 +340,10 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    flexDirection: "row",
-    alignItems: "baseline",
-    columnGap: 14,
     marginTop: 2,
     backgroundColor: "white",
   },
+  readoutText: { color: "#111827" },
   shareBar: { flexDirection: "row", height: 6, borderRadius: 3, overflow: "hidden", marginTop: 8 },
   legend: { flexDirection: "row", flexWrap: "wrap", columnGap: 10, rowGap: 2, marginTop: 5 },
   legendItem: { flexDirection: "row", alignItems: "center", gap: 4 },

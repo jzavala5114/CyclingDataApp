@@ -34,7 +34,7 @@ test("the profile takes the touch itself and keeps it; letting go, or losing it,
   assert.match(tag, /pointerEvents="box-only"/, "the bars never take the touch, so locationX is from the profile's edge");
   for (const [prop, handler] of [
     ["onStartShouldSetResponder", "canScrub"],
-    ["onMoveShouldSetResponder", "canScrub"],
+    ["onMoveShouldSetResponder", "never"],
     ["onResponderTerminationRequest", "keepScrub"],
     ["onResponderGrant", "startScrub"],
     ["onResponderMove", "moveScrub"],
@@ -43,14 +43,28 @@ test("the profile takes the touch itself and keeps it; letting go, or losing it,
   ]) {
     assert.match(tag, new RegExp(`${prop}=\\{${handler}\\}`), `${prop} is ${handler}`);
   }
+  // The gesture's rules are createScrubGesture's (profileScrub.test.ts tests
+  // them); the card only hands it the responder's events.
+  assert.match(card, /const never = \(\) => false;/, "a move never starts a scrub: its locationX is not the profile's");
   assert.match(card, /const keepScrub = \(\) => false;/, "a scrub is not given up to another view mid-drag");
-  assert.match(card, /const endScrub = \(\) => scrub\.set\(null\);/);
-  assert.match(card, /const canScrub = \(\) => latest\.current\.scrubbable;/);
+  assert.match(card, /const canScrub = \(\) => gesture\.canStart\(\);/);
+  assert.match(card, /const startScrub = \(e: GestureResponderEvent\) => gesture\.grant\(e\.nativeEvent\);/);
+  assert.match(card, /const moveScrub = \(e: GestureResponderEvent\) => gesture\.move\(e\.nativeEvent\);/);
+  assert.match(card, /const endScrub = \(\) => gesture\.end\(\);/);
+  assert.match(card, /createScrubGesture\(scrub, \(\) => \(\{ profile: latest\.current\.profile, scrubbable: latest\.current\.scrubbable, width: widthRef\.current \}\)\)/);
   assert.match(card, /const scrubbable = [^;]*mode !== "holding"/, "no scrub while a hold is growing the selection");
+  assert.match(card, /const profile = useMemo\(\(\) => scrubProfile\(selection, grownM, preview\), \[selection, preview, grownM\]\);/);
 });
 
-test("a new answer, a flip, a trim or a close ends a scrub", () => {
+test("a new answer, a flip, a trim or a close hides the point until the finger next moves", () => {
   assert.match(card, /useEffect\(\(\) => \(\) => scrub\.set\(null\), \[scrub, profile\]\);/);
+});
+
+test("the readout and the cursor draw what profileScrub.ts works out, never their own arithmetic", () => {
+  assert.match(body(card, "function ScrubReadout"), /const readout = scrubReadout\(point\);/);
+  assert.match(body(card, "function ScrubCursor"), /cursorLeft\(point, lengthM, width, CURSOR_WIDTH\)/);
+  assert.match(card, /<ScrubCursor scrub=\{scrub\} lengthM=\{profile\?\.lengthM \?\? 0\} width=\{profileWidth\} \/>/);
+  assert.match(body(card, "function ScrubReadout"), /numberOfLines=\{1\} adjustsFontSizeToFit/, "one line, shrunk to fit at a large font size");
 });
 
 test("a move redraws only what reads the point: the readout and the cursor, never the bars", () => {

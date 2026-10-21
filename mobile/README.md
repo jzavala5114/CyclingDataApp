@@ -95,10 +95,12 @@ are built from, and what to do next.
   spot on the selection, a line marks it on the profile, and the card's
   numbers read how far in it is, its height from the start of the selection
   and the grade there ("no data" on unmeasured ground). Lift your finger and
-  the dot goes. The profile only answers once the selection has stopped
-  growing; dragging on the map's line does not scrub (that line answers taps
-  and holds). Heights are from the start, not above sea level: the server
-  sends no absolute height.
+  the dot goes and the totals come back. Only the finger that started the
+  drag moves the dot; another finger on the screen does not. The profile does
+  not answer while a finger is holding the map to grow the selection, and
+  dragging on the map's line does not scrub (that line answers taps and
+  holds). Heights are from the start, not above sea level: the server sends
+  no absolute height.
 - **×** or Android back clears it.
 
 One answer is awaited at a time. A new hold that asks the server, a trim, a
