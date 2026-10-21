@@ -3,7 +3,7 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-10-17.
+Last updated 2026-10-20.
 
 **Read the four blocks below before anything else.** They are the authoritative
 queue and state. Everything after them is evidence and history: where a section
@@ -32,7 +32,11 @@ reviews, both FAIL and both fixed, every finding with a test and an eval that
 fail without its fix. The final APK, from `d7204c3`, is on the phone
 (installed 2026-10-18 at 02:00). Nothing deployed: the server is unchanged. **Julian tried
 it on 2026-10-18: "pretty amazing so far", the functionality "feels great";
-he sees the lag, and has no way to tell whether the stats are right.** Next,
+he sees the lag, and has no way to tell whether the stats are right.**
+**Then the profile scrub, asked and merged 2026-10-20** (`04484a4`, app
+only): drag along the card's height profile and a dot marks the point on the
+map. Its APK is built and **not yet on the phone**; see "2. **App**", "The
+profile scrub". Next,
 in this order (details under
 "2. **App**" in the feature's section):
 - **The lag: mostly fixed and live (2026-10-18); what is left is the
@@ -413,6 +417,33 @@ cutting the path at a grown distance.
      rounding margin. Not seen on the phone: leading in, a fork's branches,
      and the tip hold through the device's own query (the eval rebuilds the
      query from the layer list).
+   - **The profile scrub, 2026-10-20** (Julian's ask, after Trailforks'
+     elevation chart). Drag along the card's profile: a dot (dark with a
+     white ring, the growth tip's dot inverted) marks the point on the map,
+     a line marks it on the profile, and the numbers row reads how far in,
+     the height from the start and the grade ("no data" on unmeasured
+     ground), drawn over the totals so the card keeps its height. Julian's
+     choices: height from the start (the server sends no absolute height),
+     the dot hides on lift, graph to map only (the line on the map answers
+     taps and holds), solo with one critic. `services/profileScrub.ts`
+     holds the arithmetic, the readout, the cursor and the gesture
+     (`createScrubGesture`: only the finger that started it moves it, a
+     move never starts one, and release, termination or a new profile ends
+     it, the last so a profile gone mid-scrub cannot leave it running); the card only
+     feeds it responder events, and the map's dot (`ScrubDot`) is drawn
+     last. The readout's height is `profileAt`, the function the profile's
+     bars use. **The cold review: FAIL** (161k), two medium: a second finger
+     drove the dot on Android (every finger's moves reach the responder,
+     each with its own identifier), and six broken scrubs passed every test.
+     Both fixed (`04484a4`), the reproductions re-run; 23 mutants, 23
+     killed. `eval:selection` gains a `scrub` check, judged without the
+     scrub's code: live PASS, 16 of 16 presses. Merged; nothing deployed.
+     **To finish, on the phone** (plugged in, no ride recording): install
+     the APK built from `04484a4` ("HOW TO REBUILD THE APK"), then check
+     that the dot follows the finger smoothly, that a drag starting on the
+     profile's outermost 2 to 3mm is not taken as Android's back gesture,
+     and that the readout fits at a large font size. Evidence: the
+     scratchpad of session `e24d4bb5`, `profile-scrub/`.
    - **Next, in order.**
      1. **The lag: mostly fixed, live 2026-10-18; the rest waits on Julian.**
         - **Cause, found in three passes.** (a) The backend ran in Railway's
@@ -623,13 +654,16 @@ fix), saved selections, a climb finder.
 `option-a-state`, `per-pass-slopes` and `option-a-live` are merged and safe
 to delete, and so are `press-hold-plan`, `path-route`, `path-route-live`,
 `notes-after-phase1`, `press-hold-app`, `apk-install-notes`, `lag-notes`,
-`path-lag-fix` and `lag-trace-notes`.
-**Nothing in flight.** `path-lag-fix` is merged (`9a0058a`) and live as
+`path-lag-fix`, `lag-trace-notes`, `lag-swap-notes` and `profile-scrub`.
+**Nothing in flight** but an install: the profile scrub is merged
+(`04484a4`, app only) and its APK built, not yet on the phone.
+`path-lag-fix` is merged (`9a0058a`) and live as
 `93563c1c` (builtAt 2026-10-18T18:51:27.630Z); the lag's last case waits on
 Julian ("2. **App**", "Next", step 1). No running job.
 The phone runs the release APK built from `d7204c3` (installed 2026-10-18 at
 02:00).
-Last code change `9a0058a` (2026-10-18): the pool keeps four connections
+Last code change `04484a4` (2026-10-20): the profile scrub, app only,
+nothing deployed. Before it, `9a0058a` (2026-10-18): the pool keeps four connections
 through any pause, opened as the server starts; deployed. Before it, `ff76d26`
 (2026-10-18): a trace on every request, `eval:latency` judging every request,
 and `split:access-log`; deployed. Before it, `bab6a91` (2026-10-18): the
@@ -748,7 +782,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 33 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature ("Press and hold on a segment, designed 2026-10-17"): phase 1, the server, is live; phase 2, the app, shipped 2026-10-18; the lag mostly fixed and live (the backend in `us-west2`, a trace on every request, four connections kept); the rest, the database (free Nano compute, 0.5GB) living in swap, waits on Julian's choice of fix; then whether the numbers are right |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature ("Press and hold on a segment, designed 2026-10-17"): phase 1, the server, is live; phase 2, the app, shipped 2026-10-18; the profile scrub merged 2026-10-20, its APK not yet installed; the lag mostly fixed and live (the backend in `us-west2`, a trace on every request, four connections kept); the rest, the database (free Nano compute, 0.5GB) living in swap, waits on Julian's choice of fix; then whether the numbers are right |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 

@@ -235,3 +235,15 @@ test("a new answer mid-scrub: the next move reads the new profile", () => {
   gesture.move({ pageX: EDGE + 156, locationX: 156, identifier: 0 });
   close(atM()!, 26.25, 1e-9, "half way along the new, shorter profile");
 });
+
+test("ending a scrub that never heard its finger lift frees the gesture for the next touch", () => {
+  // The profile gone with a finger on it: no release, no termination, only
+  // the card's own end when its profile changes.
+  const { gesture, atM, onProfile } = scrubbing();
+  gesture.grant(onProfile(60));
+  assert.equal(gesture.canStart(), false);
+  gesture.end();
+  assert.equal(gesture.canStart(), true, "a later selection can be scrubbed");
+  gesture.grant(onProfile(120));
+  close(atM()!, along(120), 1e-9);
+});

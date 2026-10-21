@@ -150,9 +150,12 @@ export function SelectionCard({
   const [gesture] = useState(() =>
     createScrubGesture(scrub, () => ({ profile: latest.current.profile, scrubbable: latest.current.scrubbable, width: widthRef.current })),
   );
-  // A new answer, a flip, a trim or a close hides the point until the finger
-  // next moves, which reads the new profile: the old point was on the old one.
-  useEffect(() => () => scrub.set(null), [scrub, profile]);
+  // A new answer, a flip, a trim or a close ends a scrub, the point with it:
+  // the point was on the old profile. Ending it here, not only on the
+  // responder's release, is what frees the gesture when the profile goes
+  // with a finger still on it (Android back mid-scrub), where React Native
+  // need not tell a view that is gone that its touch ended.
+  useEffect(() => () => gesture.end(), [gesture, profile]);
   const canScrub = () => gesture.canStart();
   const never = () => false;
   const keepScrub = () => false;

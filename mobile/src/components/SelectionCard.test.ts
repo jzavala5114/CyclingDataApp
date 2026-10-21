@@ -56,8 +56,8 @@ test("the profile takes the touch itself and keeps it; letting go, or losing it,
   assert.match(card, /const profile = useMemo\(\(\) => scrubProfile\(selection, grownM, preview\), \[selection, preview, grownM\]\);/);
 });
 
-test("a new answer, a flip, a trim or a close hides the point until the finger next moves", () => {
-  assert.match(card, /useEffect\(\(\) => \(\) => scrub\.set\(null\), \[scrub, profile\]\);/);
+test("a new answer, a flip, a trim or a close ends the scrub, so a profile gone mid-scrub cannot leave it running", () => {
+  assert.match(card, /useEffect\(\(\) => \(\) => gesture\.end\(\), \[gesture, profile\]\);/);
 });
 
 test("the readout and the cursor draw what profileScrub.ts works out, never their own arithmetic", () => {
