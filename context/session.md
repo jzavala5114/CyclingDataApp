@@ -25,30 +25,38 @@ far", the functionality "feels great". The lag is mostly fixed and live
 press from this PC takes about 0.45s warm and 0.47s after 40s quiet, against
 1.4s and 3.0s before. What is left of it is the free database going cold
 (below). The profile scrub (drag the card's height profile, a dot follows on
-the map) is merged (`54c4365`, app only) and its APK built, **not yet
-installed**. Production's server is unchanged since 2026-10-18.
+the map) is merged (`54c4365`, app only) and **on the phone since
+2026-10-21**, waiting on Julian's three checks (step 1). Production's server
+is unchanged since 2026-10-18.
 
 **Julian's decision, 2026-10-20: no Supabase Pro yet.** Pro is $25 a month;
 he will take it when the app opens to more users. Until then he is the only
-user, testing, and the lag's last case is managed on the free plan (step 3).
+user, testing, and the lag's last case is managed on the free plan (step 4).
 
 **Next, in order:**
 
-1. **Install the profile scrub's APK and check it on the phone** (about
-   10k). The phone must be plugged in. First check no ride is recording
-   (`adb shell dumpsys activity services com.anonymous.cyclingdataapp`
-   shows no ServiceRecord), then `adb install -r` the APK built from
-   `54c4365` (rebuild it if `main` has moved: "HOW TO REBUILD THE APK").
-   Never uninstall. Julian then checks three things only the phone can show:
-   the dot follows the finger smoothly; a drag starting on the profile's
-   outermost 2 to 3mm is not taken as Android's back gesture; the readout
-   fits with a large font size set. Details: "2. **App**", "The profile
-   scrub".
+1. **Julian checks the profile scrub on the phone** (free). Installed
+   2026-10-21 18:47 (phone clock) from `54c4365`, no ride recording; the
+   APK's bundle matches the commit file by file, and a cold start is clean
+   (no crash, no app error). Three things only the phone can show: the dot
+   follows the finger smoothly; a drag starting on the profile's outermost
+   2 to 3mm is not taken as Android's back gesture; the readout fits with a
+   large font size set. Details: "2. **App**", "The profile scrub".
 2. **Three phase-2 behaviours never tried on the phone**, free, on a ride:
    hold just behind the start of a selection (it leads in); grow a selection
    to a fork and look at the branches; hold the very end of a selection (it
    carries on).
-3. **The lag's last case, on the free plan.** The database runs on Nano
+3. **A line the map may not draw** (about 15k, read-only). On both starts after
+   the install, warm and cold, the app logs `MapLibre Native [WARN] ... Invalid geometry
+   in line layer` (`adb logcat`, tag `ReactNativeJS`) about 130ms after
+   "Running main", before any press. MapLibre skips a feature it calls
+   invalid, so some line may be missing from the map. Not the profile
+   scrub: its only map change is one circle layer on its own source. Seen
+   first 2026-10-21; whether older APKs did it is unknown, since the phone's
+   log keeps only minutes. To find it: list the line features the map loads
+   at start and find the one MapLibre rejects (a guess, unverified: a line
+   with fewer than two distinct points).
+4. **The lag's last case, on the free plan.** The database runs on Nano
    compute (`t3a.nano`, 0.5GB of RAM) with about 400MB in swap, so after
    about 6 minutes with no press the first press takes 0.8s on the server
    (1.2s from this PC), and the first downtown press is often 1.4 to 1.9s.
@@ -64,7 +72,7 @@ user, testing, and the lag's last case is managed on the free plan (step 3).
      ride is added. Saves 60 to 110ms a press and about a third of what each
      press pulls from the database.
    Recommended order: the first, then the second.
-4. **Protect the data** (cheap, both read-only to start):
+5. **Protect the data** (cheap, both read-only to start):
    - **Backups** (about 15k): the free plan has none. A read-only
      `pg_dump` of the database (about 90MB) to Julian's PC, scripted.
    - **Supabase's security warnings** (about 20k to check and fix):
@@ -76,16 +84,16 @@ user, testing, and the lag's last case is managed on the free plan (step 3).
      them (a read-only query settles it). Enabling RLS should not touch the
      backend, which connects as the tables' owner; verify that before any
      change, and the change itself is a production write on Julian's OK.
-5. **Whether the card's numbers are right** (about 60k): a check against
+6. **Whether the card's numbers are right** (about 60k): a check against
    something independent, which nothing does yet. The one comparison so far
    put our climb 38% below a terrain model's on 69 Ladders and Gold Camp
    Road, unexplained ("2. **App**", "Open: whether the card's numbers are
    right").
-6. **Grade ride 89** (about 20k, read-only): it landed 2026-10-11 and is
+7. **Grade ride 89** (about 20k, read-only): it landed 2026-10-11 and is
    still ungraded: `npm run verify-barometer` in `backend/`; a pass is
    `alive` ("HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED"). No ride has
    landed since.
-7. **The numbered items below**: the zero-run census first.
+8. **The numbered items below**: the zero-run census first.
 
 **Free plan limits to keep in mind.** Supabase pauses a free project after
 about a week with no activity (restore it from the dashboard). Its monthly
@@ -477,9 +485,8 @@ cutting the path at a grown distance.
      Both fixed (`04484a4`), the reproductions re-run; 23 mutants, 23
      killed. `eval:selection` gains a `scrub` check, judged without the
      scrub's code: live PASS, 16 of 16 presses. Merged; nothing deployed.
-     **To finish, on the phone** (plugged in, no ride recording): install
-     the APK built from `04484a4` ("HOW TO REBUILD THE APK"), then check
-     that the dot follows the finger smoothly, that a drag starting on the
+     **Installed 2026-10-21** from `54c4365` (cold start clean). **To
+     finish, on the phone, Julian's checks:** that the dot follows the finger smoothly, that a drag starting on the
      profile's outermost 2 to 3mm is not taken as Android's back gesture,
      and that the readout fits at a large font size. Evidence: the
      scratchpad of session `e24d4bb5`, `profile-scrub/`.
@@ -693,11 +700,11 @@ fix), saved selections, a climb finder.
 `option-a-state`, `per-pass-slopes` and `option-a-live` are merged and safe
 to delete, and so are `press-hold-plan`, `path-route`, `path-route-live`,
 `notes-after-phase1`, `press-hold-app`, `apk-install-notes`, `lag-notes`,
-`path-lag-fix`, `lag-trace-notes`, `lag-swap-notes`, `profile-scrub` and
-`next-steps-notes`.
-**Nothing in flight** but an install: the profile scrub is merged
-(`54c4365`, app only) and its APK built, not yet on the phone ("NEXT, IN
-ORDER", step 1).
+`path-lag-fix`, `lag-trace-notes`, `lag-swap-notes`, `profile-scrub`,
+`next-steps-notes` and `install-profile-scrub`.
+**Nothing in flight** but Julian's checks: the profile scrub is merged
+(`54c4365`, app only) and on the phone since 2026-10-21 ("NEXT, IN ORDER",
+step 1).
 `path-lag-fix` is merged (`9a0058a`) and live as
 `93563c1c` (builtAt 2026-10-18T18:51:27.630Z); the lag's last case waits on
 Julian ("2. **App**", "Next", step 1). No running job.
@@ -2735,8 +2742,8 @@ hotspot also works, since the phone then hosts the network itself.
 
 #### HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED
 
-The release APK is **already built and installed** (`lastUpdateTime 2026-10-03
-08:38:01`). To rebuild and reinstall after a change:
+The release APK on the phone is from `54c4365` (`lastUpdateTime 2026-10-21
+18:47:33`). To rebuild and reinstall after a change:
 
 ```
 cd mobile/android && ./gradlew :app:assembleRelease
@@ -2757,6 +2764,24 @@ screencap -p /sdcard/x.png` then `adb pull` with `MSYS_NO_PATHCONV=1`, or
 Git Bash rewrites `/sdcard` into a Windows path. The screen locks after 10
 minutes; `adb shell svc power stayon usb` keeps it on while plugged in, only
 with Julian's OK, and `svc power stayon false` puts it back (it was 0).
+
+**To check an APK carries a commit** (2026-10-21), by content, since two
+quick checks mislead. The bundle is Hermes bytecode: `grep` without `-a`
+prints one "Binary file matches" line whatever the string, and Hermes stores
+a string that is the start of another inside it (`selection-scrub` has no
+copy of its own beside `selection-scrub-dot`). File times mislead too: a
+branch switch rewrites them. Instead, compare the sha256 of the APK's
+`assets/index.android.bundle` (`unzip -p`) with
+`android/app/build/generated/assets/react/release/index.android.bundle`,
+then each app file's `sourcesContent` in
+`android/app/build/generated/sourcemaps/react/release/index.android.bundle.map`
+(paths written `/src/...`) with the committed file. On 2026-10-21: 19 of 19
+identical, and `04484a4`'s `SelectionCard.tsx` differs, so the comparison
+can say no. After `adb install -r` the system restarts the app at once, so
+`am start -W` reports WARM; for a cold start, `am force-stop` first (no ride
+recording), then `am start -W -n
+com.anonymous.cyclingdataapp/.MainActivity` and `logcat -d --pid=` the new
+process.
 
 Note **release, not debug**: `assembleDebug` produces an APK with no
 `index.android.bundle` in it, which loads JS from the Metro dev server and dies
