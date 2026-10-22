@@ -5,6 +5,7 @@ import {
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
   type GestureResponderEvent,
   type LayoutChangeEvent,
 } from "react-native";
@@ -143,12 +144,19 @@ export function SelectionCard({
   // Scrubbing the profile: the gesture's rules are services/profileScrub.ts's
   // createScrubGesture; the card only feeds it the responder's events.
   const scrubbable = !!profile && profile.lengthM > 0 && columns.length > 0 && mode !== "holding";
-  const latest = useRef({ profile, scrubbable });
-  latest.current = { profile, scrubbable };
+  // The window's width places the path's ends short of the screen's sides (scrubBand).
+  const { width: windowWidth } = useWindowDimensions();
+  const latest = useRef({ profile, scrubbable, windowWidth });
+  latest.current = { profile, scrubbable, windowWidth };
   const widthRef = useRef(0);
   const [profileWidth, setProfileWidth] = useState(0);
   const [gesture] = useState(() =>
-    createScrubGesture(scrub, () => ({ profile: latest.current.profile, scrubbable: latest.current.scrubbable, width: widthRef.current })),
+    createScrubGesture(scrub, () => ({
+      profile: latest.current.profile,
+      scrubbable: latest.current.scrubbable,
+      width: widthRef.current,
+      windowWidth: latest.current.windowWidth,
+    })),
   );
   // A new answer, a flip, a trim or a close ends a scrub, the point with it:
   // the point was on the old profile. Ending it here, not only on the

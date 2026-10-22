@@ -2,7 +2,18 @@ import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import * as turf from "@turf/turf";
 import { cutAt, fromResponse, profileColumns, selectionFeatures } from "./pathSelection.js";
-import { createScrubGesture, createScrubStore, cursorLeft, scrubAt, scrubMetres, scrubProfile, scrubReadout, type ScrubState } from "./profileScrub.js";
+import {
+  SCRUB_EDGE_REACH,
+  createScrubGesture,
+  createScrubStore,
+  cursorLeft,
+  scrubAt,
+  scrubBand,
+  scrubMetres,
+  scrubProfile,
+  scrubReadout,
+  type ScrubState,
+} from "./profileScrub.js";
 import { east, makePath } from "./testPaths.js";
 
 // Scrubbing the card's profile: the finger's distance along it, what the path
@@ -22,14 +33,39 @@ const twoPieces = () =>
     ]),
   );
 
-test("the finger's place on the profile is a distance along it, held to the profile's ends", () => {
-  close(scrubMetres(50, 200, 105), 26.25);
-  close(scrubMetres(0, 200, 105), 0);
-  close(scrubMetres(200, 200, 105), 105);
-  close(scrubMetres(-30, 200, 105), 0, 0, "left of the profile reads its start");
-  close(scrubMetres(260, 200, 105), 105, 0, "right of it reads its end");
-  close(scrubMetres(50, 0, 105), 0, 0, "a profile not yet measured");
-  close(scrubMetres(Number.NaN, 200, 105), 0);
+test("the path's ends are read 60dp from the screen's sides: the profile's edges, brought in where nearer", () => {
+  assert.equal(SCRUB_EDGE_REACH, 60);
+  // A 360dp phone with the profile 24dp in from each side, as the card lays it out.
+  assert.deepEqual(scrubBand(24, 312, 360), { from: 60, to: 300 });
+  // Julian's Pixel 10 Pro: 1080px wide at 2.625px a dp, 411.4dp.
+  const pixel = 1080 / 2.625;
+  const band = scrubBand(24, pixel - 48, pixel);
+  close(band.from, 60, 0);
+  close(band.to, pixel - 60, 1e-9);
+  // A profile already 60dp clear of both sides is not stretched.
+  assert.deepEqual(scrubBand(100, 400, 600), { from: 100, to: 500 });
+  // Near one side only: only that side comes in.
+  assert.deepEqual(scrubBand(24, 300, 600), { from: 60, to: 324 });
+  assert.deepEqual(scrubBand(276, 300, 600), { from: 276, to: 540 });
+  // No room left between the two: the profile's own edges, never a band of no width.
+  assert.deepEqual(scrubBand(10, 100, 120), { from: 10, to: 110 }, "the two meet at 60");
+  assert.deepEqual(scrubBand(10, 100, 100), { from: 10, to: 110 }, "the two cross");
+  // A window not yet measured: the profile's own edges.
+  assert.deepEqual(scrubBand(24, 312, 0), { from: 24, to: 336 });
+  assert.deepEqual(scrubBand(24, 312, Number.NaN), { from: 24, to: 336 });
+});
+
+test("the finger's place in the band is a distance along the path, held to the path's ends", () => {
+  const band = { from: 60, to: 300 };
+  close(scrubMetres(120, band, 105), 26.25, 1e-9, "a quarter of the band");
+  close(scrubMetres(180, band, 105), 52.5, 1e-9, "half");
+  close(scrubMetres(60, band, 105), 0, 0, "the band's left end reads the start");
+  close(scrubMetres(300, band, 105), 105, 0, "its right end reads the end");
+  close(scrubMetres(24, band, 105), 0, 0, "the profile's own left edge, short of the band, reads the start");
+  close(scrubMetres(336, band, 105), 105, 0, "its right edge, past the band, reads the end");
+  close(scrubMetres(120, { from: 60, to: 60 }, 105), 0, 0, "a band of no width");
+  close(scrubMetres(Number.NaN, band, 105), 0);
+  close(scrubMetres(120, band, 0), 0);
 });
 
 test("a point reads how far in, the height from the start and the grade there, and lies where the map draws it", () => {
@@ -161,20 +197,65 @@ test("the cursor sits centred on the point, inside the profile at both ends", ()
 });
 
 // The gesture, fed responder events as React Native sends them. The profile
-// is 312 wide with its left edge 24 from the screen's: a 360-wide phone.
+// is 312 wide with its left edge 24 from the screen's: a 360-wide phone. The
+// path's ends are read 60 from the screen's sides, at 60 and 300 (scrubBand),
+// so 36 in from the profile's edges.
 const EDGE = 24;
 const WIDTH = 312;
-function scrubbing(state: Partial<ScrubState> = {}) {
+function scrubbing(state: Partial<ScrubState> = {}, edge = EDGE) {
   const store = createScrubStore();
-  const now: ScrubState = { profile: twoPieces(), width: WIDTH, scrubbable: true, ...state };
+  const now: ScrubState = { profile: twoPieces(), width: WIDTH, windowWidth: 360, scrubbable: true, ...state };
   const gesture = createScrubGesture(store, () => now);
   const atM = () => store.get()?.atM ?? null;
-  const onProfile = (x: number) => ({ pageX: EDGE + x, locationX: x, identifier: 0 });
+  const onProfile = (x: number) => ({ pageX: edge + x, locationX: x, identifier: 0 });
   return { store, now, gesture, atM, onProfile };
 }
-const along = (x: number) => (x / WIDTH) * 105;
+// Metres along for a finger x from the profile's edge: 240 of band for 105m.
+const along = (x: number) => Math.max(0, Math.min(1, (EDGE + x - 60) / 240)) * 105;
 
-test("a scrub reads the finger from the profile's own edge, kept from where the touch started", () => {
+test("the path's ends are reached 60 from the screen's sides, 36 inside the profile's edges", () => {
+  const { gesture, atM, onProfile } = scrubbing();
+  gesture.grant(onProfile(36));
+  close(atM()!, 0, 0, "the start, 60 from the screen's left");
+  gesture.move({ pageX: 180, locationX: 156, identifier: 0 });
+  close(atM()!, 52.5, 1e-9, "the screen's middle is the path's");
+  gesture.move({ pageX: 300, locationX: 276, identifier: 0 });
+  close(atM()!, 105, 0, "the end, 60 from the screen's right");
+  gesture.move({ pageX: 330, locationX: 306, identifier: 0 });
+  close(atM()!, 105, 0, "on toward the profile's edge, still the end");
+  gesture.end();
+  gesture.grant(onProfile(10));
+  close(atM()!, 0, 0, "a touch starting in the profile's outer 36 reads the start at once");
+});
+
+test("where the band does not reach in, the profile's own edge decides, kept from where the touch started", () => {
+  // A window not yet measured: the profile's edges, 24 and 336, read the ends.
+  const unmeasured = scrubbing({ windowWidth: 0 });
+  unmeasured.gesture.grant(unmeasured.onProfile(0));
+  close(unmeasured.atM()!, 0, 0);
+  unmeasured.gesture.move({ pageX: EDGE + 156, locationX: 156, identifier: 0 });
+  close(unmeasured.atM()!, 52.5, 1e-9, "half the profile, half the path");
+  // Where the profile's edges and the band read differently: 78 of 312 is
+  // 26.25m; the band, 42 of 240, would be 18.375m (a cold review, 2026-10-21).
+  unmeasured.gesture.move({ pageX: EDGE + 78, locationX: 78, identifier: 0 });
+  close(unmeasured.atM()!, 26.25, 1e-9, "a quarter of the profile, not of a band");
+  unmeasured.gesture.move({ pageX: EDGE + 312, locationX: 312, identifier: 0 });
+  close(unmeasured.atM()!, 105, 0);
+  // Measured mid-scrub: the next move reads the band.
+  unmeasured.now.windowWidth = 360;
+  unmeasured.gesture.move({ pageX: 300, locationX: 276, identifier: 0 });
+  close(unmeasured.atM()!, 105, 0, "300 is the band's end");
+  // A wide screen, the profile 100 in from each side of 600: its edges, 100 and 412.
+  const wide = scrubbing({ windowWidth: 600 }, 100);
+  wide.gesture.grant(wide.onProfile(0));
+  close(wide.atM()!, 0, 0);
+  wide.gesture.move({ pageX: 256, locationX: 156, identifier: 0 });
+  close(wide.atM()!, 52.5, 1e-9, "half the profile, not stretched");
+  wide.gesture.move({ pageX: 412, locationX: 312, identifier: 0 });
+  close(wide.atM()!, 105, 0);
+});
+
+test("a scrub reads where the finger is on the screen, never what it is over", () => {
   const { gesture, atM, onProfile } = scrubbing();
   gesture.grant(onProfile(78));
   close(atM()!, along(78), 1e-9, "the start, from the profile's edge");

@@ -51,7 +51,19 @@ test("the profile takes the touch itself and keeps it; letting go, or losing it,
   assert.match(card, /const startScrub = \(e: GestureResponderEvent\) => gesture\.grant\(e\.nativeEvent\);/);
   assert.match(card, /const moveScrub = \(e: GestureResponderEvent\) => gesture\.move\(e\.nativeEvent\);/);
   assert.match(card, /const endScrub = \(\) => gesture\.end\(\);/);
-  assert.match(card, /createScrubGesture\(scrub, \(\) => \(\{ profile: latest\.current\.profile, scrubbable: latest\.current\.scrubbable, width: widthRef\.current \}\)\)/);
+  const now = card.slice(card.indexOf("createScrubGesture(scrub, () => ({"), card.indexOf("})),", card.indexOf("createScrubGesture(scrub")));
+  for (const field of [
+    "profile: latest.current.profile,",
+    "scrubbable: latest.current.scrubbable,",
+    "width: widthRef.current,",
+    "windowWidth: latest.current.windowWidth,",
+  ]) {
+    assert.ok(now.includes(field), `the gesture reads ${field}`);
+  }
+  // The window's width is what keeps the path's ends short of the screen's sides (scrubBand).
+  assert.match(card, /const \{ width: windowWidth \} = useWindowDimensions\(\);/);
+  assert.match(card, /latest\.current = \{ profile, scrubbable, windowWidth \};/);
+  assert.match(card, /widthRef\.current = e\.nativeEvent\.layout\.width;/);
   assert.match(card, /const scrubbable = [^;]*mode !== "holding"/, "no scrub while a hold is growing the selection");
   assert.match(card, /const profile = useMemo\(\(\) => scrubProfile\(selection, grownM, preview\), \[selection, preview, grownM\]\);/);
 });

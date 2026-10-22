@@ -23,7 +23,10 @@
 //              path and along it cut part way: the dot within 0.5m of the
 //              line the map draws, at the same share of its piece's drawn
 //              line as of the piece's length, its height the profile's and
-//              its grade its span's, and never past what has grown
+//              its grade its span's, and never past what has grown; and a
+//              finger swept across Julian's phone reads the start up to 60dp
+//              from the left, the end from 60dp off the right, and moves on
+//              at every half dp between
 //   limit      a path stopped by its limit, asked again from the tip as the
 //              phone asks, joins on with no step in height
 //   flip       its first 800m flips onto the other direction's lines of the
@@ -62,7 +65,7 @@ import {
   type Selection,
   type SelectionFeature,
 } from "../src/services/pathSelection";
-import { scrubAt } from "../src/services/profileScrub";
+import { createScrubGesture, createScrubStore, scrubAt } from "../src/services/profileScrub";
 import { SelectionController, type Hit } from "../src/services/selectionController";
 import { API_BASE_URL } from "../src/config";
 import type { LineString } from "geojson";
@@ -259,6 +262,52 @@ function checkScrub(press: string, selection: Selection) {
   } else if (!near(past.atM, grownM, 1e-9)) {
     fail(press, "scrub", `past the grown part, it reads ${past.atM.toFixed(1)}m in of ${grownM.toFixed(1)}m grown`);
   }
+  checkReach(press, selection);
+}
+
+// The reach (asked for 2026-10-21): the path's start and end within reach
+// short of the screen's sides. A finger swept across Julian's Pixel 10 Pro
+// (1080px at 2.625px a dp; the card's profile 24dp in from each side), driven
+// through the gesture as the card drives it, every 0.5dp: up to 60dp from the
+// left the dot is on the drawn line's first point, from 60dp off the right on
+// its last, and every step between moves it on, so the band has no dead spot.
+const PHONE_DP = 1080 / 2.625;
+const PROFILE_EDGE_DP = 24;
+const REACH_DP = 60;
+function checkReach(press: string, selection: Selection) {
+  const store = createScrubStore();
+  const gesture = createScrubGesture(store, () => ({
+    profile: selection,
+    width: PHONE_DP - 2 * PROFILE_EDGE_DP,
+    windowWidth: PHONE_DP,
+    scrubbable: true,
+  }));
+  const first = selection.pieces[0]!.geometry.coordinates[0]!;
+  const lastPiece = selection.pieces[selection.pieces.length - 1]!.geometry.coordinates;
+  const last = lastPiece[lastPiece.length - 1]!;
+  const metresFrom = (to: number[]) => {
+    const point = store.get()!;
+    return turf.distance(turf.point([point.lon, point.lat]), turf.point(to), { units: "meters" });
+  };
+  gesture.grant({ pageX: PROFILE_EDGE_DP, locationX: 0, identifier: 0 });
+  let before = -1;
+  for (let x = 0; x <= PHONE_DP; x += 0.5) {
+    gesture.move({ pageX: x, locationX: x, identifier: 0 });
+    const point = store.get();
+    if (!point) return fail(press, "scrub", `reach: no point at ${x}dp`);
+    if (x <= REACH_DP && metresFrom(first) > 0.5) {
+      return fail(press, "scrub", `reach: ${x}dp from the left reads ${point.atM.toFixed(1)}m in, ${metresFrom(first).toFixed(1)}m from the start`);
+    }
+    if (x >= PHONE_DP - REACH_DP && metresFrom(last) > 0.5) {
+      const off = (PHONE_DP - x).toFixed(1);
+      return fail(press, "scrub", `reach: ${off}dp from the right reads ${point.atM.toFixed(1)}m in, ${metresFrom(last).toFixed(1)}m from the end`);
+    }
+    if (x > REACH_DP && x < PHONE_DP - REACH_DP && !(point.atM > before)) {
+      return fail(press, "scrub", `reach: no further along at ${x}dp than half a dp before (${point.atM.toFixed(2)}m)`);
+    }
+    before = point.atM;
+  }
+  gesture.end();
 }
 
 async function checkLimit(press: string, selection: Selection): Promise<string> {
