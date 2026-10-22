@@ -3,7 +3,7 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-10-20.
+Last updated 2026-10-21.
 
 **Read the four blocks below before anything else.** They are the authoritative
 queue and state. Everything after them is evidence and history: where a section
@@ -12,48 +12,87 @@ stale.
 
 ## NEXT, IN ORDER
 
-Rewritten 2026-10-17, after option A shipped. Closed work keeps its evidence
-below the STATE block: "CLOSED 2026-10-16 and -17" (the mixing artefact and
-option A) and "CLOSED 2026-10-10 and -11" (the old items 1 to 4).
+Rewritten 2026-10-21, after the lag's trace and the profile scrub. Closed
+work keeps its evidence below the STATE block: "CLOSED 2026-10-16 and -17"
+(the mixing artefact and option A) and "CLOSED 2026-10-10 and -11" (the old
+items 1 to 4).
 
-**First, cheap: grade ride 89.** It landed on 2026-10-11 and is still
-ungraded, and since the rebuild of 2026-10-17 it is in the model and on the
-map: `npm run verify-barometer` in `backend/`, read-only, about 20k. A pass is
-`alive`; "HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED" says how to read
-the rest. No ride has landed since.
+**Where things stand.** Press and hold on a segment is shipped: phase 1, the
+server (`GET /segments/path`, 2026-10-17), and phase 2, the app (2026-10-18,
+APK from `d7204c3` on the phone). Julian on 2026-10-18: "pretty amazing so
+far", the functionality "feels great". The lag is mostly fixed and live
+(deployment `93563c1c`, `9a0058a`, builtAt 2026-10-18T18:51:27.630Z): a
+press from this PC takes about 0.45s warm and 0.47s after 40s quiet, against
+1.4s and 3.0s before. What is left of it is the free database going cold
+(below). The profile scrub (drag the card's height profile, a dot follows on
+the map) is merged (`54c4365`, app only) and its APK built, **not yet
+installed**. Production's server is unchanged since 2026-10-18.
 
-**Then the feature: press and hold on a segment** (its section after the
-numbered items). Julian chose it over the census and settled its four open
-questions on 2026-10-17. **Phase 1, the server, shipped 2026-10-17**
-(`5ccbc35`, `builtAt 2026-10-18T01:40:59.257Z`): `GET /segments/path` is live, and nothing
-calls it until the app does. **Phase 2, the app, shipped 2026-10-18**: merged
-into `main` from `press-hold-app` (`d7204c3` and these notes) after two cold
-reviews, both FAIL and both fixed, every finding with a test and an eval that
-fail without its fix. The final APK, from `d7204c3`, is on the phone
-(installed 2026-10-18 at 02:00). Nothing deployed: the server is unchanged. **Julian tried
-it on 2026-10-18: "pretty amazing so far", the functionality "feels great";
-he sees the lag, and has no way to tell whether the stats are right.**
-**Then the profile scrub, asked and merged 2026-10-20** (`04484a4`, app
-only): drag along the card's height profile and a dot marks the point on the
-map. Its APK is built and **not yet on the phone**; see "2. **App**", "The
-profile scrub". Next,
-in this order (details under
-"2. **App**" in the feature's section):
-- **The lag: mostly fixed and live (2026-10-18); what is left is the
-  database going cold during quiet, waiting on Julian.** Live as `93563c1c`
-  (`9a0058a`, builtAt 2026-10-18T18:51:27.630Z): the backend in `us-west2`,
-  a trace on every request, four connections kept. A press from this PC:
-  warm 1.4s to about 0.45s, after 40s quiet 3.0s to about 0.47s. On the
-  server: warm median 1.17s to 0.22s, after 40s quiet 0.25 to 0.36s (14 of 14
-  on the two traced deployments). Answers unchanged. Left: with connections
-  waiting, the first press after a pause of about 6 minutes or more takes
-  0.8 to 0.85s on the server (1.16s from this PC), and the first downtown
-  press is often 1.4 to 1.9s (4 of 6 since the move): the database's first
-  statements after quiet run slow, because the database (the free plan's
-  Nano compute, 0.5GB of RAM) keeps about 400MB in swap. Evidence and the
-  decision under "2. **App**", "Next, in order", step 1.
-- **Then whether the card's numbers are right**: a check against something
-  independent, which nothing does yet.
+**Julian's decision, 2026-10-20: no Supabase Pro yet.** Pro is $25 a month;
+he will take it when the app opens to more users. Until then he is the only
+user, testing, and the lag's last case is managed on the free plan (step 3).
+
+**Next, in order:**
+
+1. **Install the profile scrub's APK and check it on the phone** (about
+   10k). The phone must be plugged in. First check no ride is recording
+   (`adb shell dumpsys activity services com.anonymous.cyclingdataapp`
+   shows no ServiceRecord), then `adb install -r` the APK built from
+   `54c4365` (rebuild it if `main` has moved: "HOW TO REBUILD THE APK").
+   Never uninstall. Julian then checks three things only the phone can show:
+   the dot follows the finger smoothly; a drag starting on the profile's
+   outermost 2 to 3mm is not taken as Android's back gesture; the readout
+   fits with a large font size set. Details: "2. **App**", "The profile
+   scrub".
+2. **Three phase-2 behaviours never tried on the phone**, free, on a ride:
+   hold just behind the start of a selection (it leads in); grow a selection
+   to a fork and look at the branches; hold the very end of a selection (it
+   carries on).
+3. **The lag's last case, on the free plan.** The database runs on Nano
+   compute (`t3a.nano`, 0.5GB of RAM) with about 400MB in swap, so after
+   about 6 minutes with no press the first press takes 0.8s on the server
+   (1.2s from this PC), and the first downtown press is often 1.4 to 1.9s.
+   Free fixes, each a deploy on Julian's go-ahead, measured with
+   `eval:latency`, the 11-minute pause press and `npm run
+   split:access-log` (all in "2. **App**", "Next, in order", step 1):
+   - **Keep the database warm while Julian rides** (about 50k): the server
+     repeats the last press's reads every 2 minutes, only for 30 minutes
+     after the last press. Presses during a ride stay fast; the first of a
+     session still pays.
+   - **Keep the ride order in the server's memory** (about 50k): 266KB, the
+     same for every press, read fresh on every request; refreshed when a
+     ride is added. Saves 60 to 110ms a press and about a third of what each
+     press pulls from the database.
+   Recommended order: the first, then the second.
+4. **Protect the data** (cheap, both read-only to start):
+   - **Backups** (about 15k): the free plan has none. A read-only
+     `pg_dump` of the database (about 90MB) to Julian's PC, scripted.
+   - **Supabase's security warnings** (about 20k to check and fix):
+     Advisors lists "RLS Disabled in Public" on `segments`,
+     `session_segment_matches`, `segment_elevation_buckets` and
+     `segment_dem_elevations`, among 11 issues. With row level security
+     off, Supabase's REST API may let anyone with the project's anon key
+     read or change those tables. Unchecked: whether `anon` has grants on
+     them (a read-only query settles it). Enabling RLS should not touch the
+     backend, which connects as the tables' owner; verify that before any
+     change, and the change itself is a production write on Julian's OK.
+5. **Whether the card's numbers are right** (about 60k): a check against
+   something independent, which nothing does yet. The one comparison so far
+   put our climb 38% below a terrain model's on 69 Ladders and Gold Camp
+   Road, unexplained ("2. **App**", "Open: whether the card's numbers are
+   right").
+6. **Grade ride 89** (about 20k, read-only): it landed 2026-10-11 and is
+   still ungraded: `npm run verify-barometer` in `backend/`; a pass is
+   `alive` ("HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED"). No ride has
+   landed since.
+7. **The numbered items below**: the zero-run census first.
+
+**Free plan limits to keep in mind.** Supabase pauses a free project after
+about a week with no activity (restore it from the dashboard). Its monthly
+egress allowance (5GB when last known; the organisation's Usage page has the
+real cap): each path request pulls about 0.75 to 0.95MB from the database,
+and a press with holds makes 1 to 3 requests. Pressing a lot is fine for the
+database itself, which sits about 98% idle.
 
 Item 1, the zero-run census (read-only, about 40k), can run any time, and it
 also sizes the gaps the feature has to bridge. Items 2 to 5 follow.
@@ -654,15 +693,17 @@ fix), saved selections, a climb finder.
 `option-a-state`, `per-pass-slopes` and `option-a-live` are merged and safe
 to delete, and so are `press-hold-plan`, `path-route`, `path-route-live`,
 `notes-after-phase1`, `press-hold-app`, `apk-install-notes`, `lag-notes`,
-`path-lag-fix`, `lag-trace-notes`, `lag-swap-notes` and `profile-scrub`.
+`path-lag-fix`, `lag-trace-notes`, `lag-swap-notes`, `profile-scrub` and
+`next-steps-notes`.
 **Nothing in flight** but an install: the profile scrub is merged
-(`04484a4`, app only) and its APK built, not yet on the phone.
+(`54c4365`, app only) and its APK built, not yet on the phone ("NEXT, IN
+ORDER", step 1).
 `path-lag-fix` is merged (`9a0058a`) and live as
 `93563c1c` (builtAt 2026-10-18T18:51:27.630Z); the lag's last case waits on
 Julian ("2. **App**", "Next", step 1). No running job.
 The phone runs the release APK built from `d7204c3` (installed 2026-10-18 at
 02:00).
-Last code change `04484a4` (2026-10-20): the profile scrub, app only,
+Last code change `54c4365` (2026-10-20): the profile scrub, app only,
 nothing deployed. Before it, `9a0058a` (2026-10-18): the pool keeps four connections
 through any pause, opened as the server starts; deployed. Before it, `ff76d26`
 (2026-10-18): a trace on every request, `eval:latency` judging every request,
