@@ -25,9 +25,10 @@ far", the functionality "feels great". The lag is mostly fixed and live
 press from this PC takes about 0.45s warm and 0.47s after 40s quiet, against
 1.4s and 3.0s before. What is left of it is the free database going cold
 (below). The profile scrub (drag the card's height profile, a dot follows on
-the map) is merged (`54c4365`, app only) and **on the phone since
-2026-10-21**, waiting on Julian's three checks (step 1). Production's server
-is unchanged since 2026-10-18.
+the map) is on the phone, and Julian on 2026-10-21: "it works", with one
+change, made the same day (`17ae9d0`, on the phone since 19:21): the path's
+start and end are reached before the finger gets to the screen's edge (step
+1). Production's server is unchanged since 2026-10-18.
 
 **Julian's decision, 2026-10-20: no Supabase Pro yet.** Pro is $25 a month;
 he will take it when the app opens to more users. Until then he is the only
@@ -35,13 +36,17 @@ user, testing, and the lag's last case is managed on the free plan (step 4).
 
 **Next, in order:**
 
-1. **Julian checks the profile scrub on the phone** (free). Installed
-   2026-10-21 18:47 (phone clock) from `54c4365`, no ride recording; the
-   APK's bundle matches the commit file by file, and a cold start is clean
-   (no crash, no app error). Three things only the phone can show: the dot
-   follows the finger smoothly; a drag starting on the profile's outermost
-   2 to 3mm is not taken as Android's back gesture; the readout fits with a
-   large font size set. Details: "2. **App**", "The profile scrub".
+1. **Julian tries the scrub's new reach** (free). His verdict on the
+   first install, 2026-10-21: "it works", the only change wanted that
+   "you have to scroll all the way to the edge of the screen to reach the
+   end or the beginning of the trail". Now (`17ae9d0`, installed 19:21
+   phone clock, cold start clean) the start is read with the finger 60dp
+   (9.6mm) from the screen's left and the end 60dp from its right, clear of
+   Android's 29.7dp back-gesture strip; near the ends the profile's cursor
+   runs ahead of the finger by up to 36dp. If 60dp feels wrong, it is one
+   constant, `SCRUB_EDGE_REACH` in `mobile/src/services/profileScrub.ts`.
+   Not reported either way: the readout at a large font size. Details:
+   "2. **App**", "The profile scrub".
 2. **Three phase-2 behaviours never tried on the phone**, free, on a ride:
    hold just behind the start of a selection (it leads in); grow a selection
    to a fork and look at the branches; hold the very end of a selection (it
@@ -485,11 +490,24 @@ cutting the path at a grown distance.
      Both fixed (`04484a4`), the reproductions re-run; 23 mutants, 23
      killed. `eval:selection` gains a `scrub` check, judged without the
      scrub's code: live PASS, 16 of 16 presses. Merged; nothing deployed.
-     **Installed 2026-10-21** from `54c4365` (cold start clean). **To
-     finish, on the phone, Julian's checks:** that the dot follows the finger smoothly, that a drag starting on the
-     profile's outermost 2 to 3mm is not taken as Android's back gesture,
-     and that the readout fits at a large font size. Evidence: the
-     scratchpad of session `e24d4bb5`, `profile-scrub/`.
+     **Installed 2026-10-21** from `54c4365` (cold start clean). Julian:
+     "it works"; the one change asked for was the reach. **The reach,
+     `17ae9d0`, 2026-10-21.** The profile's edges were 24dp from the
+     screen's sides (the card's 10dp margin and 14dp padding), 3.9mm on his
+     Pixel 10 Pro (1080px at density 420, so 411.4dp; 0.160mm a dp), with
+     the fingertip at the glass's edge and over the back-gesture strip
+     (78px, 29.7dp, from `dumpsys window`). Now `scrubBand` reads the
+     path's ends 60dp from the window's sides (`SCRUB_EDGE_REACH`): each
+     profile edge brought in to 60dp when nearer, a profile already clear
+     not stretched, the profile's edges when the window is unmeasured or too
+     narrow. The card passes `useWindowDimensions`' width. `eval:selection`'s
+     scrub check sweeps a finger across the phone every 0.5dp on each press;
+     replay PASS 16 of 16. 13 mutants, 13 killed (the old 24dp reach reads
+     "24.5dp from the left reads 6.5m in"). One cold review: PASS, three low
+     findings fixed, its two surviving mutants killed by a test where the
+     fallback and the band differ. Installed 19:21 (phone clock), cold start
+     clean. Evidence: the scratchpad of session `e24d4bb5`,
+     `profile-scrub/` (`critique-reach/`, `mutants-reach-2.out.txt`).
    - **Next, in order.**
      1. **The lag: mostly fixed, live 2026-10-18; the rest waits on Julian.**
         - **Cause, found in three passes.** (a) The backend ran in Railway's
@@ -701,17 +719,18 @@ fix), saved selections, a climb finder.
 to delete, and so are `press-hold-plan`, `path-route`, `path-route-live`,
 `notes-after-phase1`, `press-hold-app`, `apk-install-notes`, `lag-notes`,
 `path-lag-fix`, `lag-trace-notes`, `lag-swap-notes`, `profile-scrub`,
-`next-steps-notes` and `install-profile-scrub`.
-**Nothing in flight** but Julian's checks: the profile scrub is merged
-(`54c4365`, app only) and on the phone since 2026-10-21 ("NEXT, IN ORDER",
-step 1).
+`next-steps-notes`, `install-profile-scrub` and `scrub-reach-inset`.
+**Nothing in flight** but Julian's try of the scrub's reach (`17ae9d0`,
+app only, on the phone since 2026-10-21; "NEXT, IN ORDER", step 1).
 `path-lag-fix` is merged (`9a0058a`) and live as
 `93563c1c` (builtAt 2026-10-18T18:51:27.630Z); the lag's last case waits on
 Julian ("2. **App**", "Next", step 1). No running job.
-The phone runs the release APK built from `d7204c3` (installed 2026-10-18 at
-02:00).
-Last code change `54c4365` (2026-10-20): the profile scrub, app only,
-nothing deployed. Before it, `9a0058a` (2026-10-18): the pool keeps four connections
+The phone runs the release APK built from `17ae9d0` (installed 2026-10-21 at
+19:21, phone clock).
+Last code change `17ae9d0` (2026-10-21): the scrub's ends reached 60dp
+short of the screen's sides, app only, nothing deployed. Before it,
+`54c4365` (2026-10-20): the profile scrub, app only, nothing deployed.
+Before it, `9a0058a` (2026-10-18): the pool keeps four connections
 through any pause, opened as the server starts; deployed. Before it, `ff76d26`
 (2026-10-18): a trace on every request, `eval:latency` judging every request,
 and `split:access-log`; deployed. Before it, `bab6a91` (2026-10-18): the
