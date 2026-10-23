@@ -3,7 +3,7 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-10-21.
+Last updated 2026-10-22.
 
 **Read the four blocks below before anything else.** They are the authoritative
 queue and state. Everything after them is evidence and history: where a section
@@ -19,7 +19,7 @@ items 1 to 4).
 
 **Where things stand.** Press and hold on a segment is shipped: phase 1, the
 server (`GET /segments/path`, 2026-10-17), and phase 2, the app (2026-10-18,
-APK from `d7204c3` on the phone). Julian on 2026-10-18: "pretty amazing so
+first on the phone from `d7204c3`). Julian on 2026-10-18: "pretty amazing so
 far", the functionality "feels great". The lag is mostly fixed and live
 (deployment `93563c1c`, `9a0058a`, builtAt 2026-10-18T18:51:27.630Z): a
 press from this PC takes about 0.45s warm and 0.47s after 40s quiet, against
@@ -51,16 +51,20 @@ user, testing, and the lag's last case is managed on the free plan (step 4).
    hold just behind the start of a selection (it leads in); grow a selection
    to a fork and look at the branches; hold the very end of a selection (it
    carries on).
-3. **A line the map may not draw** (about 15k, read-only). On both starts after
-   the install, warm and cold, the app logs `MapLibre Native [WARN] ... Invalid geometry
-   in line layer` (`adb logcat`, tag `ReactNativeJS`) about 130ms after
-   "Running main", before any press. MapLibre skips a feature it calls
-   invalid, so some line may be missing from the map. Not the profile
-   scrub: its only map change is one circle layer on its own source. Seen
-   first 2026-10-21; whether older APKs did it is unknown, since the phone's
-   log keeps only minutes. To find it: list the line features the map loads
-   at start and find the one MapLibre rejects (a guess, unverified: a line
-   with fewer than two distinct points).
+3. **A line the map may not draw** (about 15k, read-only). On the two
+   starts after the 2026-10-21 install of `54c4365`, warm and cold, the app
+   logged `MapLibre Native [WARN] ... Invalid geometry in line layer`
+   (`adb logcat`, tag `ReactNativeJS`) about 130ms after "Running main",
+   before any press. MapLibre skips a feature it calls invalid, so some line
+   may be missing from the map. Not the profile scrub: its only map change
+   is one circle layer on its own source. The cold start after the
+   `17ae9d0` install logged no such line in its first 4s; whether the
+   screen was on, so that the map drew at all, is unknown. Whether older
+   APKs did it is unknown too, since the phone's log keeps only minutes. To
+   find it: start the app with the screen on and read `logcat` (once more
+   whether it happens), then list the line features the map loads at start
+   and find the one MapLibre rejects (a guess, unverified: a line with fewer
+   than two distinct points).
 4. **The lag's last case, on the free plan.** The database runs on Nano
    compute (`t3a.nano`, 0.5GB of RAM) with about 400MB in swap, so after
    about 6 minutes with no press the first press takes 0.8s on the server
@@ -76,7 +80,12 @@ user, testing, and the lag's last case is managed on the free plan (step 4).
      same for every press, read fresh on every request; refreshed when a
      ride is added. Saves 60 to 110ms a press and about a third of what each
      press pulls from the database.
-   Recommended order: the first, then the second.
+   Recommended order: the first, then the second. Before measuring,
+   Julian runs `railway login` in `backend/` (it opens a browser): the
+   CLI's login had lapsed by 2026-10-21 ("Unauthorized"), and `npm run
+   split:access-log` reads `railway logs --json`. Deploys need no CLI (a
+   push to `main` touching `backend/` deploys), and `/health`'s builtAt
+   verifies one.
 5. **Protect the data** (cheap, both read-only to start):
    - **Backups** (about 15k): the free plan has none. A read-only
      `pg_dump` of the database (about 90MB) to Julian's PC, scripted.
@@ -849,7 +858,7 @@ Where to start depends on what you came for:
 | change anything in the backend | "Bugs already paid for" — 33 failure modes, each one paid for once already |
 | run a measurement before changing anything | `npm run` in `backend/`: `find-holes`, `diagnose-holes`, `trace-passes`, `eval:coverage`, `eval:tangent`, `eval:heading`, `eval:heading-lines`, `diagnose-spikes`, `eval:spikes`, `verify-rebuild`, `eval:linker`, `eval:query-types` |
 | touch the importer or the matcher | "Operational gotchas", then the pipeline sections |
-| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file: grade ride 89 first (about 20k), then the press-and-hold feature ("Press and hold on a segment, designed 2026-10-17"): phase 1, the server, is live; phase 2, the app, shipped 2026-10-18; the profile scrub merged 2026-10-20, its APK not yet installed; the lag mostly fixed and live (the backend in `us-west2`, a trace on every request, four connections kept); the rest, the database (free Nano compute, 0.5GB) living in swap, waits on Julian's choice of fix; then whether the numbers are right |
+| pick up the next piece of work | **"NEXT, IN ORDER"** at the top of this file, the only copy of the queue (this row used to repeat it, and went stale) |
 | understand why there is no drift correction | "What the drift anchor taught us" |
 | see the branch and deploy state | "Where things stand", immediately below |
 
