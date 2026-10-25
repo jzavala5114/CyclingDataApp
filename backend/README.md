@@ -49,28 +49,67 @@ Supabase's free plan keeps no backups, so this PC does:
 npm run backup
 ```
 
-It takes about a minute and writes `cyclingdataapp-<time>.dump` (pg_dump's own
-compressed format, about 10MB) and a manifest beside it, `<file>.json`, into
-`Documents/CyclingDataApp-backups` (`BACKUP_DIR` to change it; never inside this
-repository, since a backup is every ride's GPS fixes). It only reads
-production: one read-only transaction holds a snapshot while every table's
-rows and a fingerprint of its contents are measured and pg_dump copies that
-same snapshot, over an encrypted connection. The archive is then read back,
-every table's rows counted out of it, before it is named as a backup. Last it
-runs the restore test, which proves the archive restores:
+It takes about a minute and writes an archive (pg_dump's own compressed
+format, about 10MB) and a manifest beside it, the same name plus `.json`, into
+`Documents/CyclingDataApp-backups` (`BACKUP_DIR` to change it; never inside
+this repository, since a backup is every ride's GPS fixes). It only reads
+production, over two connections, both encrypted (TLS required; the
+certificate is not checked yet, which waits on the same fix for `pool.ts`).
+One read-only transaction holds a snapshot while every table's rows, a
+fingerprint of its contents and its definition (columns, constraints,
+indexes, triggers, policies, row security) are measured, and pg_dump copies
+that same snapshot. Sequences are the one thing a snapshot does not hold:
+pg_dump reads them a moment later, so a ride saving meanwhile leaves them
+ahead of the rows, never behind, which is all a restore needs. The manifest
+records the values the archive holds, and the largest id each one numbers.
+
+Before it dumps anything it refuses, writing nothing, a database it could not
+hold all of. It copies the public schema, so it fails when:
+
+- public holds no app tables (a new, empty project, say);
+- a table `src/db/schema.sql` creates is missing;
+- a schema other than public and Supabase's own holds tables;
+- a table the last backup held is gone. If it was dropped on purpose, say
+  so: `npm run backup -- --dropped=<table>`.
+
+The archive is then read back, every table's rows and every sequence's value
+counted out of it, and kept as `cyclingdataapp-<time>.dump.untested`. Last it
+runs the restore test, whose result renames it:
+
+| file | what it is |
+|---|---|
+| `cyclingdataapp-<time>.dump` | a backup: its restore test passed |
+| `cyclingdataapp-<time>.dump.untested` | not yet tested; `npm run backup -- --no-restore-test` leaves it so |
+| `cyclingdataapp-<time>.dump.failed` | not a backup: its archive check failed (the backup's output says why; no manifest) or its restore test did (the manifest's `restoreTests` says why) |
+| `cyclingdataapp-<time>.dump.partial` | not a backup: pg_dump stopped partway (it failed, or the backup was stopped); safe to delete |
+
+Only a `.dump` is a backup. The restore test on its own:
 
 ```
-npm run backup:restore-test -- [archive]     # default: the newest backup
+npm run backup:restore-test -- [archive]     # default: the newest .dump
 ```
 
-That starts a throwaway PostgreSQL on this PC (a temp folder, 127.0.0.1 only),
-restores the archive into it, measures every table there the same way, checks
-rows, fingerprints and sequences against the manifest, records the result in
-the manifest, then stops that server and deletes its folder. It runs with no
-database address in its environment and refuses to start if one is set, so it
-can never reach production. `PASS` is the only sign a backup is good; the
-scripts live in `src/scripts/backupDatabase.ts`, `restoreDrill.ts` and
-`backupFormat.ts`.
+That starts a throwaway PostgreSQL on this PC (a temp folder, 127.0.0.1 only,
+a random password), restores the archive into it, measures every table there
+the same way, checks rows, fingerprints, definitions and sequence values
+against the manifest, then stops that server and deletes its folder. Each
+result joins the manifest's `restoreTests`, oldest first, and an untested or
+failed archive is renamed by it. A failure after a pass leaves a `.dump` a
+backup, recorded beside the pass, unless the archive's bytes have changed
+since; then it becomes `.dump.failed`. It runs with no database address in
+its environment and refuses to start if one is set, and drops the shell's
+`PG*` settings, so it can never reach production. Its folder,
+`%TEMP%/cyclingdataapp-throwaway-restore-test-*`, is deleted on Ctrl-C or a
+closed window too. A run killed outright (Task Manager, a crash) leaves its
+server running behind its password, and the next restore test stops it and
+deletes the folder.
+
+`npm run eval:backup` runs both for real, in each situation the review of
+2026-10-25 broke them, against a stand-in for production built from the newest
+backup (TLS on, a certificate from Git for Windows' openssl). It takes about
+two minutes and reaches no database but its stand-in. The scripts are in
+`src/scripts`: `backupDatabase.ts`, `restoreDrill.ts`, `throwawayServer.ts`,
+`backupFormat.ts`, `evalBackup.ts`.
 
 **The tools, once per PC.** pg_dump must be the server's major version (17)
 or newer, and the restore test needs a PostgreSQL server with PostGIS. Neither
@@ -100,12 +139,14 @@ download from EDB's own server. Set up this way 2026-10-25: 2,995 files,
 417MB (this PC's copy also keeps the two projects' licence files).
 
 **Restoring for real** is never scripted: it writes to a database, and which
-one is a decision. Into a new, empty database (a new Supabase project, say),
-the way the restore test does it:
+one is a decision. Take the newest `.dump` (its manifest's `restoreTests` holds
+a pass). Into a new, empty database (a new Supabase project, say), the way the
+restore test does it, from Git Bash (the tools are not on PATH):
 
 ```
-pg_restore --list <archive> | grep -v -E '^[0-9]+; +[0-9]+ +[0-9]+ +SCHEMA - public ' > restore.list
-pg_restore --no-owner --no-privileges --exit-on-error --use-list=restore.list --dbname=<new database's URL> <archive>
+PG="$LOCALAPPDATA/CyclingDataApp/pgsql-17/bin"
+"$PG/pg_restore.exe" --list "<archive>" | grep -v -E '^[0-9]+; +[0-9]+ +[0-9]+ +SCHEMA - public ' > restore.list
+"$PG/pg_restore.exe" --no-owner --no-privileges --exit-on-error --use-list=restore.list --dbname="<new database's URL>" "<archive>"
 ```
 
 The list leaves out `CREATE SCHEMA public`, which every database already has.
@@ -121,11 +162,13 @@ npm run eval:smoothing  # eval: the zero-phase elevation smoother
 npm run eval:linker     # eval: what folding a sidewalk does to the drawn map
 npm run eval:query-types  # eval: what every query returns, against the type the code declares
 npm run eval:path       # eval: how a press-and-hold selection grows, on the stored rides
+npm run eval:backup     # eval: the backup and its restore test, against a stand-in for production
 ```
 
 `npm test` runs Node's built-in test runner through tsx. It needs nothing but
-the source, so it is safe on any checkout. All five evals read the live
-database and write nothing.
+the source, so it is safe on any checkout. The first five evals read the live
+database and write nothing; `eval:backup` reaches no database but the stand-in
+it builds and deletes ("Backups").
 
 `npm run eval:path` scores the fork rule of `GET /segments/path`
 leave-one-ride-out: at every fork a stored ride passed, does the rule pick

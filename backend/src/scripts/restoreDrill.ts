@@ -1,94 +1,87 @@
-// npm run backup:restore-test -- [archive]   (default: the newest in BACKUP_DIR)
+// npm run backup:restore-test -- [archive]   (default: the newest backup)
 //
 // The backup's restore test: proves an archive from npm run backup
 // (backupDatabase.ts, which runs this after every backup) restores into an
-// empty database and gives back what was measured. It creates a throwaway
-// PostgreSQL on this PC, in a new folder under the system's temp folder,
-// listening only on 127.0.0.1 on a free port; restores the archive into it
-// with pg_restore; measures every table there exactly as production was
-// measured (backupFormat.ts); compares rows, fingerprints and sequences with
-// the archive's manifest; then stops that PostgreSQL and deletes its folder.
+// empty database and gives back what was measured. It starts a throwaway
+// PostgreSQL on this PC (throwawayServer.ts: a temp folder, 127.0.0.1 only, a
+// random password); restores the archive into it with pg_restore; measures
+// every table there exactly as production was measured (backupFormat.ts);
+// compares rows, fingerprints, table definitions and sequence values with the
+// archive's manifest; then stops that PostgreSQL and deletes its folder.
+//
+// Its result joins the manifest's history of restore tests, and the archive's
+// name follows it (archiveState, archiveFile): .dump.untested becomes .dump
+// when the test passes and .dump.failed when it fails, its manifest renamed
+// with it. A later failure leaves a .dump a .dump, in the history, unless the
+// archive's bytes have changed since it passed. With no archive named, it
+// tests the newest .dump whose manifest says it passed.
 //
 // It never touches production. It loads no .env, refuses to start when
-// DATABASE_URL is set at all, and gives pool.ts the throwaway database's
-// address only after checking, through that connection, that the server
-// answering is the one whose data folder it just made. pg_restore's host is
-// fixed at 127.0.0.1 (restoreArgs).
-import { spawn } from "node:child_process";
+// DATABASE_URL is set at all, drops every PG* setting from its environment,
+// and gives pool.ts the throwaway database's address only after checking,
+// through that connection, that the server answering is the one whose data
+// folder it just made. pg_restore's host is fixed at 127.0.0.1 (restoreArgs).
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import net from "node:net";
-import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  archiveFile,
+  archiveState,
   backupDir,
   childEnv,
   compareMeasures,
+  compareSchema,
+  dropLibpqSettings,
+  dumpFileOf,
   exe,
-  isInside,
   measureDatabase,
+  readManifest,
   restorableList,
   restoreArgs,
+  samePath,
   toolsDir,
   type Manifest,
   type RestoreTest,
 } from "./backupFormat.js";
+import { run, startThrowaway, type Throwaway } from "./throwawayServer.js";
 
-const WORK_PREFIX = "cyclingdataapp-restore-test-";
-
-/** Runs a tool to the end, resolving with its stdout; rejects on a non-zero exit, with the end of what it said, or on the timeout. */
-function run(file: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs: number, quiet = false): Promise<string> {
-  return new Promise((resolve, reject) => {
-    // pg_ctl's server keeps running after pg_ctl exits; were it handed this
-    // process's pipes it would hold them open, so pg_ctl gets none (quiet).
-    const child = spawn(file, args, { env, windowsHide: true, stdio: quiet ? "ignore" : ["ignore", "pipe", "pipe"] });
-    let out = "";
-    let err = "";
-    child.stdout?.on("data", (chunk: Buffer) => (out += chunk.toString()));
-    child.stderr?.on("data", (chunk: Buffer) => (err = (err + chunk.toString()).slice(-4000)));
-    const timer = setTimeout(() => child.kill(), timeoutMs);
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on("close", (code, signal) => {
-      clearTimeout(timer);
-      if (code === 0) resolve(out);
-      else reject(new Error(`${path.basename(file)} ${signal ? `was stopped after ${timeoutMs / 1000}s` : `exited ${code}`}: ${err.trim()}`));
-    });
-  });
-}
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const { port } = server.address() as net.AddressInfo;
-      server.close(() => resolve(port));
-    });
-  });
-}
-
-/** The newest archive in the backup folder: names sort by time. */
+/** The newest backup in the folder: the newest .dump whose manifest says it passed (names sort by time). */
 export function newestArchive(dir: string): string {
-  const archives = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => /^cyclingdataapp-.*\.dump$/.test(f)).sort() : [];
-  if (archives.length === 0) throw new Error(`no backup in ${dir}: npm run backup makes one`);
-  return path.join(dir, archives[archives.length - 1]!);
-}
-
-/** Whether two paths name one folder, as PostgreSQL and Node each write it. */
-export function samePath(a: string, b: string): boolean {
-  return isInside(a, b) && isInside(b, a);
-}
-
-/** Deletes the test's own folder, and only that: one under the temp folder, with the test's prefix. */
-export function removeWork(work: string, tmp = os.tmpdir()): void {
-  if (!isInside(work, tmp) || samePath(work, tmp) || !path.basename(work).startsWith(WORK_PREFIX)) {
-    throw new Error(`refusing to delete ${work}: not a restore test's own folder`);
+  const dumps = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => /^cyclingdataapp-.*\.dump$/.test(f)).sort().reverse() : [];
+  for (const file of dumps) {
+    try {
+      if (archiveState(readManifest(fs.readFileSync(path.join(dir, `${file}.json`), "utf8"))) === "passed") return path.join(dir, file);
+    } catch {
+      // No manifest, or not one: not a backup.
+    }
   }
-  fs.rmSync(work, { recursive: true, force: true });
+  throw new Error(`no backup in ${dir}: npm run backup makes one`);
+}
+
+/**
+ * Adds a restore test's result to its archive's manifest, and renames archive
+ * and manifest to what the history now makes them (archiveState): the new
+ * manifest is written under its new name first, then the archive moves, then
+ * the old manifest goes, so a stop between any two steps leaves the archive
+ * with a manifest beside it. A name already taken is left alone, and the
+ * archive keeps its own. Returns where the archive is now.
+ */
+export function recordResult(archive: string, manifest: Manifest, result: RestoreTest): string {
+  const restoreTests = [...manifest.restoreTests, result];
+  const dumpFile = dumpFileOf(path.basename(archive));
+  const state = archiveState({ sha256: manifest.sha256, restoreTests });
+  const target = dumpFile === null ? archive : path.join(path.dirname(archive), archiveFile(dumpFile, state));
+  const taken = !samePath(target, archive) && (fs.existsSync(target) || fs.existsSync(`${target}.json`));
+  if (taken) console.log(`${target} exists, so the archive keeps its name, ${path.basename(archive)}`);
+  const final = taken ? archive : target;
+  fs.writeFileSync(`${final}.json.tmp`, `${JSON.stringify({ ...manifest, file: path.basename(final), restoreTests }, null, 2)}\n`);
+  fs.renameSync(`${final}.json.tmp`, `${final}.json`);
+  if (!samePath(final, archive)) {
+    fs.renameSync(archive, final);
+    fs.rmSync(`${archive}.json`, { force: true });
+  }
+  return final;
 }
 
 async function sha256(file: string): Promise<string> {
@@ -97,55 +90,56 @@ async function sha256(file: string): Promise<string> {
   return hash.digest("hex");
 }
 
-async function main(): Promise<RestoreTest> {
+async function main(): Promise<{ archive: string; result: RestoreTest }> {
   if (process.env.DATABASE_URL !== undefined) {
     throw new Error("DATABASE_URL is set: the restore test runs with no database address in its environment, so it can never reach production");
   }
+  const bin = toolsDir();
+  const archive = path.resolve(process.argv[2] ?? newestArchive(backupDir()));
+  // pool.ts's node-postgres reads PGSSLMODE and PGOPTIONS from here: none of
+  // the shell's reach the throwaway's connection, which is its URL alone.
+  dropLibpqSettings(process.env);
   const at = new Date().toISOString();
   const started = Date.now();
-  const archive = path.resolve(process.argv[2] ?? newestArchive(backupDir()));
-  const manifest = JSON.parse(fs.readFileSync(`${archive}.json`, "utf8")) as Manifest;
+  const manifest = readManifest(fs.readFileSync(`${archive}.json`, "utf8"));
   const problems: string[] = [];
   const digest = await sha256(archive);
   if (digest !== manifest.sha256) problems.push(`the archive's sha256 is ${digest}; its manifest says ${manifest.sha256}`);
 
-  const bin = toolsDir();
   const tool = (name: string) => {
     const file = path.join(bin, exe(name));
     if (!fs.existsSync(file)) throw new Error(`${file} not found (README, "Backups")`);
     return file;
   };
-  const [initdb, pgCtl, pgRestore] = [tool("initdb"), tool("pg_ctl"), tool("pg_restore")];
-  tool("postgres");
+  const pgRestore = tool("pg_restore");
+  for (const name of ["initdb", "pg_ctl", "postgres"]) tool(name);
   if (manifest.server.postgis && !fs.existsSync(path.join(bin, "..", "share", "extension", "postgis.control"))) {
     throw new Error(`PostGIS is not in ${path.resolve(bin, "..")} (README, "Backups")`);
   }
 
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), WORK_PREFIX));
-  const data = path.join(work, "data");
-  const env = childEnv(process.env, {});
-  let running = false;
+  let server: Throwaway | null = null;
   try {
-    await run(initdb, ["-D", data, "-U", "restore_test", "-A", "trust", "-E", "UTF8", "--no-locale", "--no-sync"], env, 120_000);
-    const port = await freePort();
-    const options = `-p ${port} -c listen_addresses=127.0.0.1 -c fsync=off -c full_page_writes=off`;
-    await run(pgCtl, ["-D", data, "-l", path.join(work, "server.log"), "-w", "-t", "60", "-o", options, "start"], env, 90_000, true);
-    running = true;
-    console.log(`a throwaway PostgreSQL in ${work}, on 127.0.0.1:${port}`);
-
-    process.env.DATABASE_URL = `postgresql://restore_test@127.0.0.1:${port}/postgres`;
+    server = await startThrowaway({ bin, purpose: "restore-test", user: "restore_test" });
+    console.log(`a throwaway PostgreSQL in ${server.work}, on 127.0.0.1:${server.port}`);
+    process.env.DATABASE_URL = server.url;
     const { pool } = await import("../db/pool.js");
     try {
       const { rows } = await pool.query<{ dir: string }>("select current_setting('data_directory') as dir");
-      if (!samePath(rows[0]!.dir, data)) throw new Error(`the server on 127.0.0.1:${port} keeps its data in ${rows[0]!.dir}, not the throwaway ${data}`);
-      const list = path.join(work, "restore.list");
+      if (!samePath(rows[0]!.dir, server.data)) {
+        throw new Error(`the server on 127.0.0.1:${server.port} keeps its data in ${rows[0]!.dir}, not the throwaway ${server.data}`);
+      }
+      const env = childEnv(process.env, server.env);
+      const list = path.join(server.work, "restore.list");
       fs.writeFileSync(list, restorableList(await run(pgRestore, ["--list", archive], env, 120_000)));
-      await run(pgRestore, restoreArgs(port, archive, list), childEnv(process.env, { PGSSLMODE: "disable" }), 15 * 60_000);
+      await run(pgRestore, restoreArgs(server.port, archive, list), env, 15 * 60_000);
       console.log(`restored in ${((Date.now() - started) / 1000).toFixed(1)}s; measuring`);
       const client = await pool.connect();
       try {
         await client.query("begin transaction isolation level repeatable read read only");
-        problems.push(...compareMeasures(manifest, await measureDatabase(client)));
+        const found = await measureDatabase(client);
+        problems.push(...compareMeasures(manifest, found));
+        if (manifest.schema) problems.push(...compareSchema(manifest.schema, found.schema));
+        else console.log("table definitions not compared: this manifest is from before they were recorded (2026-10-25)");
       } finally {
         await client.query("rollback").catch(() => undefined);
         client.release();
@@ -156,28 +150,21 @@ async function main(): Promise<RestoreTest> {
   } catch (err) {
     problems.push(err instanceof Error ? err.message : String(err));
   } finally {
-    if (running) await run(pgCtl, ["-D", data, "-m", "fast", "-w", "stop"], env, 60_000, true).catch((err) => problems.push(`stopping it: ${err instanceof Error ? err.message : err}`));
-    try {
-      removeWork(work);
-    } catch (err) {
-      problems.push(`cleaning up: ${err instanceof Error ? err.message : err}`);
-    }
+    if (server) problems.push(...(await server.stop()));
   }
-  const result: RestoreTest = { passed: problems.length === 0, at, problems, seconds: Math.round((Date.now() - started) / 100) / 10 };
-  // The manifest says whether its archive is proven, so the latest test's
-  // result goes in it: written beside it, then renamed over it.
-  const manifestFile = `${archive}.json`;
-  fs.writeFileSync(`${manifestFile}.tmp`, `${JSON.stringify({ ...manifest, restoreTest: result }, null, 2)}\n`);
-  fs.renameSync(`${manifestFile}.tmp`, manifestFile);
-  return result;
+  const result: RestoreTest = { passed: problems.length === 0, at, problems, seconds: Math.round((Date.now() - started) / 100) / 10, sha256: digest };
+  return { archive: recordResult(archive, manifest, result), result };
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) {
   main().then(
-    (result) => {
+    ({ archive, result }) => {
       for (const problem of result.problems) console.log(`problem: ${problem}`);
-      console.log(result.passed ? `PASS in ${result.seconds}s` : `FAIL in ${result.seconds}s`);
-      console.log(`RESULT ${JSON.stringify(result)}`);
+      const stillABackup = dumpFileOf(path.basename(archive)) === path.basename(archive);
+      if (result.passed) console.log(`PASS in ${result.seconds}s: ${archive} is a backup`);
+      else if (stillABackup) console.log(`FAIL in ${result.seconds}s; ${archive} passed before, with these same bytes, so it is still a backup`);
+      else console.log(`FAIL in ${result.seconds}s: ${archive} is not a backup`);
+      console.log(`RESULT ${JSON.stringify({ archive, result })}`);
       process.exit(result.passed ? 0 : 1);
     },
     (err) => {

@@ -17,6 +17,7 @@
     "split:access-log": "tsx src/scripts/splitAccessLog.ts",
     "backup": "tsx src/scripts/backupDatabase.ts",
     "backup:restore-test": "tsx src/scripts/restoreDrill.ts",
+    "eval:backup": "tsx src/scripts/evalBackup.ts",
     "eval:smoothing": "tsx src/scripts/evalSmoothingLag.ts",
     "eval:linker": "tsx src/scripts/evalLinkerFold.ts",
     "rebuild-model": "tsx src/scripts/rebuildModel.ts",
