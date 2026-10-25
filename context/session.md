@@ -3,7 +3,7 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-10-22.
+Last updated 2026-10-25.
 
 **Read the four blocks below before anything else.** They are the authoritative
 queue and state. Everything after them is evidence and history: where a section
@@ -86,18 +86,58 @@ user, testing, and the lag's last case is managed on the free plan (step 4).
    split:access-log` reads `railway logs --json`. Deploys need no CLI (a
    push to `main` touching `backend/` deploys), and `/health`'s builtAt
    verifies one.
-5. **Protect the data** (cheap, both read-only to start):
+5. **Protect the data**:
    - **Backups** (about 15k): the free plan has none. A read-only
      `pg_dump` of the database (about 90MB) to Julian's PC, scripted.
-   - **Supabase's security warnings** (about 20k to check and fix):
-     Advisors lists "RLS Disabled in Public" on `segments`,
-     `session_segment_matches`, `segment_elevation_buckets` and
-     `segment_dem_elevations`, among 11 issues. With row level security
-     off, Supabase's REST API may let anyone with the project's anon key
-     read or change those tables. Unchecked: whether `anon` has grants on
-     them (a read-only query settles it). Enabling RLS should not touch the
-     backend, which connects as the tables' owner; verify that before any
-     change, and the change itself is a production write on Julian's OK.
+   - **Supabase's security warnings: real, unused, checked 2026-10-25
+     read-only; the fix waits on Julian's OK** (about 60k with its test and
+     check). Supabase also emails them ("Issues as of 03 Oct 2026").
+     - **What they are.** Supabase's own rules (splinter `0013` and
+       `0023` from github.com/supabase/splinter, run read-only against the
+       database) find 11. "RLS Disabled in Public": the app's 8 tables and
+       PostGIS's `spatial_ref_sys`.
+       "Sensitive Columns Exposed": `session_samples` and
+       `session_segment_matches`, matched only by the column name
+       `session_id` (its list means a login session; here it is a ride).
+       The dashboard counted 11 issues too (recorded 2026-10-21); that they
+       are the same 11 is unchecked.
+     - **Real all the same.** `anon` and `authenticated` may select,
+       insert, update, delete and truncate every app table and use its 4
+       sequences; no table has row level security or a policy; and
+       `postgres`'s default privileges grant the same on any table made
+       later. So anyone holding the project's anon key could read every
+       ride's fixes (`lat`, `lon`, `recorded_at`: where Julian's rides
+       start and end) through the Data API, and delete everything, with no
+       backup to restore. The anon key is public by design: Supabase
+       expects it in apps, with row level security doing the guarding.
+     - **Not used, nothing leaked.** `pg_stat_statements` (kept since
+       2026-08-12, 0 evicted) holds no statement run as `anon` or
+       `authenticated`; the API's role, `authenticator`, only loaded its
+       schema map (33 loads); `service_role`'s 39 calls look like the
+       dashboard's own (an API docs read and a Storage bucket list).
+       Auth has 0 users. No Supabase key or client library is anywhere in
+       the code or its git history; `backend/.env` holds only
+       `DATABASE_URL` and `PORT`. There is no GraphQL endpoint (`pg_graphql`
+       is not installed).
+     - **Safe to fix.** Every statement on an app table (784 statements,
+       454,962 calls, the live path route's 2,221 among them) runs as
+       `postgres`, the tables' owner, which also bypasses row level
+       security; enabling it changes nothing for the backend.
+     - **The fix, recommended.** (1) A migration: enable row level security
+       on the 8 tables, revoke `anon` and `authenticated`'s grants on
+       them and their sequences, and change `postgres`'s default
+       privileges so later tables and sequences get none. (2) A gate test
+       that every table a migration creates enables row level security. (3)
+       A read-only check running the two rules: PASS at no findings but
+       `spatial_ref_sys`. (4) `eval:latency` and `eval:selection` live
+       after it. (5) Julian turns the Data API off (Integrations, Data API,
+       Overview, "Enable Data API"; per Supabase's "Hardening the Data API"
+       page, no REST endpoint then answers, whatever the grants): the app
+       never uses it, and it also closes `spatial_ref_sys` and the 744
+       PostGIS functions the API offers `anon`. `spatial_ref_sys` stays
+       listed: `supabase_admin` owns it and made its grants, so
+       `postgres` can change neither. Scripts and output: the scratchpad
+       of session `e24d4bb5`, `supabase-rls/`.
 6. **Whether the card's numbers are right** (about 60k): a check against
    something independent, which nothing does yet. The one comparison so far
    put our climb 38% below a terrain model's on 69 Ladders and Gold Camp
