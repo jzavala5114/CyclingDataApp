@@ -87,8 +87,41 @@ user, testing, and the lag's last case is managed on the free plan (step 4).
    push to `main` touching `backend/` deploys), and `/health`'s builtAt
    verifies one.
 5. **Protect the data**:
-   - **Backups** (about 15k): the free plan has none. A read-only
-     `pg_dump` of the database (about 90MB) to Julian's PC, scripted.
+   - **Backups: built and proven 2026-10-25.** `npm run backup` in
+     `backend/` (README, "Backups"; `src/scripts/backupDatabase.ts`,
+     `restoreDrill.ts`, `backupFormat.ts`) takes about a minute and only
+     reads production: one read-only transaction exports a snapshot, every
+     app table's rows and fingerprint (md5 of its rows' sorted md5s) are
+     measured in it, and pg_dump (`--snapshot`, TLS) dumps that same
+     snapshot; the archive is read back (`pg_restore --list`, every row
+     counted out of it) before it is named a backup; then the restore test
+     restores it into a throwaway PostgreSQL on this PC (127.0.0.1, a temp
+     folder, deleted after) and compares every table's rows, fingerprint
+     and sequence with the manifest. Files: `Documents/CyclingDataApp-backups`,
+     never inside the repo. Two backups so far, 16:50 and 16:55 UTC, both
+     PASS: 9.5MB each, 8 tables, 136,780 rows (52 sessions, 36,266 fixes);
+     the two snapshots' fingerprints are identical, table by table. The
+     instrument says no: a manifest claiming one row fewer and other
+     contents FAILs naming both, and an archive with one byte flipped FAILs
+     on its sha256 and on pg_restore's own check. Tools: EDB's PostgreSQL
+     17.11 portable zip and the PostGIS 3.6.2 bundle, unpacked into
+     `%LOCALAPPDATA%/CyclingDataApp/pgsql-17` (417MB; nothing installed,
+     nothing running; EDB's programs are unsigned and its zip has no
+     published checksum, PostGIS's md5 matched). Not yet: a schedule (it
+     runs when Julian runs it), a copy off this PC, a restore into a real
+     Supabase project.
+   - **The backend's database connection is not encrypted** (found
+     2026-10-25, about 30k to fix, a deploy on Julian's OK). `pool.ts` sets
+     no `ssl` and `DATABASE_URL` has no `sslmode`, so node-postgres
+     connects in the clear: from this PC with the same settings, the socket
+     is a plain `Socket`, not TLS. The pooler logs in by SCRAM
+     (`require_auth`: `scram-sha-256` connects, `password` and `md5` are
+     refused), so the password never crosses in usable form; every query
+     and row does, GPS fixes included, between Railway and Supabase.
+     Unchecked: whether Railway's environment sets `PGSSLMODE` (the CLI is
+     logged out). The fix is `ssl` in `pool.ts` against Supabase's root
+     certificate, since its pooler's certificate is signed by Supabase's
+     own CA.
    - **Supabase's security warnings: real, unused, checked 2026-10-25
      read-only; the fix waits on Julian's OK** (about 60k with its test and
      check). Supabase also emails them ("Issues as of 03 Oct 2026").
@@ -138,6 +171,15 @@ user, testing, and the lag's last case is managed on the free plan (step 4).
        listed: `supabase_admin` owns it and made its grants, so
        `postgres` can change neither. Scripts and output: the scratchpad
        of session `e24d4bb5`, `supabase-rls/`.
+     - **Part (5) done 2026-10-25: the Data API is off.** Julian switched it
+       off at 16:31 UTC. Verified read-only: its process (PostgREST 14.5)
+       restarted at 16:31:35 and has not loaded its map of tables since
+       (each schema-cache statement still at 33 loads, as before the
+       switch); its new attempts read its settings and abort. It stays
+       connected, so a vanished connection is not the sign to look for.
+       The backend is untouched: the same four pooler connections, and
+       `GET /segments` answers 200 from the database. Parts (1) to (4),
+       the migration, still wait on Julian's OK.
 6. **Whether the card's numbers are right** (about 60k): a check against
    something independent, which nothing does yet. The one comparison so far
    put our climb 38% below a terrain model's on 69 Ladders and Gold Camp

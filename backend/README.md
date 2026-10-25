@@ -41,6 +41,77 @@ cyclingdataapp-backend`, which let the running server drift days behind `main`
 without any signal that it had. If `git push` does not move `builtAt`, that
 connection is the first thing to check.
 
+## Backups
+
+Supabase's free plan keeps no backups, so this PC does:
+
+```
+npm run backup
+```
+
+It takes about a minute and writes `cyclingdataapp-<time>.dump` (pg_dump's own
+compressed format, about 10MB) and a manifest beside it, `<file>.json`, into
+`Documents/CyclingDataApp-backups` (`BACKUP_DIR` to change it; never inside this
+repository, since a backup is every ride's GPS fixes). It only reads
+production: one read-only transaction holds a snapshot while every table's
+rows and a fingerprint of its contents are measured and pg_dump copies that
+same snapshot, over an encrypted connection. The archive is then read back,
+every table's rows counted out of it, before it is named as a backup. Last it
+runs the restore test, which proves the archive restores:
+
+```
+npm run backup:restore-test -- [archive]     # default: the newest backup
+```
+
+That starts a throwaway PostgreSQL on this PC (a temp folder, 127.0.0.1 only),
+restores the archive into it, measures every table there the same way, checks
+rows, fingerprints and sequences against the manifest, records the result in
+the manifest, then stops that server and deletes its folder. It runs with no
+database address in its environment and refuses to start if one is set, so it
+can never reach production. `PASS` is the only sign a backup is good; the
+scripts live in `src/scripts/backupDatabase.ts`, `restoreDrill.ts` and
+`backupFormat.ts`.
+
+**The tools, once per PC.** pg_dump must be the server's major version (17)
+or newer, and the restore test needs a PostgreSQL server with PostGIS. Neither
+is installed: EDB's portable zip and the PostGIS bundle are unpacked into
+`%LOCALAPPDATA%/CyclingDataApp/pgsql-17` (`PG_BIN` points elsewhere). Nothing
+runs in the background, and deleting that folder removes them. From Git Bash
+(Windows' own `tar` reads zips; PostGIS goes in without overwriting, since 7
+of its DLLs are the same libraries EDB ships, OpenSSL and zlib among them):
+
+```
+cd /tmp
+curl -LO https://get.enterprisedb.com/postgresql/postgresql-17.11-2-windows-x64-binaries.zip
+curl -LO https://download.osgeo.org/postgis/windows/pg17/postgis-bundle-pg17-3.6.2x64.zip
+curl -LO https://download.osgeo.org/postgis/windows/pg17/postgis-bundle-pg17-3.6.2x64.zip.md5
+md5sum postgis-bundle-pg17-3.6.2x64.zip; cat postgis-bundle-pg17-3.6.2x64.zip.md5   # the same
+T="$LOCALAPPDATA/CyclingDataApp/pgsql-17"; mkdir -p x1 x2 "$T"
+/c/Windows/System32/tar.exe -xf postgresql-17.11-2-windows-x64-binaries.zip -C x1 pgsql/bin pgsql/lib pgsql/share
+/c/Windows/System32/tar.exe -xf postgis-bundle-pg17-3.6.2x64.zip -C x2 postgis-bundle-pg17-3.6.2x64/bin postgis-bundle-pg17-3.6.2x64/lib postgis-bundle-pg17-3.6.2x64/share
+for d in bin lib share; do cp -rn x1/pgsql/$d/. "$T/$d/"; done
+for d in bin lib share; do cp -rn x2/postgis-bundle-pg17-3.6.2x64/$d/. "$T/$d/"; done
+"$T/bin/pg_dump.exe" --version     # pg_dump (PostgreSQL) 17.11
+```
+
+EDB's zip has no published checksum and its programs are unsigned
+(`Get-AuthenticodeSignature` says NotSigned); what vouches for it is the HTTPS
+download from EDB's own server. Set up this way 2026-10-25: 2,995 files,
+417MB (this PC's copy also keeps the two projects' licence files).
+
+**Restoring for real** is never scripted: it writes to a database, and which
+one is a decision. Into a new, empty database (a new Supabase project, say),
+the way the restore test does it:
+
+```
+pg_restore --list <archive> | grep -v -E '^[0-9]+; +[0-9]+ +[0-9]+ +SCHEMA - public ' > restore.list
+pg_restore --no-owner --no-privileges --exit-on-error --use-list=restore.list --dbname=<new database's URL> <archive>
+```
+
+The list leaves out `CREATE SCHEMA public`, which every database already has.
+Tested against PostgreSQL 17.11 with PostGIS 3.6.2 (every restore test); not
+yet against a new Supabase project.
+
 ## Tests and evals
 
 ```
