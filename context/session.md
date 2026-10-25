@@ -12,6 +12,93 @@ stale.
 
 ## NEXT, IN ORDER
 
+**IN FLIGHT, 2026-10-25: the database backup's fixes. Start here.** Branch
+`database-backup` at `2b698a9` (pushed, not merged; one commit on
+`70c805b`): `backend/src/scripts/backupFormat.ts`, `backupDatabase.ts`,
+`restoreDrill.ts`, `backupFormat.test.ts`, the README's "Backups",
+`package.json`'s `backup` and `backup:restore-test`. Continue on that
+branch (`git switch database-backup`), not a new one from `main`: the
+fixes are this task's.
+
+- **Julian's calls, 2026-10-25.** He ran the cold review (it FAILed the
+  backup's judge, below) and then answered "update the session md, clear the
+  context then run this" to the choice whose recommended option was **fix
+  every finding but F7, then merge**: that is the plan, unless he says
+  otherwise. **No second review**: each finding's own reproduction must flip
+  from bad to good instead. **Merge and deploy approved** once the fixes
+  pass (`backend/` changes, so Railway redeploys; the server's own code is
+  unchanged; watch `/health`'s builtAt only during the rollout, then one
+  `GET /segments`). **No schedule** for the backup ("Not now").
+- **Where it stands.** Two good backups in `Documents/CyclingDataApp-backups`
+  (16:50 and 16:55 UTC, both `restoreTest.passed`; the reviewer rebuilt the
+  16:55 one with the README's commands and it matched production's manifest,
+  8 tables and 4 sequences). Tools in `%LOCALAPPDATA%/CyclingDataApp/pgsql-17`.
+  The review cost 239k against an estimate of 100k; the task stood at about
+  420k with it, against 150k first estimated.
+- **The review**: FAIL, 1 high, 5 medium, 4 low, at `2b698a9`. Verdict, with
+  each reproduction's exact commands and output: `C:/Users/Julian/AppData/Local/Temp/claude/c--Users-Julian-Documents-GitHub-CyclingDataApp/e24d4bb5-018e-46b7-89ee-9dee82f392bf/scratchpad/backup-tools/critique/verdict.md`. Its harness,
+  `fakeprod.sh`, builds a stand-in production on 127.0.0.1:54329 (PostgreSQL
+  17.11 + PostGIS 3.6.2, TLS on, self-signed) and needs no production at all.
+  Its ride-data copies were deleted at Julian's OK, so first copy
+  `cyclingdataapp-2026-10-25T16-55-26Z.dump` and its `.json` from
+  `Documents/CyclingDataApp-backups` into `critique/copies/`, then
+  `bash fakeprod.sh init` (prints 36266), and point `DATABASE_URL` at
+  `postgresql://prod@127.0.0.1:54329/appdb` for every `npm run backup`
+  (each run's first line must say PostGIS 3.6.2, not Supabase's 3.3.7). Run
+  F1's second reproduction last: it moves the tables.
+- **The fixes**, as the verdict asks (F7 waits for the `pool.ts` TLS fix):
+  - **F1, high: a backup of nothing is called PASS, and a table outside
+    `public` is silently left out.** Fail when a schema the dump does not
+    cover holds tables (exempt pg_catalog, information_schema, pg_toast and
+    Supabase's own: auth, storage, realtime, extensions, graphql,
+    graphql_public, vault, pgsodium, net, supabase_functions,
+    supabase_migrations, cron, pgbouncer); fail on zero tables; fail when a
+    table `src/db/schema.sql` creates is missing; fail when a table the
+    previous manifest held is gone. A unit test each.
+  - **F2: a ride saving mid-backup FAILs a good archive**: sequences are
+    outside every snapshot. Record the values the archive holds (its
+    `setval` lines, in the `--data-only` text already read); check each is
+    at or above the max of its column in the snapshot; the restore test
+    compares restored with archived. Unit-test the parser; correct the
+    README's "exactly what was measured".
+  - **F3: the restore test checks data, not schema** (a mutant dropping 19
+    INDEX, FK CONSTRAINT and DEFAULT entries passes). Add a schema measure
+    per table (columns with `format_type`, not null and `pg_get_expr`
+    default; `pg_get_constraintdef`; `pg_get_indexdef`; triggers; policies;
+    row security), recorded and compared; test `restorableList` on a list
+    with INDEX, FK CONSTRAINT, DEFAULT, TRIGGER and POLICY lines.
+  - **F4: a failed backup keeps a good one's name.** `.dump` only after the
+    restore test passes; `.untested` before that and under
+    `--no-restore-test`; `.failed`, archive and manifest together, on
+    failure. The default archive is the newest that passed.
+  - **F5: the measuring connection (`pool.ts`) is not encrypted**, though
+    the README says so. Set `process.env.PGSSLMODE = "no-verify"` at the top
+    of `main()` (node-postgres reads it; `childEnv` keeps it from the tools)
+    and correct the README.
+  - **F6: nothing pins pg_dump to TLS.** `libpqEnv` always returns
+    `require` (drop the parameter); the existing test then pins it.
+  - **F8, low: a killed restore test leaves its server up with `trust`
+    auth.** Clean up on SIGINT, SIGTERM and exit; at start, stop and remove
+    stale `cyclingdataapp-restore-test-*` folders; initdb with
+    `-A scram-sha-256 --pwfile` and a random password; a README line.
+  - **F9, low: the shell's PG* settings reach the restore test's own
+    connection**, and a failure overwrote a recorded pass. Delete PG* from
+    its `process.env` before importing `pool.ts`, `?sslmode=disable` on the
+    throwaway URL, keep a history of results.
+  - **F10, low: the README's restore commands call `pg_restore`, not on
+    PATH.** Use `"$PG/pg_restore.exe"` with `PG=$LOCALAPPDATA/CyclingDataApp/pgsql-17/bin`;
+    say only a manifest with `restoreTest.passed: true` is a backup;
+    mention `--no-restore-test`.
+  - **F7, deferred: pg_dump's `require` accepts any certificate.**
+    `verify-full` with Supabase's CA, done with the `pool.ts` TLS fix
+    (step 5).
+- **Done when** each reproduction flips (F1's two, F2's `ride-writer.sql`,
+  F3's mutant killed, F4's `probe-newest.ts`, F5's and F6's server-log lines
+  showing SSL on both connections, F8's `probe-kill.sh` leaving nothing,
+  F9's `PGSSLMODE=require` run passing with the history kept), the backend
+  suite passes, a real `npm run backup` PASSes, the branch is merged and the
+  deploy verified, and these notes say so. About 100k.
+
 Rewritten 2026-10-21, after the lag's trace and the profile scrub. Closed
 work keeps its evidence below the STATE block: "CLOSED 2026-10-16 and -17"
 (the mixing artefact and option A) and "CLOSED 2026-10-10 and -11" (the old
@@ -87,7 +174,8 @@ user, testing, and the lag's last case is managed on the free plan (step 4).
    push to `main` touching `backend/` deploys), and `/health`'s builtAt
    verifies one.
 5. **Protect the data**:
-   - **Backups: built and proven 2026-10-25.** `npm run backup` in
+   - **Backups: built and proven 2026-10-25; its judge failed review, and
+     the fixes are in flight (the block at the top).** `npm run backup` in
      `backend/` (README, "Backups"; `src/scripts/backupDatabase.ts`,
      `restoreDrill.ts`, `backupFormat.ts`) takes about a minute and only
      reads production: one read-only transaction exports a snapshot, every
@@ -811,8 +899,10 @@ to delete, and so are `press-hold-plan`, `path-route`, `path-route-live`,
 `notes-after-phase1`, `press-hold-app`, `apk-install-notes`, `lag-notes`,
 `path-lag-fix`, `lag-trace-notes`, `lag-swap-notes`, `profile-scrub`,
 `next-steps-notes`, `install-profile-scrub` and `scrub-reach-inset`.
-**Nothing in flight** but Julian's try of the scrub's reach (`17ae9d0`,
-app only, on the phone since 2026-10-21; "NEXT, IN ORDER", step 1).
+**In flight: the database backup's fixes**, branch `database-backup`
+(`2b698a9`, not merged; "NEXT, IN ORDER", the IN FLIGHT block). Also
+waiting: Julian's try of the scrub's reach (`17ae9d0`, app only, on the
+phone since 2026-10-21; "NEXT, IN ORDER", step 1).
 `path-lag-fix` is merged (`9a0058a`) and live as
 `93563c1c` (builtAt 2026-10-18T18:51:27.630Z); the lag's last case waits on
 Julian ("2. **App**", "Next", step 1). No running job.
