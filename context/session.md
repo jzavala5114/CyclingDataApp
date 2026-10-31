@@ -3,7 +3,7 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-10-25.
+Last updated 2026-10-31.
 
 **Read the four blocks below before anything else.** They are the authoritative
 queue and state. Everything after them is evidence and history: where a section
@@ -28,7 +28,11 @@ press from this PC takes about 0.45s warm and 0.47s after 40s quiet, against
 the map) is on the phone, and Julian on 2026-10-21: "it works", with one
 change, made the same day (`17ae9d0`, on the phone since 19:21): the path's
 start and end are reached before the finger gets to the screen's edge (step
-1). Production's server is unchanged since 2026-10-18.
+1). The server's code is unchanged since 2026-10-18 (`9a0058a`); production
+was redeployed 2026-10-25 as `b02fad7`'s build (builtAt
+2026-10-25T22:37:29.495Z), which added only the backup's scripts. The
+database is backed up to this PC on demand (`npm run backup`, step 5); the
+newest backup, 2026-10-25 18:33 UTC, still holds every ride on 2026-10-31.
 
 **Julian's decision, 2026-10-20: no Supabase Pro yet.** Pro is $25 a month;
 he will take it when the app opens to more users. Until then he is the only
@@ -145,7 +149,10 @@ user, testing, and the lag's last case is managed on the free plan (step 4).
      certificate, since its pooler's certificate is signed by Supabase's
      own CA. The backup's two connections are TLS since `b02fad7`, so this
      is the server's alone; checking the certificate (verify-full) for the
-     backup's too needs the same CA file (the review's F7).
+     backup's too needs the same CA file (the review's F7). **Recommended as
+     the next build** (2026-10-31, not yet decided by Julian): the smallest
+     open item, it closes the one real exposure still open and the backup's
+     last review finding with it.
    - **Supabase's security warnings: real, unused, checked 2026-10-25
      read-only; the fix waits on Julian's OK** (about 60k with its test and
      check). Supabase also emails them ("Issues as of 03 Oct 2026").
@@ -212,7 +219,8 @@ user, testing, and the lag's last case is managed on the free plan (step 4).
 7. **Grade ride 89** (about 20k, read-only): it landed 2026-10-11 and is
    still ungraded: `npm run verify-barometer` in `backend/`; a pass is
    `alive` ("HOW TO REBUILD THE APK, AND HOW A RIDE IS GRADED"). No ride has
-   landed since.
+   landed since (checked 2026-10-31: 52 rides, 36,266 fixes, the newest
+   ride 89).
 8. **The numbered items below**: the zero-run census first.
 
 **Free plan limits to keep in mind.** Supabase pauses a free project after
@@ -823,7 +831,7 @@ fix), saved selections, a climb finder.
 
 - **The same-way class.** Unexplained. NEXT item 4.
 
-## STATE, 2026-10-17
+## STATE, 2026-10-31
 
 `main` is the base, and every task branch is merged into it. The ten from
 2026-10-10/11 were deleted on 2026-10-11, locally and on origin;
@@ -835,9 +843,25 @@ to delete, and so are `press-hold-plan`, `path-route`, `path-route-live`,
 `notes-after-phase1`, `press-hold-app`, `apk-install-notes`, `lag-notes`,
 `path-lag-fix`, `lag-trace-notes`, `lag-swap-notes`, `profile-scrub`,
 `next-steps-notes`, `install-profile-scrub`, `scrub-reach-inset`,
-`database-backup` and `backup-fixes-notes`.
-**Nothing in flight** but Julian's try of the scrub's reach (`17ae9d0`,
-app only, on the phone since 2026-10-21; "NEXT, IN ORDER", step 1).
+`database-backup`, `backup-fixes-notes` and `notes-before-compact`.
+**Nothing in flight.** Checked 2026-10-31, read-only: `main` is the only
+branch with work (nothing unmerged on origin); no ride since ride 89
+(2026-10-11; 52 rides, 36,266 fixes), so the 2026-10-25 18:33 backup holds
+every ride; production still answers builtAt 2026-10-25T22:37:29.495Z; the
+database is awake (a free project pauses after about a week idle).
+**Waiting on Julian:**
+- trying the scrub's reach and the readout at a large font (step 1), and
+  the three press-and-hold behaviours on a ride (step 2);
+- an OK for the next build, each a deploy: recommended, the server's
+  database connection over TLS with the backup's F7 (about 30k); then the
+  Supabase row level security migration (about 60k; both in step 5); then
+  the lag's two free fixes (step 4, about 50k each);
+- `railway login` in `backend/` before any lag measuring (step 4);
+- an OK to delete `%TEMP%/cyclingdataapp-restore-test-kvyLcB` (40MB): an
+  empty test cluster, server stopped, no ride data, left 2026-10-25 when
+  `eval:backup` was run against the pre-fix restore test; the new code's
+  sweep only covers its own `cyclingdataapp-throwaway-` folders.
+
 `path-lag-fix` is merged (`9a0058a`); production runs `b02fad7`'s build
 (builtAt 2026-10-25T22:37:29.495Z, the server's code unchanged since `9a0058a`); the
 lag's last case waits on Julian ("2. **App**", "Next", step 1). No running job.
