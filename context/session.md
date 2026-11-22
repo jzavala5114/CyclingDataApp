@@ -12,6 +12,86 @@ stale.
 
 ## NEXT, IN ORDER
 
+### IN FLIGHT, 2026-11-22: the Supabase row level security fix, built, NOT applied
+
+**Branch `supabase-rls`**, pushed, unmerged: `0a7f0f1` is the change, the
+commits after it are notes. Continue on it, not on a new branch from main.
+Production is untouched. The live database still has row level security off
+and both API roles' grants, so `npm run eval:security` FAILS there with 1 of
+5 checks passed, as it must before 004. The server is still builtAt
+2026-10-25T22:37:29.495Z. What the change is: step 5 below, "Parts (1) to (4)
+built", and backend/README.md, "Security".
+
+**Waiting on Julian**, asked 2026-11-22. His go-ahead to build was "Lets go
+for the Supabase security fix next"; applying needs his OK, the standing rule
+for anything that touches production.
+1. "Do you want me to apply 004 to the live database and merge?"
+   Recommended: yes, while no ride is being saved and no backup is running.
+2. Whether to run a second cold critic round on the fixes. Recommended: no
+   (about 200k; the round cap for a medium change is one, so it is his call).
+   Round 1 was FAIL (2 blocking, 2 should-fix, 6 minor). Every finding was
+   reproduced, fixed, and its probe re-run against the fix.
+3. Budget: estimated 350k, about 500k spent (the critic 211k). Applying,
+   checking it live and merging adds about 40k, just past 1.5x. His OK to
+   apply covers that unless he says otherwise.
+
+**When he says yes, in order, all from `backend/` unless named:**
+1. `curl -s https://cyclingdataapp-backend-production.up.railway.app/health`
+   (builtAt 2026-10-25T22:37:29.495Z), and confirm with Julian that no ride is
+   recording. `npm run eval:security` must FAIL with 1 of 5 checks passed:
+   the state before.
+2. `npm run migrate -- src/db/migrations/004_row_level_security.sql` (it
+   prints the SQL and stops), then the same with `--apply`, which must
+   print `applied`. On "canceling statement due to lock timeout", a lock was
+   held (a backup?): nothing changed, run it again. On "row level security
+   migration left these open: ...", something unexpected holds a grant:
+   nothing changed, so stop and report it.
+3. `npm run eval:security` must PASS with 5 of 5 checks passed, its notes
+   listing 0008 (INFO) on the eight tables and PostGIS's objects as not ours.
+   Then all of Supabase's advisor rules, read-only:
+   `PGSSLMODE=no-verify npx tsx C:/Users/Julian/AppData/Local/Temp/claude/c--Users-Julian-Documents-GitHub-CyclingDataApp/e24d4bb5-018e-46b7-89ee-9dee82f392bf/scratchpad/supabase-rls/run-all-lints.mts`.
+   Against `lints-before.txt` beside it: 0013 keeps only spatial_ref_sys,
+   0023 is gone, 0008 lists the eight, and 0014, 0028, 0029, 0001 and 0005
+   are unchanged.
+4. Live, GETs only, `/health` first: `npm run eval:latency` and, in
+   `mobile/`, `npm run eval:selection` must PASS, and the app's map must
+   draw its lines.
+5. `npm run backup` must PASS: a new `.dump`, whose restore test passes with
+   row security on in every table's definition.
+6. Merge, by CLAUDE.md's "After every task" ritual: rebase on origin/main,
+   fast-forward main, push. backend/** changed, so Railway redeploys the
+   same server code. Verify by `/health` builtAt moving, then
+   `GET /segments` answering 200.
+7. Notes: step 5's bullet to APPLIED, with the date and the numbers; this
+   block removed; STATE.
+
+**To take it back:** `npm run migrate --
+src/db/migrations/004_row_level_security_undo.sql --apply`. It restores
+production's exact grants from before 004, so it reopens everything to the
+anon key whenever the Data API is on. `npm run eval:security` then FAILS as
+before.
+
+**Done when:**
+- `eval:security` passes 5 of 5 on production;
+- `eval:latency`, `eval:selection` and `npm run backup` pass;
+- main holds `0a7f0f1`'s change and `/health` shows a newer builtAt;
+- Julian's dashboard Security Advisor lists only the expected items: 0008
+  on the eight, 0013 on spatial_ref_sys, and 0014, 0028 and 0029.
+
+**Evidence**, in the scratchpad of session `e24d4bb5`,
+`C:/Users/Julian/AppData/Local/Temp/claude/c--Users-Julian-Documents-GitHub-CyclingDataApp/e24d4bb5-018e-46b7-89ee-9dee82f392bf/scratchpad/supabase-rls/`:
+- `critique/verdict.md` and `critique/rubric.md`: the review;
+- `critique/probes/probe.mts`, with `critique/rerun-before-fix/` and
+  `critique/rerun-after-fix/`: its reproduction, before and after the fix;
+- `mutate.mjs`, with `mutants.out` and `mutants-2.out` (round 1, 13 of 13
+  killed) and `mutants-round2.out` (16 of 16);
+- `eval-migration-5.out`: 23 of 23;
+- `lints-before.txt` and `run-all-lints.mts`: all 31 of Supabase's rules
+  on production before 004.
+
+If the scratchpad is gone, `npm run eval:security-migration` rebuilds the
+stand-in proof, and the rules are at github.com/supabase/splinter, `lints/`.
+
 Rewritten 2026-10-21, after the lag's trace and the profile scrub. Closed
 work keeps its evidence below the STATE block: "CLOSED 2026-10-16 and -17"
 (the mixing artefact and option A) and "CLOSED 2026-10-10 and -11" (the old
@@ -925,7 +1005,8 @@ database is awake (a free project pauses after about a week idle).
 - trying the scrub's reach and the readout at a large font (step 1), and
   the three press-and-hold behaviours on a ride (step 2);
 - an OK to apply migration 004 to the live database and merge
-  `supabase-rls` (step 5); then, recommended, the server's database
+  `supabase-rls`, and whether to run a second critic round (recommended
+  no): the IN FLIGHT block at the top of NEXT; then, recommended, the server's database
   connection over TLS with the backup's F7 (about 30k, a deploy), then the
   lag's two free fixes (step 4, about 50k each);
 - the elevation readout beside the scrub dot: Julian chose (2026-11-01) the
