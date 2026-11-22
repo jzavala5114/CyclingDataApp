@@ -3,7 +3,7 @@
 Working notes for picking this project back up. Covers what exists, why it's
 built the way it is, and the failure modes already paid for.
 
-Last updated 2026-10-31.
+Last updated 2026-11-22.
 
 **Read the four blocks below before anything else.** They are the authoritative
 queue and state. Everything after them is evidence and history: where a section
@@ -32,7 +32,14 @@ start and end are reached before the finger gets to the screen's edge (step
 was redeployed 2026-10-25 as `b02fad7`'s build (builtAt
 2026-10-25T22:37:29.495Z), which added only the backup's scripts. The
 database is backed up to this PC on demand (`npm run backup`, step 5); the
-newest backup, 2026-10-25 18:33 UTC, still holds every ride on 2026-10-31.
+newest backup, 2026-10-25 18:33 UTC, still holds every ride on 2026-11-22.
+**Supabase paused the database on 2026-11-07** (free plan, a week idle): the
+server stayed up, but every map request answered 500 (`tenant/user
+postgres.otsxafnmgdlldqkctzgo not found`), so the app drew no lines, until
+Julian restored the project from the dashboard (back by 2026-11-22; the email
+gives 90 days). It pauses again after any idle week; a daily request that runs
+a real query would stop that (about 30k, not built, unchecked which activity
+Supabase counts: the backend's four open idle connections did not).
 
 **Julian's decision, 2026-10-20: no Supabase Pro yet.** Pro is $25 a month;
 he will take it when the app opens to more users. Until then he is the only
@@ -209,8 +216,68 @@ user, testing, and the lag's last case is managed on the free plan (step 4).
        switch); its new attempts read its settings and abort. It stays
        connected, so a vanished connection is not the sign to look for.
        The backend is untouched: the same four pooler connections, and
-       `GET /segments` answers 200 from the database. Parts (1) to (4),
-       the migration, still wait on Julian's OK.
+       `GET /segments` answers 200 from the database.
+     - **Parts (1) to (4) built 2026-11-22 on branch `supabase-rls`,
+       pushed, not merged, NOT APPLIED: waiting on Julian's OK** to run 004
+       on the live database and merge (a redeploy of the same server code).
+       What it is (backend/README.md, "Security"):
+       - `004_row_level_security.sql`, one DO block, so it lands whole
+         however it is run (`npm run migrate`, plain `psql -f`, the SQL
+         editor). It turns row level security on for the 8 tables, revokes
+         everything from `anon`, `authenticated` and PUBLIC on them and
+         the 4 sequences, and takes both roles out of `postgres`'s default
+         privileges in public. A closing check raises if anything is still
+         open, and it waits at most 5s for each table's lock (never run it
+         during a backup). `004_row_level_security_undo.sql` reverses it
+         exactly. `schema.sql` does the same for a new database, and still
+         runs on plain PostgreSQL.
+       - Functions are PostgreSQL's exception: PUBLIC can execute every new
+         function, by a default only a change for every schema could remove,
+         which would also strip it from extensions installed later. So a
+         function of ours must `revoke execute ... from public` itself.
+       - `src/db/rowSecurity.test.ts` (gate) reads schema.sql and the
+         migrations in order and fails: a table whose last word is not
+         "enable" (so a re-created or switched-off table counts); any grant to
+         anon, authenticated or PUBLIC; a function left open to PUBLIC.
+       - `npm run eval:security` (read-only, production, TLS): row level
+         security, the API roles' privileges on tables, views, sequences,
+         columns and functions, the defaults, and three of Supabase's own
+         advisor rules (vendored in `src/scripts/splinter/`, PostgreSQL
+         License). On 2026-11-22 it FAILS on production, as it must before
+         004: 1 of 5 checks passed, the same 10 findings of ours the
+         dashboard shows.
+       - `npm run eval:security-migration`: a throwaway PostgreSQL 17 +
+         PostGIS set up as Supabase's (roles, powers, both default ACLs, all
+         read from production). 23 checks: schema.sql on plain PostgreSQL and
+         on the stand-in; the undo rebuilding production's exact pre-004 state
+         (the advisor flags the same 11); 004 giving up on a held table and
+         refusing a grant it cannot take back under both runners, changing
+         nothing; 004 applied; `anon` refused everything, `postgres` reads,
+         writes, updates, deletes, truncates and pg_dumps with the backup's
+         arguments; a later table starts with no grants; a later function is
+         caught until revoked; 004 twice; undo exact; 004 again.
+       - Mutants: 16 of 16 killed in the final round, files
+         restored byte for byte each time (scratchpad of session `e24d4bb5`,
+         `supabase-rls/`: `mutate.mjs`, `mutants-round2.out`).
+       - **The cold review: FAIL** (211k, 28 tool calls): 2 blocking (a
+         migration re-creating a table without row level security passed the
+         gate test; nothing ran schema.sql on plain PostgreSQL), 2 should-fix
+         (plain `psql -f` committed 004 halfway; a later security-definer
+         function let `anon` read fixes with every check passing), 6 minor.
+         All reproduced first, all fixed, its probe re-run against the fix
+         (`supabase-rls/critique/`, `rerun-after-fix/`).
+       - **To apply, on Julian's OK:** `npm run migrate --
+         src/db/migrations/004_row_level_security.sql --apply` in
+         `backend/`; then `npm run eval:security` (must PASS 5 of 5),
+         `eval:latency` and `eval:selection` live (`/health` first), and
+         `npm run backup` (proves pg_dump and the restore test with row level
+         security on). The dashboard's Security Advisor will then list 0008
+         "RLS Enabled No Policy" (INFO) on the 8 (intended), and still 0013 on
+         `spatial_ref_sys`, 0014 (PostGIS in public), 0028 and 0029
+         (`st_estimatedextent`): PostGIS's, owned by `supabase_admin`,
+         beyond `postgres`; the Data API being off closes them. Keep it off.
+       - Restoring into a new Supabase project now starts with the three
+         default-privilege lines (README, "Backups").
 6. **Whether the card's numbers are right** (about 60k): a check against
    something independent, which nothing does yet. The one comparison so far
    put our climb 38% below a terrain model's on 69 Ladders and Gold Camp
@@ -224,7 +291,8 @@ user, testing, and the lag's last case is managed on the free plan (step 4).
 8. **The numbered items below**: the zero-run census first.
 
 **Free plan limits to keep in mind.** Supabase pauses a free project after
-about a week with no activity (restore it from the dashboard). Its monthly
+about a week with no activity (restore it from the dashboard; it did, on
+2026-11-07). Its monthly
 egress allowance (5GB when last known; the organisation's Usage page has the
 real cap): each path request pulls about 0.75 to 0.95MB from the database,
 and a press with holds makes 1 to 3 requests. Pressing a lot is fine for the
@@ -831,7 +899,7 @@ fix), saved selections, a climb finder.
 
 - **The same-way class.** Unexplained. NEXT item 4.
 
-## STATE, 2026-10-31
+## STATE, 2026-11-22
 
 `main` is the base, and every task branch is merged into it. The ten from
 2026-10-10/11 were deleted on 2026-10-11, locally and on origin;
@@ -844,7 +912,11 @@ to delete, and so are `press-hold-plan`, `path-route`, `path-route-live`,
 `path-lag-fix`, `lag-trace-notes`, `lag-swap-notes`, `profile-scrub`,
 `next-steps-notes`, `install-profile-scrub`, `scrub-reach-inset`,
 `database-backup`, `backup-fixes-notes` and `notes-before-compact`.
-**Nothing in flight.** Checked 2026-10-31, read-only: `main` is the only
+**In flight: `supabase-rls`**, pushed, unmerged: migration 004 built and
+proven, not applied (step 5, "Parts (1) to (4) built").
+Checked 2026-11-22, read-only: no ride since ride 89 (52 rides); production
+still answers builtAt 2026-10-25T22:37:29.495Z; the database is back after the
+2026-11-07 pause. On 2026-10-31: `main` was the only
 branch with work (nothing unmerged on origin); no ride since ride 89
 (2026-10-11; 52 rides, 36,266 fixes), so the 2026-10-25 18:33 backup holds
 every ride; production still answers builtAt 2026-10-25T22:37:29.495Z; the
@@ -852,15 +924,28 @@ database is awake (a free project pauses after about a week idle).
 **Waiting on Julian:**
 - trying the scrub's reach and the readout at a large font (step 1), and
   the three press-and-hold behaviours on a ride (step 2);
-- an OK for the next build, each a deploy: recommended, the server's
-  database connection over TLS with the backup's F7 (about 30k); then the
-  Supabase row level security migration (about 60k; both in step 5); then
-  the lag's two free fixes (step 4, about 50k each);
-- `railway login` in `backend/` before any lag measuring (step 4);
-- an OK to delete `%TEMP%/cyclingdataapp-restore-test-kvyLcB` (40MB): an
-  empty test cluster, server stopped, no ride data, left 2026-10-25 when
-  `eval:backup` was run against the pre-fix restore test; the new code's
-  sweep only covers its own `cyclingdataapp-throwaway-` folders.
+- an OK to apply migration 004 to the live database and merge
+  `supabase-rls` (step 5); then, recommended, the server's database
+  connection over TLS with the backup's F7 (about 30k, a deploy), then the
+  lag's two free fixes (step 4, about 50k each);
+- the elevation readout beside the scrub dot: Julian chose (2026-11-01) the
+  height alone in a label beside the dot, the card unchanged, solo with one
+  critic. Which height waits on his "B": our profile set once per selection
+  to the USGS terrain level (the median of terrain minus profile over the
+  selection), built only if step 1's read-only measurement puts it within
+  15 ft of USGS at 9 points in 10, else stop and show him where. Design: the
+  path route sends `terrainM` per span (USGS NED 10m from
+  `segment_dem_elevations`, joined into `loadLineData`'s bucket query, so
+  no fifth statement on the pool's four warm connections); the phone
+  computes the level; a MapLibre symbol layer draws "6,745 ft" (Noto Sans
+  Bold, the only fonts the liberty style serves are Noto Sans Regular, Bold
+  and Italic). Measured 2026-10-31, read-only: stored heights against USGS,
+  median 7.5 ft apart, p90 27.9 ft, worst 94 ft, mean +0.1 ft; a street's
+  two directions, median 3.7 ft apart, p90 17.4 ft. About 550k all told.
+  Full plan: `~/.claude/plans/ok-so-we-fixed-fancy-summit.md`;
+- `railway login` in `backend/` before any lag measuring (step 4).
+The 40MB leftover `%TEMP%/cyclingdataapp-restore-test-kvyLcB` is deleted
+(2026-11-17, Julian's OK; 20KB of empty directories by then).
 
 `path-lag-fix` is merged (`9a0058a`); production runs `b02fad7`'s build
 (builtAt 2026-10-25T22:37:29.495Z, the server's code unchanged since `9a0058a`); the
