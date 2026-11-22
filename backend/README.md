@@ -16,13 +16,24 @@ npm run dev
 `src/db/schema.sql` is a fresh-install script — plain `create table`, so it
 cannot be re-run against a database that already holds rides. Changes to an
 existing database go in `src/db/migrations/`, applied in order and written to
-be idempotent:
+be idempotent. Apply one in a single transaction, so it lands whole or not at
+all:
 
 ```
-psql "$DATABASE_URL" -f src/db/migrations/001_elevation_source.sql
+npm run migrate -- src/db/migrations/<file>.sql            # prints it, runs nothing
+npm run migrate -- src/db/migrations/<file>.sql --apply    # one transaction
+psql "$DATABASE_URL" --single-transaction -v ON_ERROR_STOP=1 -f src/db/migrations/<file>.sql
 ```
 
-Keep both in step: `schema.sql` for a new database, a migration for the live one.
+Plain `psql -f` commits statement by statement: a migration that fails
+halfway leaves its first half applied. (004 is one statement for that reason,
+so it is whole either way.) A file ending `_undo.sql` reverses the migration
+of the same number and is applied only by hand, to take that migration back.
+
+Keep both in step: `schema.sql` for a new database, a migration for the live
+one. A table either one creates enables its row level security, and nothing
+grants to Supabase's API roles or PUBLIC: `npm test` fails anything else
+("Security").
 
 ## Deploying
 
@@ -153,6 +164,127 @@ The list leaves out `CREATE SCHEMA public`, which every database already has.
 Tested against PostgreSQL 17.11 with PostGIS 3.6.2 (every restore test); not
 yet against a new Supabase project.
 
+Into a new Supabase project, close it to the API's roles first ("Security").
+The archive carries each table's row level security, but `--no-privileges`
+leaves the grants to the new project, whose default privileges give `anon` and
+`authenticated` everything on every table the restore creates. So before
+`pg_restore`, run these three statements in the new project (its SQL editor,
+or `psql`), the same three 004 ends with:
+
+```
+alter default privileges for role postgres in schema public revoke all on tables    from anon, authenticated;
+alter default privileges for role postgres in schema public revoke all on sequences from anon, authenticated;
+alter default privileges for role postgres in schema public revoke all on functions from anon, authenticated;
+```
+
+Every table the restore then creates starts closed, including any a migration
+after 004 added. Afterwards, `npm run eval:security` with `DATABASE_URL`
+pointing at the new project must pass.
+
+## Security
+
+Supabase serves every project's `public` schema through its Data API, acting
+as `anon` for anyone holding the project's anon key (public by design: it is
+meant to ship in apps) and as `authenticated` for a signed-in user. Supabase
+gives both roles everything on every table, sequence and function made in
+`public`, and relies on row level security to stop them. Until migration 004
+nothing did: both could read every ride's GPS fixes and delete or truncate
+everything. Nothing ever used that (2026-10-25: no statement in
+`pg_stat_statements` ran as either role), and the Data API has been off since
+2026-10-25, which closed it from outside in the meantime.
+
+Since 004 (`src/db/migrations/004_row_level_security.sql`, which says why each
+part is there):
+
+- every table of ours has row level security on, with no policies, so no row
+  is visible to either role;
+- neither role holds any privilege on any table or sequence of ours, nor does
+  PUBLIC, which every role is a member of. Row level security alone would
+  leave TRUNCATE, REFERENCES, TRIGGER and the sequences open;
+- `postgres`'s default privileges in `public` give them nothing, so a table or
+  sequence a later migration creates starts closed. That migration still
+  enables the table's row level security;
+- functions are PostgreSQL's exception. Every new function is executable by
+  PUBLIC by a default that only a change for every schema at once could
+  remove, which would also strip it from the functions of any extension
+  installed later. So a function of ours closes itself:
+  `revoke execute on function public.<name>(<args>) from public;` right after
+  it is created.
+
+`src/db/rowSecurity.test.ts` holds `schema.sql` and the migrations, read in
+order, to that at every commit. It fails:
+- a table created, or re-created, or switched off, without its row level
+  security enabled after;
+- any grant to `anon`, `authenticated` or PUBLIC;
+- a function created without EXECUTE revoked from PUBLIC after it.
+
+The backend is unaffected. It connects as `postgres`, which owns every table
+(row level security does not apply to an owner) and holds BYPASSRLS.
+`service_role`, Supabase's admin key, keeps full access by Supabase's design;
+the app has never held that key.
+
+```
+npm run migrate -- src/db/migrations/004_row_level_security.sql --apply        # close the live database
+npm run migrate -- src/db/migrations/004_row_level_security_undo.sql --apply   # reopen it: only to take 004 back
+npm run eval:security             # read-only, the live database: is anything of ours open?
+npm run eval:security-migration   # 004, its undo and schema.sql, proven on a stand-in (about a minute and a half)
+```
+
+004 is one statement, so it lands whole or not at all, whatever runs it. It
+waits at most 5 seconds for each table's lock and gives up rather than hold
+the app's queries behind it. A backup's `pg_dump` holds every table's lock for
+its minute, so don't apply 004 during a backup; if it gives up, run it again.
+
+`eval:security` reads the catalog in one read-only transaction over TLS:
+- every table of ours has row level security;
+- the API's roles may do nothing to anything of ours: tables, views and
+  sequences, column privileges included, and functions;
+- the default privileges of the role that owns our tables give them nothing;
+- three of Supabase's own advisor rules, copied into `src/scripts/splinter/`,
+  flag nothing of ours.
+
+"Ours" is everything in `public` that no extension owns. It exits 1 on any
+failure.
+
+What the Security Advisor in Supabase's dashboard still lists, and why:
+
+- **0008, RLS Enabled No Policy (INFO)**, on our eight tables. This is the
+  intended state: no row reaches the API.
+- **0013 on `spatial_ref_sys`, 0014 (PostGIS in `public`), and 0028 and 0029
+  (PostGIS's `st_estimatedextent`, a security definer function `anon` may
+  call).** All of these belong to PostGIS, which `supabase_admin` installed:
+  it owns them and made their grants, so nothing `postgres` runs can change
+  them. Moving PostGIS out of `public` would mean dropping every geometry
+  column. The Data API being off is what keeps them from the outside; leave it
+  off.
+
+`eval:security-migration` builds a throwaway PostgreSQL set up as Supabase
+sets up a project, with the roles, their powers and both roles' default
+privileges as read from production on 2026-11-22. On it, it runs:
+1. `schema.sql` on plain PostgreSQL, before those roles exist, then on the
+   Supabase-like database, where it must come out closed;
+2. the undo, `004_row_level_security_undo.sql`, which must put back
+   production's state before 004 grant for grant. `eval:security` must then
+   fail it the way it failed production, and `anon` must be able to read,
+   insert and truncate;
+3. 004 against a table held as a backup holds it, which it must give up on
+   within its lock timeout, and against a grant it cannot take back, which it
+   must refuse, under `npm run migrate` and under plain `psql -f`; each time
+   nothing may change;
+4. 004, through `npm run migrate`, as `postgres`, then `pg_dump` with the
+   backup's own arguments;
+5. a table and a function created after 004: the table must start with no
+   grant for the API's roles, and the function must be caught until EXECUTE
+   is revoked from PUBLIC;
+6. 004 again, which must change nothing;
+7. the undo, which must restore the state before 004 exactly;
+8. 004 once more.
+
+At each step `anon`, `authenticated`, `postgres` and `service_role` each try
+to read and write. The undo reopens everything to the anon key whenever the
+Data API is on: it is only there to reverse 004 if something needs the API's
+roles after all.
+
 ## Tests and evals
 
 ```
@@ -163,12 +295,15 @@ npm run eval:linker     # eval: what folding a sidewalk does to the drawn map
 npm run eval:query-types  # eval: what every query returns, against the type the code declares
 npm run eval:path       # eval: how a press-and-hold selection grows, on the stored rides
 npm run eval:backup     # eval: the backup and its restore test, against a stand-in for production
+npm run eval:security   # eval: whether Supabase's API roles can reach anything of ours (read-only)
+npm run eval:security-migration  # eval: migration 004 and its undo, against a stand-in
 ```
 
 `npm test` runs Node's built-in test runner through tsx. It needs nothing but
-the source, so it is safe on any checkout. The first five evals read the live
-database and write nothing; `eval:backup` reaches no database but the stand-in
-it builds and deletes ("Backups").
+the source, so it is safe on any checkout. The first five evals and
+`eval:security` read the live database and write nothing; `eval:backup` and
+`eval:security-migration` reach no database but the stand-in each builds and
+deletes ("Backups", "Security").
 
 `npm run eval:path` scores the fork rule of `GET /segments/path`
 leave-one-ride-out: at every fork a stored ride passed, does the rule pick

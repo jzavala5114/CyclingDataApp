@@ -1,6 +1,32 @@
 -- Prototype schema. Run against a Postgres database with PostGIS enabled.
 create extension if not exists postgis;
 
+-- Supabase's public API roles get nothing on what this creates. Supabase gives
+-- `anon` and `authenticated` everything on every table, sequence and function
+-- the creating role makes in public, through its default privileges, and the
+-- project's anon key that acts as `anon` is public by design. Taking that
+-- default away first means no table below is ever open, not even between its
+-- `create table` and its `enable row level security`. On a database without
+-- those roles (plain PostgreSQL) this does nothing. The same change for the
+-- live database is migrations/004_row_level_security.sql.
+do $$
+declare
+  api_role text;
+begin
+  foreach api_role in array array['anon', 'authenticated'] loop
+    if exists (select 1 from pg_roles where rolname = api_role) then
+      execute format('alter default privileges in schema public revoke all on tables from %I', api_role);
+      execute format('alter default privileges in schema public revoke all on sequences from %I', api_role);
+      execute format('alter default privileges in schema public revoke all on functions from %I', api_role);
+    end if;
+  end loop;
+end $$;
+
+-- Every table below also has row level security on, with no policies: no row
+-- is visible to a role it applies to. The backend connects as the tables'
+-- owner, which it does not apply to, so the backend reads and writes as
+-- before. src/db/rowSecurity.test.ts fails a table created without it.
+
 -- One row per OSM way segment (a way pre-split at intersection nodes by
 -- osm-pipeline). Direction is not stored here -- "forward" always means
 -- travelling from start_node_id to end_node_id along `geom`, "backward" is
@@ -40,6 +66,7 @@ create table segments (
     bearing_deg     double precision not null, -- compass bearing of the forward direction
     created_at      timestamptz not null default now()
 );
+alter table segments enable row level security;
 
 create index segments_canonical_idx on segments (canonical_segment_id);
 
@@ -54,6 +81,7 @@ create table sessions (
     ended_at    timestamptz,
     device_info text
 );
+alter table sessions enable row level security;
 
 -- Raw GPS + barometric samples captured during a session, before any
 -- map-matching happens. This is the "elevation" dataset -- it knows nothing
@@ -81,6 +109,7 @@ create table session_samples (
     speed_mps     double precision,
     accuracy_m    double precision
 );
+alter table session_samples enable row level security;
 
 -- Unique rather than a plain index, so re-uploading a chunk whose response was
 -- lost in transit is a no-op instead of a duplicate. Uploads are retried and
@@ -99,6 +128,7 @@ create table session_segment_matches (
     last_sample_id      bigint not null references session_samples(id),
     matched_at          timestamptz not null default now()
 );
+alter table session_segment_matches enable row level security;
 
 create index session_segment_matches_segment_idx on session_segment_matches (segment_id, direction);
 
@@ -132,6 +162,7 @@ create table segment_dem_elevations (
     fetched_at   timestamptz not null default now(),
     primary key (segment_id, direction, distance_m)
 );
+alter table segment_dem_elevations enable row level security;
 
 -- How much of each segment has actually been ridden, in each direction, as a
 -- distance range measured along the direction of travel.
@@ -153,6 +184,7 @@ create table segment_coverage (
     updated_at     timestamptz not null default now(),
     primary key (segment_id, direction)
 );
+alter table segment_coverage enable row level security;
 
 -- The refined, crowdsourced elevation model: one row per (segment,
 -- direction, distance bucket). elevation_m is a running mean across every
@@ -167,6 +199,7 @@ create table segment_elevation_buckets (
     updated_at      timestamptz not null default now(),
     primary key (segment_id, direction, distance_m)
 );
+alter table segment_elevation_buckets enable row level security;
 
 -- Each pass's own height at every bucket it covered: the values the running
 -- means above were built from, one row per pass per bucket, filed under the
@@ -188,3 +221,4 @@ create table segment_pass_buckets (
     elevation_m  double precision not null,
     primary key (match_id, distance_m)
 );
+alter table segment_pass_buckets enable row level security;

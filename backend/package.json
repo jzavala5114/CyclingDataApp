@@ -18,6 +18,8 @@
     "backup": "tsx src/scripts/backupDatabase.ts",
     "backup:restore-test": "tsx src/scripts/restoreDrill.ts",
     "eval:backup": "tsx src/scripts/evalBackup.ts",
+    "eval:security": "tsx src/scripts/evalSecurity.ts",
+    "eval:security-migration": "tsx src/scripts/evalSecurityMigration.ts",
     "eval:smoothing": "tsx src/scripts/evalSmoothingLag.ts",
     "eval:linker": "tsx src/scripts/evalLinkerFold.ts",
     "rebuild-model": "tsx src/scripts/rebuildModel.ts",
