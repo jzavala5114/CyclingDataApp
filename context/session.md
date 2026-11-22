@@ -12,86 +12,6 @@ stale.
 
 ## NEXT, IN ORDER
 
-### IN FLIGHT, 2026-11-22: the Supabase row level security fix, built, NOT applied
-
-**Branch `supabase-rls`**, pushed, unmerged: `0a7f0f1` is the change, the
-commits after it are notes. Continue on it, not on a new branch from main.
-Production is untouched. The live database still has row level security off
-and both API roles' grants, so `npm run eval:security` FAILS there with 1 of
-5 checks passed, as it must before 004. The server is still builtAt
-2026-10-25T22:37:29.495Z. What the change is: step 5 below, "Parts (1) to (4)
-built", and backend/README.md, "Security".
-
-**Waiting on Julian**, asked 2026-11-22. His go-ahead to build was "Lets go
-for the Supabase security fix next"; applying needs his OK, the standing rule
-for anything that touches production.
-1. "Do you want me to apply 004 to the live database and merge?"
-   Recommended: yes, while no ride is being saved and no backup is running.
-2. Whether to run a second cold critic round on the fixes. Recommended: no
-   (about 200k; the round cap for a medium change is one, so it is his call).
-   Round 1 was FAIL (2 blocking, 2 should-fix, 6 minor). Every finding was
-   reproduced, fixed, and its probe re-run against the fix.
-3. Budget: estimated 350k, about 500k spent (the critic 211k). Applying,
-   checking it live and merging adds about 40k, just past 1.5x. His OK to
-   apply covers that unless he says otherwise.
-
-**When he says yes, in order, all from `backend/` unless named:**
-1. `curl -s https://cyclingdataapp-backend-production.up.railway.app/health`
-   (builtAt 2026-10-25T22:37:29.495Z), and confirm with Julian that no ride is
-   recording. `npm run eval:security` must FAIL with 1 of 5 checks passed:
-   the state before.
-2. `npm run migrate -- src/db/migrations/004_row_level_security.sql` (it
-   prints the SQL and stops), then the same with `--apply`, which must
-   print `applied`. On "canceling statement due to lock timeout", a lock was
-   held (a backup?): nothing changed, run it again. On "row level security
-   migration left these open: ...", something unexpected holds a grant:
-   nothing changed, so stop and report it.
-3. `npm run eval:security` must PASS with 5 of 5 checks passed, its notes
-   listing 0008 (INFO) on the eight tables and PostGIS's objects as not ours.
-   Then all of Supabase's advisor rules, read-only:
-   `PGSSLMODE=no-verify npx tsx C:/Users/Julian/AppData/Local/Temp/claude/c--Users-Julian-Documents-GitHub-CyclingDataApp/e24d4bb5-018e-46b7-89ee-9dee82f392bf/scratchpad/supabase-rls/run-all-lints.mts`.
-   Against `lints-before.txt` beside it: 0013 keeps only spatial_ref_sys,
-   0023 is gone, 0008 lists the eight, and 0014, 0028, 0029, 0001 and 0005
-   are unchanged.
-4. Live, GETs only, `/health` first: `npm run eval:latency` and, in
-   `mobile/`, `npm run eval:selection` must PASS, and the app's map must
-   draw its lines.
-5. `npm run backup` must PASS: a new `.dump`, whose restore test passes with
-   row security on in every table's definition.
-6. Merge, by CLAUDE.md's "After every task" ritual: rebase on origin/main,
-   fast-forward main, push. backend/** changed, so Railway redeploys the
-   same server code. Verify by `/health` builtAt moving, then
-   `GET /segments` answering 200.
-7. Notes: step 5's bullet to APPLIED, with the date and the numbers; this
-   block removed; STATE.
-
-**To take it back:** `npm run migrate --
-src/db/migrations/004_row_level_security_undo.sql --apply`. It restores
-production's exact grants from before 004, so it reopens everything to the
-anon key whenever the Data API is on. `npm run eval:security` then FAILS as
-before.
-
-**Done when:**
-- `eval:security` passes 5 of 5 on production;
-- `eval:latency`, `eval:selection` and `npm run backup` pass;
-- main holds `0a7f0f1`'s change and `/health` shows a newer builtAt;
-- Julian's dashboard Security Advisor lists only the expected items: 0008
-  on the eight, 0013 on spatial_ref_sys, and 0014, 0028 and 0029.
-
-**Evidence**, in the scratchpad of session `e24d4bb5`,
-`C:/Users/Julian/AppData/Local/Temp/claude/c--Users-Julian-Documents-GitHub-CyclingDataApp/e24d4bb5-018e-46b7-89ee-9dee82f392bf/scratchpad/supabase-rls/`:
-- `critique/verdict.md` and `critique/rubric.md`: the review;
-- `critique/probes/probe.mts`, with `critique/rerun-before-fix/` and
-  `critique/rerun-after-fix/`: its reproduction, before and after the fix;
-- `mutate.mjs`, with `mutants.out` and `mutants-2.out` (round 1, 13 of 13
-  killed) and `mutants-round2.out` (16 of 16);
-- `eval-migration-5.out`: 23 of 23;
-- `lints-before.txt` and `run-all-lints.mts`: all 31 of Supabase's rules
-  on production before 004.
-
-If the scratchpad is gone, `npm run eval:security-migration` rebuilds the
-stand-in proof, and the rules are at github.com/supabase/splinter, `lints/`.
-
 Rewritten 2026-10-21, after the lag's trace and the profile scrub. Closed
 work keeps its evidence below the STATE block: "CLOSED 2026-10-16 and -17"
 (the mixing artefact and option A) and "CLOSED 2026-10-10 and -11" (the old
@@ -109,10 +29,13 @@ the map) is on the phone, and Julian on 2026-10-21: "it works", with one
 change, made the same day (`17ae9d0`, on the phone since 19:21): the path's
 start and end are reached before the finger gets to the screen's edge (step
 1). The server's code is unchanged since 2026-10-18 (`9a0058a`); production
-was redeployed 2026-10-25 as `b02fad7`'s build (builtAt
-2026-10-25T22:37:29.495Z), which added only the backup's scripts. The
-database is backed up to this PC on demand (`npm run backup`, step 5); the
-newest backup, 2026-10-25 18:33 UTC, still holds every ride on 2026-11-22.
+was redeployed 2026-10-25 as `b02fad7`'s build, which added only the backup's
+scripts, and 2026-11-22 as `8dd387a`'s (builtAt 2026-11-22T21:23:27.971Z),
+which added only the row level security fix's migration, scripts and tests.
+The database is backed up to this PC on demand (`npm run backup`, step 5); the
+newest backup, `cyclingdataapp-2026-11-22T21-22-56Z.dump`, holds every ride.
+Since 2026-11-22 the eight tables have row level security on and nothing
+granted to Supabase's public API roles (step 5, "Parts (1) to (4) done").
 **Supabase paused the database on 2026-11-07** (free plan, a week idle): the
 server stayed up, but every map request answered 500 (`tenant/user
 postgres.otsxafnmgdlldqkctzgo not found`), so the app drew no lines, until
@@ -297,10 +220,11 @@ user, testing, and the lag's last case is managed on the free plan (step 4).
        connected, so a vanished connection is not the sign to look for.
        The backend is untouched: the same four pooler connections, and
        `GET /segments` answers 200 from the database.
-     - **Parts (1) to (4) built 2026-11-22 on branch `supabase-rls`,
-       pushed, not merged, NOT APPLIED: waiting on Julian's OK** to run 004
-       on the live database and merge (a redeploy of the same server code).
-       What it is (backend/README.md, "Security"):
+     - **Parts (1) to (4) done 2026-11-22: 004 applied to the live database at
+       21:14:36 UTC on Julian's OK ("ok now apply the security fix"), and
+       `supabase-rls` merged and deployed (`8dd387a`, builtAt
+       2026-11-22T21:23:27.971Z; the server's code unchanged).** What it is
+       (backend/README.md, "Security"):
        - `004_row_level_security.sql`, one DO block, so it lands whole
          however it is run (`npm run migrate`, plain `psql -f`, the SQL
          editor). It turns row level security on for the 8 tables, revokes
@@ -323,9 +247,9 @@ user, testing, and the lag's last case is managed on the free plan (step 4).
          security, the API roles' privileges on tables, views, sequences,
          columns and functions, the defaults, and three of Supabase's own
          advisor rules (vendored in `src/scripts/splinter/`, PostgreSQL
-         License). On 2026-11-22 it FAILS on production, as it must before
-         004: 1 of 5 checks passed, the same 10 findings of ours the
-         dashboard shows.
+         License). On production, 2026-11-22: 1 of 5 checks passed before
+         004 (the same 10 findings of ours the dashboard showed), 5 of 5
+         after.
        - `npm run eval:security-migration`: a throwaway PostgreSQL 17 +
          PostGIS set up as Supabase's (roles, powers, both default ACLs, all
          read from production). 23 checks: schema.sql on plain PostgreSQL and
@@ -346,16 +270,42 @@ user, testing, and the lag's last case is managed on the free plan (step 4).
          function let `anon` read fixes with every check passing), 6 minor.
          All reproduced first, all fixed, its probe re-run against the fix
          (`supabase-rls/critique/`, `rerun-after-fix/`).
-       - **To apply, on Julian's OK:** `npm run migrate --
-         src/db/migrations/004_row_level_security.sql --apply` in
-         `backend/`; then `npm run eval:security` (must PASS 5 of 5),
-         `eval:latency` and `eval:selection` live (`/health` first), and
-         `npm run backup` (proves pg_dump and the restore test with row level
-         security on). The dashboard's Security Advisor will then list 0008
-         "RLS Enabled No Policy" (INFO) on the 8 (intended), and still 0013 on
+       - **Applied 2026-11-22, measured on production.** First, read-only
+         (`quiet-check.mts`): no ride since ride 89, no session open, no lock
+         on our tables. `eval:security` 1 of 5; `npm run migrate --
+         src/db/migrations/004_row_level_security.sql --apply` printed
+         `applied` in about a second; `eval:security` 5 of 5. All 31 of
+         Supabase's advisor rules (`run-all-lints.mts`, `lints-before.txt`
+         against `lints-after.txt`): 22 findings to 20. 0013 from 9 tables to
+         `spatial_ref_sys` alone, 0023 from 2 to 0, 0008 (INFO) now on the 8
+         (intended: no policy, so no row reaches the API); 0001, 0005, 0014,
+         0028 and 0029 unchanged. The server reads as before: `GET /segments`
+         200 (525 segments, a Colorado Springs box); `eval:latency` PASS on a
+         second run (warm median 431ms, after 40s quiet 350, 433 and 390ms;
+         the server's own time 282 to 326ms). The first run failed one press
+         after quiet at 1279ms, of which the server's own time was 289ms, so
+         the rest went between this PC and the server, not in the database;
+         `eval:selection` PASS (16 of 16 presses; 43 path requests from this
+         PC at a median 0.39s, p95 0.63s); `npm run backup` PASS
+         (`cyclingdataapp-2026-11-22T21-22-56Z.dump`, 9.5MB, 136,780 rows; its
+         restore test compares each table's definition, row security included,
+         and the dump lists ROW SECURITY for all eight). On the new build,
+         `GET /segments` gave the same 525 segments, byte for byte. `npm test`
+         580 of 580, tsc clean. The dashboard's Security Advisor should now
+         list 0008 "RLS Enabled No Policy" (INFO) on the 8, and still 0013 on
          `spatial_ref_sys`, 0014 (PostGIS in public), 0028 and 0029
-         (`st_estimatedextent`): PostGIS's, owned by `supabase_admin`,
-         beyond `postgres`; the Data API being off closes them. Keep it off.
+         (`st_estimatedextent`): PostGIS's, owned by `supabase_admin`, beyond
+         `postgres`; the Data API being off closes them. Keep it off. Times
+         here are the server's: this PC's clock ran 1m45s fast that day
+         (against Railway's Date header), so its own times, the backup's file
+         name included, read 1m45s ahead of the true time (the apply read
+         21:16:21). Outputs: the scratchpad of session `e24d4bb5`,
+         `supabase-rls/apply-*.out`.
+       - **To undo:** `npm run migrate --
+         src/db/migrations/004_row_level_security_undo.sql --apply` in
+         `backend/`. It restores production's exact grants from before 004, so
+         it reopens everything to the anon key whenever the Data API is on;
+         `npm run eval:security` then fails as before.
        - Restoring into a new Supabase project now starts with the three
          default-privilege lines (README, "Backups").
 6. **Whether the card's numbers are right** (about 60k): a check against
@@ -991,12 +941,14 @@ to delete, and so are `press-hold-plan`, `path-route`, `path-route-live`,
 `notes-after-phase1`, `press-hold-app`, `apk-install-notes`, `lag-notes`,
 `path-lag-fix`, `lag-trace-notes`, `lag-swap-notes`, `profile-scrub`,
 `next-steps-notes`, `install-profile-scrub`, `scrub-reach-inset`,
-`database-backup`, `backup-fixes-notes` and `notes-before-compact`.
-**In flight: `supabase-rls`**, pushed, unmerged: migration 004 built and
-proven, not applied (step 5, "Parts (1) to (4) built").
-Checked 2026-11-22, read-only: no ride since ride 89 (52 rides); production
-still answers builtAt 2026-10-25T22:37:29.495Z; the database is back after the
-2026-11-07 pause. On 2026-10-31: `main` was the only
+`database-backup`, `backup-fixes-notes`, `notes-before-compact` and
+`supabase-rls`.
+Nothing in flight: migration 004 is applied and `supabase-rls` merged
+(2026-11-22, step 5, "Parts (1) to (4) done").
+Checked 2026-11-22, read-only: no ride since ride 89 (52 rides) and no session
+open; production answers builtAt 2026-11-22T21:23:27.971Z (the merge of
+`supabase-rls`); the database is back after the 2026-11-07 pause. On
+2026-10-31: `main` was the only
 branch with work (nothing unmerged on origin); no ride since ride 89
 (2026-10-11; 52 rides, 36,266 fixes), so the 2026-10-25 18:33 backup holds
 every ride; production still answers builtAt 2026-10-25T22:37:29.495Z; the
@@ -1004,11 +956,14 @@ database is awake (a free project pauses after about a week idle).
 **Waiting on Julian:**
 - trying the scrub's reach and the readout at a large font (step 1), and
   the three press-and-hold behaviours on a ride (step 2);
-- an OK to apply migration 004 to the live database and merge
-  `supabase-rls`, and whether to run a second critic round (recommended
-  no): the IN FLIGHT block at the top of NEXT; then, recommended, the server's database
-  connection over TLS with the backup's F7 (about 30k, a deploy), then the
-  lag's two free fixes (step 4, about 50k each);
+- a look at the Supabase dashboard: the Security Advisor should list only 0008
+  (INFO) on the 8, 0013 on `spatial_ref_sys`, 0014, 0028 and 0029; and
+  Integrations, Data API, should still be off. Whether the restore from the
+  2026-11-07 pause kept that switch is unchecked: checking it from here needs
+  the anon key;
+- recommended next: the server's database connection over TLS with the
+  backup's F7 (about 30k, a deploy), then the lag's two free fixes (step 4,
+  about 50k each);
 - the elevation readout beside the scrub dot: Julian chose (2026-11-01) the
   height alone in a label beside the dot, the card unchanged, solo with one
   critic. Which height waits on his "B": our profile set once per selection
@@ -1028,12 +983,16 @@ database is awake (a free project pauses after about a week idle).
 The 40MB leftover `%TEMP%/cyclingdataapp-restore-test-kvyLcB` is deleted
 (2026-11-17, Julian's OK; 20KB of empty directories by then).
 
-`path-lag-fix` is merged (`9a0058a`); production runs `b02fad7`'s build
-(builtAt 2026-10-25T22:37:29.495Z, the server's code unchanged since `9a0058a`); the
+`path-lag-fix` is merged (`9a0058a`); production runs `8dd387a`'s build
+(builtAt 2026-11-22T21:23:27.971Z, the server's code unchanged since `9a0058a`); the
 lag's last case waits on Julian ("2. **App**", "Next", step 1). No running job.
 The phone runs the release APK built from `17ae9d0` (installed 2026-10-21 at
 19:21, phone clock).
-Last code change `b02fad7` (2026-10-25): the backup's review fixes
+Last code change `0a7f0f1` (2026-11-22): migration 004, row level security
+on the eight tables with the API roles' grants taken away (`backend/`
+migration, schema.sql, a gate test, two evals, README; applied and deployed,
+the server's code unchanged). Before it, `b02fad7` (2026-10-25): the
+backup's review fixes
 (`backend/` scripts, tests and README; deployed, the server's code
 unchanged). Before it, `2b698a9` (2026-10-25): the backup itself, merged
 with them. Before it, `17ae9d0` (2026-10-21): the scrub's ends reached 60dp
