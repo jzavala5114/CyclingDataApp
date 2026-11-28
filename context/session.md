@@ -291,16 +291,34 @@ user, testing, and the lag's last case is managed on the free plan (step 4).
          restore test compares each table's definition, row security included,
          and the dump lists ROW SECURITY for all eight). On the new build,
          `GET /segments` gave the same 525 segments, byte for byte. `npm test`
-         580 of 580, tsc clean. The dashboard's Security Advisor should now
-         list 0008 "RLS Enabled No Policy" (INFO) on the 8, and still 0013 on
-         `spatial_ref_sys`, 0014 (PostGIS in public), 0028 and 0029
-         (`st_estimatedextent`): PostGIS's, owned by `supabase_admin`, beyond
-         `postgres`; the Data API being off closes them. Keep it off. Times
-         here are the server's: this PC's clock ran 1m45s fast that day
-         (against Railway's Date header), so its own times, the backup's file
-         name included, read 1m45s ahead of the true time (the apply read
-         21:16:21). Outputs: the scratchpad of session `e24d4bb5`,
+         580 of 580, tsc clean. What Supabase's own Security Advisor lists:
+         the next item. Times here are the server's: this PC's clock ran 1m45s
+         fast that day (against Railway's Date header), so its own times, the
+         backup's file name included, read 1m45s ahead of the true time (the
+         apply read 21:16:21). Outputs: the scratchpad of session `e24d4bb5`,
          `supabase-rls/apply-*.out`.
+       - **Checked 2026-11-28, read-only, through the Supabase MCP server
+         (`get_advisors`, `execute_sql`) and the public anon key.** Supabase's
+         Security Advisor lists only 0008 "RLS Enabled No Policy" (INFO) on
+         the 8 and 0014 (PostGIS in public). It runs the same rules with the
+         project's real Data API settings, and with the API off no schema
+         counts as exposed, so 0013 on `spatial_ref_sys` and 0028 and 0029 on
+         `st_estimatedextent` do not appear. `eval:security` and
+         `run-all-lints.mts` still list them: the rules take `public` as
+         exposed when no setting says otherwise
+         (`coalesce(current_setting('pgrst.db_schemas', 't'), 'public')`,
+         unchanged in splinter's main on 2026-11-28), so they test what the
+         API would show if it were switched on. **The Data API is still off
+         after the pause:** `GET /rest/v1/sessions` and `GET
+         /rest/v1/spatial_ref_sys` with the anon key both answer 503
+         `PGRST002` ("Could not query the database for the schema cache"),
+         with no data; PostgREST 14.5 has kept a `LISTEN "pgrst"` connection
+         open since 2026-11-18 05:12 UTC (the restore), and each new attempt
+         to load its map of tables ends in `ABORT`, the same signature as
+         right after Julian switched it off on 2026-10-25. `spatial_ref_sys`
+         and the PostGIS functions are PostGIS's, owned by `supabase_admin`,
+         beyond `postgres`: only the Data API being off keeps them from the
+         outside. Keep it off.
        - **To undo:** `npm run migrate --
          src/db/migrations/004_row_level_security_undo.sql --apply` in
          `backend/`. It restores production's exact grants from before 004, so
@@ -945,6 +963,12 @@ to delete, and so are `press-hold-plan`, `path-route`, `path-route-live`,
 `supabase-rls`.
 Nothing in flight: migration 004 is applied and `supabase-rls` merged
 (2026-11-22, step 5, "Parts (1) to (4) done").
+Checked 2026-11-28, read-only, through the Supabase MCP server: Supabase's
+Security Advisor lists only 0008 (INFO) on the eight and 0014, and the Data
+API is still off after the pause (step 5, "Checked 2026-11-28"). That server
+is set up on this PC for this project only, read-only (`read_only=true`: SQL
+runs as a read-only user, and no tool that writes is offered), with the
+database, debugging, development and docs tools.
 Checked 2026-11-22, read-only: no ride since ride 89 (52 rides) and no session
 open; production answers builtAt 2026-11-22T21:23:27.971Z (the merge of
 `supabase-rls`); the database is back after the 2026-11-07 pause. On
@@ -956,11 +980,6 @@ database is awake (a free project pauses after about a week idle).
 **Waiting on Julian:**
 - trying the scrub's reach and the readout at a large font (step 1), and
   the three press-and-hold behaviours on a ride (step 2);
-- a look at the Supabase dashboard: the Security Advisor should list only 0008
-  (INFO) on the 8, 0013 on `spatial_ref_sys`, 0014, 0028 and 0029; and
-  Integrations, Data API, should still be off. Whether the restore from the
-  2026-11-07 pause kept that switch is unchecked: checking it from here needs
-  the anon key;
 - recommended next: the server's database connection over TLS with the
   backup's F7 (about 30k, a deploy), then the lag's two free fixes (step 4,
   about 50k each);
