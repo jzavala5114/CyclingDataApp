@@ -300,12 +300,13 @@ user, testing, and the lag's last case is managed on the free plan (step 4).
        - **Checked 2026-11-28, read-only, through the Supabase MCP server
          (`get_advisors`, `execute_sql`) and the public anon key.** Supabase's
          Security Advisor lists only 0008 "RLS Enabled No Policy" (INFO) on
-         the 8 and 0014 (PostGIS in public). It runs the same rules with the
-         project's real Data API settings, and with the API off no schema
-         counts as exposed, so 0013 on `spatial_ref_sys` and 0028 and 0029 on
-         `st_estimatedextent` do not appear. `eval:security` and
-         `run-all-lints.mts` still list them: the rules take `public` as
-         exposed when no setting says otherwise
+         the 8 and 0014 (PostGIS in public). 0013 on `spatial_ref_sys` and
+         0028 and 0029 on `st_estimatedextent` do not appear. Inferred, not
+         seen: it runs the same rules with the project's real Data API
+         settings, under which, with the API off, no schema counts as exposed
+         (the two it lists are the only two that do not depend on what the API
+         exposes). `eval:security` and `run-all-lints.mts` still list them:
+         the rules take `public` as exposed when no setting says otherwise
          (`coalesce(current_setting('pgrst.db_schemas', 't'), 'public')`,
          unchanged in splinter's main on 2026-11-28), so they test what the
          API would show if it were switched on. **The Data API is still off
